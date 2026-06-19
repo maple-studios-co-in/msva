@@ -26,6 +26,19 @@ export function setLlmEnabled(value: boolean): void {
   llmEnabled = value;
 }
 
+// LLM provider: "ollama" (local, default) or "anthropic" (hosted Claude — fast
+// even on a CPU box). Set LLM_PROVIDER=anthropic + ANTHROPIC_API_KEY to use it.
+const llmProvider = (process.env.LLM_PROVIDER ?? "ollama").toLowerCase();
+const anthropicKey = process.env.ANTHROPIC_API_KEY;
+const anthropicModel = process.env.ANTHROPIC_MODEL ?? "claude-haiku-4-5-20251001";
+const anthropicBaseUrl = process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com";
+const anthropicTimeoutMs = Number(process.env.ANTHROPIC_TIMEOUT_MS ?? 20000);
+const usingAnthropic = llmProvider === "anthropic" && Boolean(anthropicKey);
+
+export function getActiveModel(): string {
+  return usingAnthropic ? anthropicModel : defaultModel;
+}
+
 function now(): string {
   return new Date().toISOString();
 }
@@ -258,6 +271,13 @@ const TOOL_SCHEMAS = [
   }
 ];
 
+// Same tools, in Anthropic's schema shape.
+const ANTHROPIC_TOOLS = TOOL_SCHEMAS.map((t) => ({
+  name: t.function.name,
+  description: t.function.description,
+  input_schema: t.function.parameters
+}));
+
 type CompletePass = {
   content: string;
   toolCalls: ToolCall[];
@@ -371,6 +391,143 @@ async function* ollamaStream(messages: OllamaMessage[]): AsyncGenerator<string, 
     clearTimeout(timeout);
     reader.releaseLock();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Anthropic (hosted Claude) client — fast tool-calling agent. Used when
+// LLM_PROVIDER=anthropic. One decision call (with tools); if Claude calls a
+// tool we execute it and stream a grounded follow-up reply.
+// ---------------------------------------------------------------------------
+
+type AnthropicBlock = { type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> };
+
+async function anthropicRequest(system: string, messages: unknown[], stream: boolean): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), anthropicTimeoutMs);
+  try {
+    return await fetch(`${anthropicBaseUrl}/v1/messages`, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "x-api-key": anthropicKey as string,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ model: anthropicModel, max_tokens: 400, system, tools: ANTHROPIC_TOOLS, messages, stream })
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function* readAnthropicStream(response: Response): AsyncGenerator<string, void, void> {
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let sep = buffer.indexOf("\n\n");
+      while (sep !== -1) {
+        const block = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+        sep = buffer.indexOf("\n\n");
+        const dataLine = block.split("\n").find((l) => l.startsWith("data:"));
+        if (!dataLine) continue;
+        try {
+          const ev = JSON.parse(dataLine.slice(5).trim()) as {
+            type?: string;
+            delta?: { type?: string; text?: string };
+          };
+          if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta" && ev.delta.text) {
+            yield ev.delta.text;
+          }
+        } catch {
+          // ignore keep-alives / malformed frames
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+async function* anthropicAgent(
+  systemPrompt: string,
+  history: OllamaMessage[],
+  nextState: ConversationState,
+  callId: string,
+  executed: ToolCall[]
+): AsyncGenerator<ChatStreamEvent, { reply: string; used: boolean }, void> {
+  const messages: Array<{ role: string; content: unknown }> = history.map((m) => ({
+    role: m.role === "assistant" ? "assistant" : "user",
+    content: m.content
+  }));
+
+  let res: Response;
+  try {
+    res = await anthropicRequest(systemPrompt, messages, false);
+  } catch (error) {
+    console.error("[anthropic] request failed", error);
+    return { reply: "", used: false };
+  }
+  if (!res.ok) {
+    console.error("[anthropic] HTTP", res.status, (await res.text()).slice(0, 200));
+    return { reply: "", used: false };
+  }
+
+  const data = (await res.json()) as { content?: AnthropicBlock[] };
+  const blocks = data.content ?? [];
+  const toolUses = blocks.filter((b) => b.type === "tool_use");
+  const textOut = blocks
+    .filter((b) => b.type === "text")
+    .map((b) => b.text ?? "")
+    .join("");
+
+  let reply = "";
+  if (toolUses.length > 0) {
+    messages.push({ role: "assistant", content: blocks });
+    const toolResults: Array<Record<string, unknown>> = [];
+    for (const tu of toolUses) {
+      const toolCall = normalizeToolCall(
+        { id: tu.id ?? nextToolCallId(), name: (tu.name ?? "") as ToolName, args: tu.input ?? {} },
+        nextState
+      );
+      yield { type: "tool_call", call: toolCall };
+      const result = await dispatchTool(callId, toolCall);
+      executed.push(toolCall);
+      applyToolToOutcome(nextState, toolCall);
+      yield { type: "tool_result", result };
+      toolResults.push({
+        type: "tool_result",
+        tool_use_id: tu.id,
+        content: JSON.stringify(result.ok ? result.data ?? { ok: true } : { error: result.error })
+      });
+    }
+    messages.push({ role: "user", content: toolResults });
+
+    try {
+      const res2 = await anthropicRequest(systemPrompt, messages, true);
+      if (res2.ok && res2.body) {
+        for await (const delta of readAnthropicStream(res2)) {
+          reply += delta;
+          yield { type: "token", text: delta };
+        }
+      }
+    } catch (error) {
+      console.error("[anthropic] follow-up failed", error);
+    }
+    return { reply, used: true };
+  }
+
+  if (textOut.trim()) {
+    reply = textOut.trim();
+    yield { type: "token", text: reply };
+    return { reply, used: true };
+  }
+  return { reply: "", used: false };
 }
 
 // Fill in obvious argument defaults the small model tends to omit, and map a
@@ -494,18 +651,23 @@ export async function* streamChat(
   const baseState = state ?? initialState(call);
   const nextState = inferState(baseState, message);
 
-  const messages: OllamaMessage[] = [
-    { role: "system", content: buildSystemPrompt(nextState) },
-    ...toOllamaHistory(nextState)
-  ];
+  const systemPrompt = buildSystemPrompt(nextState);
+  const history = toOllamaHistory(nextState);
+  const messages: OllamaMessage[] = [{ role: "system", content: systemPrompt }, ...history];
 
   let reply = "";
-  let source: "ollama" | "fallback" = "fallback";
+  let source: "ollama" | "anthropic" | "fallback" = "fallback";
   const executedToolCalls: ToolCall[] = [];
 
   try {
     // Pass 1: let the model decide whether to call a tool (unless LLM disabled).
-    const decision = llmEnabled ? await ollamaComplete(messages, TOOL_SCHEMAS) : null;
+    if (llmEnabled && usingAnthropic) {
+      // Hosted Claude — fast tool-calling agent.
+      const result = yield* anthropicAgent(systemPrompt, history, nextState, callId, executedToolCalls);
+      reply = result.reply;
+      if (result.used) source = "anthropic";
+    } else if (llmEnabled) {
+      const decision = await ollamaComplete(messages, TOOL_SCHEMAS);
 
     if (decision && decision.toolCalls.length > 0) {
       source = "ollama";
@@ -534,6 +696,7 @@ export async function* streamChat(
       source = "ollama";
       reply = decision.content.trim();
       yield { type: "token", text: reply };
+    }
     }
   } catch (error) {
     yield { type: "error", message: error instanceof Error ? error.message : "stream error" };
@@ -568,7 +731,7 @@ export async function* streamChat(
     type: "final",
     reply,
     state: finalState,
-    model: defaultModel,
+    model: getActiveModel(),
     source,
     toolCalls: executedToolCalls
   };

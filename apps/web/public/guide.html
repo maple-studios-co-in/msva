@@ -488,8 +488,10 @@ pnpm dev:all      # api(4100) + web(5173) + telephony(4200)</code></pre>
       <table>
         <tr><th>Var</th><th>Default</th><th>Notes</th></tr>
         <tr><td><code>PORT</code></td><td>4100</td><td>API port.</td></tr>
-        <tr><td><code>AGENT_LLM</code></td><td>on</td><td><code>off</code> = skip Ollama, use deterministic replies (instant).</td></tr>
-        <tr><td><code>OLLAMA_BASE_URL</code></td><td>127.0.0.1:11434</td><td>Local LLM endpoint.</td></tr>
+        <tr><td><code>AGENT_LLM</code></td><td>on</td><td><code>off</code> = skip the model, use instant deterministic replies. Also toggleable live in the app.</td></tr>
+        <tr><td><code>LLM_PROVIDER</code></td><td>ollama</td><td><code>anthropic</code> = hosted Claude (fast on CPU, recommended here); <code>ollama</code> = local model.</td></tr>
+        <tr><td><code>ANTHROPIC_API_KEY</code> / <code>ANTHROPIC_MODEL</code></td><td>— / claude-haiku-4-5</td><td>Used when <code>LLM_PROVIDER=anthropic</code>.</td></tr>
+        <tr><td><code>OLLAMA_BASE_URL</code></td><td>127.0.0.1:11434</td><td>Local LLM endpoint (Ollama provider).</td></tr>
         <tr><td><code>OLLAMA_MODEL</code></td><td>qwen3.5:4b</td><td>Use a small fast model on CPU (e.g. <code>llama3.2:3b</code>).</td></tr>
         <tr><td><code>OLLAMA_TIMEOUT_MS</code></td><td>6000</td><td>Raise on CPU-only servers.</td></tr>
         <tr><td><code>SARVAM_API_KEY</code></td><td>—</td><td>Required for real ASR/TTS.</td></tr>
@@ -550,7 +552,8 @@ pnpm dev:all      # api(4100) + web(5173) + telephony(4200)</code></pre>
       <div class="callout warn"><p><strong>Start pm2 from the repo root via the ecosystem file.</strong> Each service loads its <code>.env</code> from its own folder, so it must launch with <code>cwd</code> = <code>apps/api</code> / <code>apps/telephony</code> (which <code>deploy/ecosystem.config.cjs</code> sets). Start it in the wrong directory and it loads <em>no</em> env — the symptoms are stub ASR (every caption reads "haan mujhe paneer…") and templated fallback replies. Verify with <code>pm2 info msva-api | grep cwd</code>.</p></div>
       <div class="callout warn"><p><strong>The Sarvam key must be in BOTH</strong> <code>apps/api/.env</code> (TTS preview) <strong>and</strong> <code>apps/telephony/.env</code> (live-call ASR + TTS). A missing telephony key gives the canned transcript above.</p></div>
       <div class="callout"><p><strong>The proxy must serve only <code>apps/web/dist</code></strong>, never the repo root — otherwise source files and <code>.env</code> secrets become publicly downloadable.</p></div>
-      <div class="callout tip"><p><strong>Real LLM replies + order lookup</strong> need <code>AGENT_LLM=on</code> with Ollama running (<code>ollama pull llama3.2:3b</code>) and <code>OLLAMA_TIMEOUT_MS=30000</code>. On a CPU box expect a few seconds per turn; use <code>AGENT_LLM=off</code> for instant scripted replies. After any <code>.env</code> change, restart so it reloads: <code>pm2 delete msva-api &amp;&amp; pm2 start deploy/ecosystem.config.cjs --only msva-api</code>.</p></div>
+      <div class="callout tip"><p><strong>Real LLM replies + order lookup.</strong> On this 2‑vCPU VPS a local 3B model is too slow for live voice (~30s/turn), so the recommended brain is <strong>hosted Claude</strong>: set <code>LLM_PROVIDER=anthropic</code>, <code>AGENT_LLM=on</code>, and <code>ANTHROPIC_API_KEY</code> — fast and smart. The local option is <code>LLM_PROVIDER=ollama</code> + <code>ollama pull llama3.2:3b</code> (free but slow). Either way, <code>AGENT_LLM=off</code> (or the in‑app <em>Instant</em> toggle) gives instant scripted replies.</p></div>
+      <div class="callout warn"><p><strong>.env load order.</strong> Each service loads its <code>.env</code> via a first-imported <code>env.ts</code> (resolved relative to the file), so env vars are set before any module reads them. Don't move that import or revert to a late <code>dotenv.config()</code> — that previously caused the model and Sarvam key to read as empty (fallback replies + stub ASR).</p></div>
       <figure class="diagram">
         <svg viewBox="0 0 760 230" role="img" aria-label="Deployment topology">
           <defs><marker id="a4" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#7A1320"/></marker>

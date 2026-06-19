@@ -6,7 +6,7 @@ import { z } from "zod";
 import { buildAnalytics, loadCallRecords } from "./analytics.js";
 import { demoCalls, findDemoCall } from "./demoCalls.js";
 import { BULBUL_V3_VOICES, previewVoice } from "./sarvamPreview.js";
-import { getLlmEnabled, handleChat, initialState, setLlmEnabled, streamChat } from "./voiceAgent.js";
+import { getActiveModel, getLlmEnabled, handleChat, initialState, setLlmEnabled, streamChat } from "./voiceAgent.js";
 import { DEMO_FAILSAFE_AUDIO_PATH, demoFailsafeAvailable, loadDemoFailsafe } from "./demoFailsafe.js";
 
 const app = express();
@@ -22,7 +22,7 @@ app.get("/health", (_request, response) => {
   response.json({
     ok: true,
     service: "msva-api",
-    model: process.env.OLLAMA_MODEL ?? "qwen3.5:4b",
+    model: getActiveModel(),
     records: records.length
   });
 });
@@ -133,7 +133,7 @@ app.post("/api/voice-agent/tts-preview", async (request, response) => {
 // ---------------------------------------------------------------------------
 
 app.get("/api/voice-agent/llm-mode", (_request, response) => {
-  response.json({ enabled: getLlmEnabled(), model: process.env.OLLAMA_MODEL ?? "qwen3.5:4b" });
+  response.json({ enabled: getLlmEnabled(), model: getActiveModel() });
 });
 
 const llmModeSchema = z.object({ enabled: z.boolean() });
@@ -145,7 +145,7 @@ app.post("/api/voice-agent/llm-mode", (request, response) => {
     return;
   }
   setLlmEnabled(parsed.data.enabled);
-  response.json({ enabled: getLlmEnabled(), model: process.env.OLLAMA_MODEL ?? "qwen3.5:4b" });
+  response.json({ enabled: getLlmEnabled(), model: getActiveModel() });
 });
 
 // ---------------------------------------------------------------------------

@@ -120,7 +120,7 @@ export type ChatResponse = {
   reply: string;
   state: ConversationState;
   model: string;
-  source: "ollama" | "fallback";
+  source: "ollama" | "anthropic" | "fallback";
   toolCalls?: ToolCall[];
 };
 
@@ -167,7 +167,7 @@ export type ChatStreamEvent =
       reply: string;
       state: ConversationState;
       model: string;
-      source: "ollama" | "fallback";
+      source: "ollama" | "anthropic" | "fallback";
       toolCalls: ToolCall[];
     }
   | { type: "error"; message: string };

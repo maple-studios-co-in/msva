@@ -98,6 +98,23 @@ export function getDemoFailsafe(): Promise<DemoFailsafe> {
   return request<DemoFailsafe>("/api/voice-agent/demo-failsafe");
 }
 
+// ---------------------------------------------------------------------------
+// AI brain mode — toggle the real LLM vs instant deterministic replies.
+// ---------------------------------------------------------------------------
+
+export type LlmMode = { enabled: boolean; model: string };
+
+export function getLlmMode(): Promise<LlmMode> {
+  return request<LlmMode>("/api/voice-agent/llm-mode");
+}
+
+export function setLlmMode(enabled: boolean): Promise<LlmMode> {
+  return request<LlmMode>("/api/voice-agent/llm-mode", {
+    method: "POST",
+    body: JSON.stringify({ enabled })
+  });
+}
+
 export function failsafeAudioUrl(): string {
   return `${apiBase}/api/voice-agent/demo-failsafe/audio`;
 }

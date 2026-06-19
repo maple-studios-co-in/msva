@@ -43,9 +43,11 @@ import {
   getDemoCalls,
   getDemoFailsafe,
   getInitialState,
+  getLlmMode,
   getVoiceCatalog,
   previewVoice,
   sendMessage,
+  setLlmMode,
   type DemoFailsafe,
   type VoiceCatalog,
   type VoicePreview
@@ -761,6 +763,8 @@ function LiveCall({ calls }: { calls: DemoCall[] }) {
   const [elapsed, setElapsed] = useState(0);
   const [failsafe, setFailsafe] = useState<DemoFailsafe | null>(null);
   const [failsafeActive, setFailsafeActive] = useState(false);
+  const [llmEnabled, setLlmEnabledState] = useState<boolean | null>(null);
+  const [llmModel, setLlmModel] = useState<string>("");
 
   const clientRef = useRef<CallClient | null>(null);
   const failsafeAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -777,6 +781,12 @@ function LiveCall({ calls }: { calls: DemoCall[] }) {
     getDemoFailsafe()
       .then((data) => data.available && setFailsafe(data))
       .catch((err) => console.error("failsafe load failed", err));
+    getLlmMode()
+      .then((m) => {
+        setLlmEnabledState(m.enabled);
+        setLlmModel(m.model);
+      })
+      .catch((err) => console.error("llm mode load failed", err));
   }, []);
 
   useEffect(() => {
@@ -867,6 +877,17 @@ function LiveCall({ calls }: { calls: DemoCall[] }) {
     const next = !muted;
     setMuted(next);
     clientRef.current?.setMuted(next);
+  }
+
+  async function toggleLlm(enabled: boolean) {
+    setLlmEnabledState(enabled); // optimistic
+    try {
+      const m = await setLlmMode(enabled);
+      setLlmEnabledState(m.enabled);
+      setLlmModel(m.model);
+    } catch {
+      setLlmEnabledState((prev) => !prev); // revert on failure
+    }
   }
 
   // Failsafe: play the pre-recorded clip as a native agent turn. Used when the
@@ -976,6 +997,29 @@ function LiveCall({ calls }: { calls: DemoCall[] }) {
             </>
           )}
         </select>
+
+        <label className="field-label" style={{ marginTop: 16 }}>AI brain</label>
+        <div className="llm-toggle">
+          <button
+            type="button"
+            className={llmEnabled === true ? "active" : ""}
+            onClick={() => void toggleLlm(true)}
+            disabled={llmEnabled === null}
+          >
+            LLM{llmModel ? ` · ${llmModel}` : ""}
+          </button>
+          <button
+            type="button"
+            className={llmEnabled === false ? "active" : ""}
+            onClick={() => void toggleLlm(false)}
+            disabled={llmEnabled === null}
+          >
+            Instant
+          </button>
+        </div>
+        <p className="muted" style={{ fontSize: 12, margin: "6px 0 0" }}>
+          LLM = real replies + order lookup (a few seconds/turn). Instant = scripted &amp; snappy. Applies to the whole agent.
+        </p>
 
         <p className="panel-note" style={{ marginTop: 16 }}>
           Hands-free: just start talking after the greeting. Pause and the agent replies. Talk over it to interrupt.

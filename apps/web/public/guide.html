@@ -543,9 +543,14 @@ pnpm dev:all      # api(4100) + web(5173) + telephony(4200)</code></pre>
 
     <section id="r-deploy">
       <h2>Deployment</h2>
-      <p>Production is a native deploy on a single VPS: Node + pnpm, the two services under <strong>pm2</strong>, the web build as static files, and <strong>Caddy</strong> for automatic HTTPS + reverse proxy. One command sets it up:</p>
-<pre><code>sudo bash deploy/bootstrap.sh</code></pre>
-      <p>Full walk-through (DNS, firewall, env, Ollama option, troubleshooting): <code>DEPLOY.md</code>. Caddy routes <code>/api</code> → 4100, <code>/browser</code> (wss) and <code>/voice</code> → 4200, and serves the static build for everything else.</p>
+      <p>Production runs on a single Ubuntu VPS (Hostinger KVM2). The two backend services run under <strong>pm2</strong>, the web build is served as static files, and a reverse proxy terminates HTTPS and routes traffic. The kit ships a Caddy config and a one-shot <code>deploy/bootstrap.sh</code>, but on a box that already hosts other sites you integrate with the existing web server — the live deployment uses <strong>nginx</strong> (<code>deploy/nginx-msva.conf</code>) behind Cloudflare, with the cert issued by certbot.</p>
+      <p>The proxy routes <code>/api/*</code> → 4100, the <code>/browser</code> WebSocket and the Exotel <code>/voice</code> stream → 4200, and serves the static build (<code>apps/web/dist</code>) for everything else. Full runbook: <code>DEPLOY.md</code>; real phone setup: <code>docs/exotel-inbound.md</code>.</p>
+
+      <h4>Operational gotchas (learned in production)</h4>
+      <div class="callout warn"><p><strong>Start pm2 from the repo root via the ecosystem file.</strong> Each service loads its <code>.env</code> from its own folder, so it must launch with <code>cwd</code> = <code>apps/api</code> / <code>apps/telephony</code> (which <code>deploy/ecosystem.config.cjs</code> sets). Start it in the wrong directory and it loads <em>no</em> env — the symptoms are stub ASR (every caption reads "haan mujhe paneer…") and templated fallback replies. Verify with <code>pm2 info msva-api | grep cwd</code>.</p></div>
+      <div class="callout warn"><p><strong>The Sarvam key must be in BOTH</strong> <code>apps/api/.env</code> (TTS preview) <strong>and</strong> <code>apps/telephony/.env</code> (live-call ASR + TTS). A missing telephony key gives the canned transcript above.</p></div>
+      <div class="callout"><p><strong>The proxy must serve only <code>apps/web/dist</code></strong>, never the repo root — otherwise source files and <code>.env</code> secrets become publicly downloadable.</p></div>
+      <div class="callout tip"><p><strong>Real LLM replies + order lookup</strong> need <code>AGENT_LLM=on</code> with Ollama running (<code>ollama pull llama3.2:3b</code>) and <code>OLLAMA_TIMEOUT_MS=30000</code>. On a CPU box expect a few seconds per turn; use <code>AGENT_LLM=off</code> for instant scripted replies. After any <code>.env</code> change, restart so it reloads: <code>pm2 delete msva-api &amp;&amp; pm2 start deploy/ecosystem.config.cjs --only msva-api</code>.</p></div>
       <figure class="diagram">
         <svg viewBox="0 0 760 230" role="img" aria-label="Deployment topology">
           <defs><marker id="a4" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#7A1320"/></marker>
@@ -556,7 +561,7 @@ pnpm dev:all      # api(4100) + web(5173) + telephony(4200)</code></pre>
           <rect class="vps" x="230" y="30" width="490" height="170" rx="14"/>
           <text class="l" x="248" y="54" style="fill:#B71F2C;font-weight:700">Hostinger KVM2 (Ubuntu)</text>
           <rect class="b" x="250" y="70" width="130" height="50" rx="10"/>
-          <text class="l" x="262" y="92">Caddy</text><text class="s" x="262" y="108">TLS · proxy</text>
+          <text class="l" x="262" y="92">nginx</text><text class="s" x="262" y="108">Cloudflare TLS · proxy</text>
           <rect class="b" x="420" y="66" width="130" height="40" rx="10"/>
           <text class="l" x="432" y="90">pm2: api :4100</text>
           <rect class="b" x="420" y="116" width="130" height="40" rx="10"/>
@@ -568,7 +573,7 @@ pnpm dev:all      # api(4100) + web(5173) + telephony(4200)</code></pre>
           <path class="x" d="M380,104 L420,134"/>
           <path class="x" d="M550,90 L580,108"/>
         </svg>
-        <figcaption>Single-VPS topology: Caddy terminates TLS and proxies to the two pm2-managed services; Ollama is optional.</figcaption>
+        <figcaption>Single-VPS topology: nginx (behind Cloudflare) proxies to the two pm2-managed services; Ollama powers real LLM replies.</figcaption>
       </figure>
     </section>
   </main>

@@ -6,7 +6,7 @@ import { z } from "zod";
 import { buildAnalytics, loadCallRecords } from "./analytics.js";
 import { demoCalls, findDemoCall } from "./demoCalls.js";
 import { BULBUL_V3_VOICES, previewVoice } from "./sarvamPreview.js";
-import { handleChat, initialState, streamChat } from "./voiceAgent.js";
+import { getLlmEnabled, handleChat, initialState, setLlmEnabled, streamChat } from "./voiceAgent.js";
 import { DEMO_FAILSAFE_AUDIO_PATH, demoFailsafeAvailable, loadDemoFailsafe } from "./demoFailsafe.js";
 
 dotenv.config();
@@ -126,6 +126,28 @@ app.post("/api/voice-agent/tts-preview", async (request, response) => {
     return;
   }
   response.json(result.data);
+});
+
+// ---------------------------------------------------------------------------
+// AI brain mode — flip between the real LLM and instant deterministic replies
+// at runtime, so a presenter can switch from the app without SSH. In-memory:
+// resets to the AGENT_LLM env default on restart.
+// ---------------------------------------------------------------------------
+
+app.get("/api/voice-agent/llm-mode", (_request, response) => {
+  response.json({ enabled: getLlmEnabled(), model: process.env.OLLAMA_MODEL ?? "qwen3.5:4b" });
+});
+
+const llmModeSchema = z.object({ enabled: z.boolean() });
+
+app.post("/api/voice-agent/llm-mode", (request, response) => {
+  const parsed = llmModeSchema.safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({ error: "Invalid request", details: parsed.error.flatten() });
+    return;
+  }
+  setLlmEnabled(parsed.data.enabled);
+  response.json({ enabled: getLlmEnabled(), model: process.env.OLLAMA_MODEL ?? "qwen3.5:4b" });
 });
 
 // ---------------------------------------------------------------------------

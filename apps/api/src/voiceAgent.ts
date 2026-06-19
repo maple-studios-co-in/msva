@@ -15,7 +15,16 @@ const ollamaBaseUrl = process.env.OLLAMA_BASE_URL ?? "http://127.0.0.1:11434";
 const ollamaTimeoutMs = Number(process.env.OLLAMA_TIMEOUT_MS ?? 6000);
 // Set AGENT_LLM=off to bypass Ollama entirely and use the instant deterministic
 // replies + heuristic tool calls. Handy for a snappy live demo on a CPU-only box.
-const llmEnabled = (process.env.AGENT_LLM ?? "on").toLowerCase() !== "off";
+// This is the startup default; it can be flipped at runtime via the API
+// (/api/voice-agent/llm-mode) so a presenter can switch from the app, no SSH.
+let llmEnabled = (process.env.AGENT_LLM ?? "on").toLowerCase() !== "off";
+
+export function getLlmEnabled(): boolean {
+  return llmEnabled;
+}
+export function setLlmEnabled(value: boolean): void {
+  llmEnabled = value;
+}
 
 function now(): string {
   return new Date().toISOString();

@@ -1215,6 +1215,38 @@ main {
   color: var(--ms-ink-muted);
 }
 
+.llm-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  background: var(--ms-cream);
+  border: 1px solid var(--ms-border);
+  border-radius: 10px;
+  padding: 4px;
+}
+
+.llm-toggle button {
+  border: none;
+  background: transparent;
+  border-radius: 7px;
+  padding: 8px 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ms-ink-soft);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.llm-toggle button.active {
+  background: var(--ms-red);
+  color: #fff;
+}
+
+.llm-toggle button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .failsafe-row {
   margin-top: 14px;
   display: flex;

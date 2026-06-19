@@ -1,5 +1,5 @@
+import "./env.js"; // must be first — loads .env before any env-reading module
 import cors from "cors";
-import dotenv from "dotenv";
 import express from "express";
 import path from "node:path";
 import { z } from "zod";
@@ -8,8 +8,6 @@ import { demoCalls, findDemoCall } from "./demoCalls.js";
 import { BULBUL_V3_VOICES, previewVoice } from "./sarvamPreview.js";
 import { getLlmEnabled, handleChat, initialState, setLlmEnabled, streamChat } from "./voiceAgent.js";
 import { DEMO_FAILSAFE_AUDIO_PATH, demoFailsafeAvailable, loadDemoFailsafe } from "./demoFailsafe.js";
-
-dotenv.config();
 
 const app = express();
 const port = Number(process.env.PORT ?? 4100);

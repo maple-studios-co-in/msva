@@ -1,4 +1,4 @@
-import dotenv from "dotenv";
+import "./env.js"; // must be first — loads .env before any env-reading module
 import express from "express";
 import http from "node:http";
 import { WebSocketServer } from "ws";
@@ -10,8 +10,6 @@ import {
   type BrowserCallPipeline,
   type BrowserClientMessage
 } from "./browserPipeline.js";
-
-dotenv.config();
 
 const port = Number(process.env.TELEPHONY_PORT ?? 4200);
 const publicHost = process.env.PUBLIC_WS_HOST ?? `127.0.0.1:${port}`;

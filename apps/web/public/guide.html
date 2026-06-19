@@ -1,0 +1,601 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MSVA — User & Developer Guide</title>
+<style>
+  :root {
+    --red:#E63946; --red-dark:#B71F2C; --red-deep:#7A1320;
+    --cream:#FDF1DC; --cream-bg:#FFF8EE; --cream-deep:#F7E0BD;
+    --cyan:#18B8D8; --cyan-soft:#DBF1F7; --green:#4CAF50; --yellow:#F2BC4F;
+    --ink:#1F1F1F; --ink-soft:#4A4A4A; --ink-muted:#7C7C7C;
+    --surface:#fff; --border:#F0E1CC; --border-cool:#E2E8DD;
+    --shadow:0 10px 30px rgba(122,19,32,.08);
+    --mono:"SFMono-Regular",ui-monospace,Menlo,Consolas,monospace;
+    --sans:Inter,"Segoe UI",ui-sans-serif,system-ui,-apple-system,sans-serif;
+    --serif:"Recoleta","Source Serif Pro",Georgia,serif;
+  }
+  * { box-sizing:border-box; }
+  html { scroll-behavior:smooth; }
+  body { margin:0; font-family:var(--sans); color:var(--ink); background:var(--cream-bg); line-height:1.65; }
+  a { color:var(--red-dark); }
+  code { font-family:var(--mono); background:var(--cream); padding:1px 6px; border-radius:5px; font-size:.86em; color:var(--red-deep); }
+  pre { background:#241a12; color:#f4ede1; padding:16px 18px; border-radius:12px; overflow:auto; font-family:var(--mono); font-size:13px; line-height:1.55; }
+  pre code { background:none; color:inherit; padding:0; }
+
+  /* Layout */
+  .topbar { position:sticky; top:0; z-index:30; display:flex; align-items:center; gap:14px;
+    background:linear-gradient(120deg,var(--red),var(--red-dark)); color:#fff; padding:14px 22px; box-shadow:var(--shadow); }
+  .topbar .mark { width:40px; height:40px; border-radius:11px; background:#fff; color:var(--red-dark);
+    display:grid; place-items:center; font-weight:800; font-family:var(--serif); letter-spacing:.5px; }
+  .topbar h1 { font-size:17px; margin:0; font-weight:700; }
+  .topbar p { margin:0; font-size:12px; opacity:.85; }
+  .topbar .pill { margin-left:auto; font-size:12px; background:rgba(255,255,255,.16); padding:6px 12px; border-radius:999px; }
+  .menu-toggle { display:none; background:rgba(255,255,255,.16); border:none; color:#fff; border-radius:8px; padding:8px 10px; font-size:18px; cursor:pointer; }
+
+  .shell { display:grid; grid-template-columns:280px 1fr; max-width:1280px; margin:0 auto; }
+  .sidebar { position:sticky; top:68px; align-self:start; height:calc(100vh - 68px); overflow-y:auto; padding:24px 14px 60px; border-right:1px solid var(--border); }
+  .sidebar h4 { font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-muted); margin:18px 10px 6px; }
+  .sidebar a { display:block; padding:7px 12px; border-radius:8px; color:var(--ink-soft); text-decoration:none; font-size:13.5px; }
+  .sidebar a:hover { background:var(--cream); }
+  .sidebar a.active { background:var(--red); color:#fff; }
+
+  main { padding:34px 40px 120px; max-width:900px; }
+  section { padding-top:18px; margin-bottom:34px; scroll-margin-top:78px; }
+  h2 { font-family:var(--serif); font-size:28px; margin:8px 0 6px; color:var(--red-deep); }
+  h3 { font-size:18px; margin:26px 0 8px; }
+  h4 { font-size:14.5px; margin:18px 0 6px; color:var(--ink-soft); }
+  .eyebrow { text-transform:uppercase; letter-spacing:.1em; font-size:11px; font-weight:700; color:var(--red); }
+  p, li { color:var(--ink-soft); }
+  ul, ol { padding-left:22px; }
+  li { margin:5px 0; }
+  hr { border:none; border-top:1px solid var(--border); margin:30px 0; }
+
+  .lead { font-size:17px; color:var(--ink); }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:18px 20px; box-shadow:var(--shadow); margin:14px 0; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .callout { border-left:4px solid var(--cyan); background:var(--cyan-soft); padding:12px 16px; border-radius:0 10px 10px 0; margin:14px 0; }
+  .callout.warn { border-color:var(--yellow); background:#fdf3da; }
+  .callout.tip { border-color:var(--green); background:#e9f6ea; }
+  .callout p { color:var(--ink); margin:4px 0; }
+
+  table { width:100%; border-collapse:collapse; margin:12px 0; font-size:13.5px; }
+  th, td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--border); vertical-align:top; }
+  th { background:var(--cream); color:var(--ink); font-weight:600; }
+  td code { white-space:nowrap; }
+
+  .diagram { background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:18px; box-shadow:var(--shadow); margin:16px 0; overflow:auto; }
+  .diagram figcaption { font-size:12.5px; color:var(--ink-muted); margin-top:8px; text-align:center; }
+  svg { max-width:100%; height:auto; display:block; margin:0 auto; }
+  .chip { display:inline-block; font-size:11px; font-weight:600; padding:2px 9px; border-radius:999px; background:var(--cream-deep); color:var(--red-deep); margin-right:4px; }
+
+  .footer { max-width:900px; margin:0 auto; padding:30px 40px 60px; color:var(--ink-muted); font-size:12.5px; }
+
+  @media (max-width:920px) {
+    .shell { grid-template-columns:1fr; }
+    .sidebar { display:none; position:fixed; top:68px; left:0; right:0; bottom:0; height:auto; width:100%;
+      background:var(--cream-bg); z-index:25; border-right:none; }
+    .sidebar.open { display:block; }
+    .menu-toggle { display:block; }
+    main { padding:24px 20px 100px; }
+    .grid2 { grid-template-columns:1fr; }
+  }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="mark">MS</div>
+  <div>
+    <h1>Madhusudan Voice Agent</h1>
+    <p>User &amp; Developer Guide</p>
+  </div>
+  <span class="pill">v0.1 · Hinglish inbound support</span>
+  <button class="menu-toggle" aria-label="Menu" onclick="document.querySelector('.sidebar').classList.toggle('open')">☰</button>
+</header>
+
+<div class="shell">
+  <nav class="sidebar" id="sidebar">
+    <h4>Start here</h4>
+    <a href="#intro">Introduction</a>
+    <a href="#concepts">Key concepts</a>
+    <a href="#architecture">System architecture</a>
+    <h4>User guide</h4>
+    <a href="#u-overview">Using the app</a>
+    <a href="#u-livecall">Live Call</a>
+    <a href="#u-failsafe">Demo failsafe</a>
+    <a href="#u-latency">Reading latency</a>
+    <a href="#u-other">Dashboard · Demo · Voices</a>
+    <h4>Developer guide</h4>
+    <a href="#d-layout">Repo layout</a>
+    <a href="#d-run">Run locally</a>
+    <a href="#d-pipeline">Voice pipeline</a>
+    <a href="#d-tools">Function calling</a>
+    <a href="#d-phone">Real phone path</a>
+    <a href="#d-metrics">Latency metrics</a>
+    <a href="#d-extend">Extending</a>
+    <h4>Reference</h4>
+    <a href="#r-env">Env variables</a>
+    <a href="#r-api">API endpoints</a>
+    <a href="#r-deploy">Deployment</a>
+  </nav>
+
+  <main>
+    <!-- ============================ INTRO ============================ -->
+    <section id="intro">
+      <p class="eyebrow">Overview</p>
+      <h2>What is MSVA?</h2>
+      <p class="lead">MSVA is a Hinglish inbound-support voice agent for the Madhusudan dairy brand. Callers dial in about milk, ghee, paneer, dahi and other SKUs; the agent answers instantly in Hinglish, resolves routine requests, takes complaints, and warm-transfers to a human only when the case truly needs it.</p>
+      <p>The same "brain" can be reached three ways: a real phone call (Exotel/Twilio), an <strong>in-browser live call</strong> you can run on a laptop, and a text demo. A dashboard turns call data into operational KPIs.</p>
+      <div class="grid2">
+        <div class="card"><span class="chip">Talk</span><h4 style="margin-top:8px">Real voice, both ways</h4><p>Speak naturally; the agent transcribes, thinks, and replies in a natural Hinglish voice. Hands-free and interruptible — just like a phone call.</p></div>
+        <div class="card"><span class="chip">Act</span><h4 style="margin-top:8px">It does real things</h4><p>The agent calls tools — order lookup, inventory check, ticket creation, human transfer — and grounds its reply in the results.</p></div>
+        <div class="card"><span class="chip">Measure</span><h4 style="margin-top:8px">Observable</h4><p>Per-turn latency (ASR / LLM / TTS / time-to-first-word) is shown live; call data rolls up into a KPI dashboard.</p></div>
+        <div class="card"><span class="chip">Safe</span><h4 style="margin-top:8px">Demo failsafe</h4><p>A pre-recorded clip can be played as a native agent turn if the live pipeline misbehaves during a demo.</p></div>
+      </div>
+    </section>
+
+    <!-- ============================ CONCEPTS ============================ -->
+    <section id="concepts">
+      <p class="eyebrow">Foundations</p>
+      <h2>Key concepts &amp; glossary</h2>
+      <p>A voice agent is a loop: turn speech into text, decide what to say and do, turn text back into speech — fast enough to feel like a conversation. These are the moving parts.</p>
+      <table>
+        <tr><th>Term</th><th>What it means here</th></tr>
+        <tr><td><strong>ASR</strong> (speech-to-text)</td><td>Converts the caller's audio into text. MSVA uses <strong>Sarvam</strong> (<code>saaras</code>), tuned for Indian languages and Hinglish.</td></tr>
+        <tr><td><strong>TTS</strong> (text-to-speech)</td><td>Converts the agent's text reply into audio. MSVA uses <strong>Sarvam</strong> <code>bulbul:v3</code>, streaming raw PCM so playback starts before the whole sentence is synthesized.</td></tr>
+        <tr><td><strong>VAD / endpointing</strong></td><td>"Voice Activity Detection" — deciding when the caller has <em>stopped</em> talking so the agent can respond. MSVA ships a simple energy/RMS endpointer (swap to Silero for production).</td></tr>
+        <tr><td><strong>Barge-in</strong></td><td>Letting the caller interrupt the agent mid-sentence. When the caller starts speaking over the bot, the agent stops talking and listens.</td></tr>
+        <tr><td><strong>LLM</strong> + <strong>tool calling</strong></td><td>The language model (local <strong>Ollama</strong>) writes the reply and decides when to call a <em>tool</em> (a function like <code>lookup_order</code>). Results are fed back so the reply is grounded in real data.</td></tr>
+        <tr><td><strong>SSE</strong></td><td>Server-Sent Events — how the agent streams its reply token-by-token to whoever is listening (the browser or the telephony service).</td></tr>
+        <tr><td><strong>Transport</strong></td><td>The "pipe" carrying call audio. MSVA has two: an Exotel/Twilio phone transport and a browser-WebSocket transport. Both feed the <em>same</em> pipeline.</td></tr>
+        <tr><td><strong>Time-to-first-word (TTFW)</strong></td><td>The headline latency metric: how long from the caller finishing their sentence to hearing the first word of the reply.</td></tr>
+        <tr><td><strong>Fallback</strong></td><td>Deterministic, scripted Hinglish replies (+ heuristic tool calls) used whenever the LLM is unavailable or too slow — so the demo never goes silent.</td></tr>
+      </table>
+    </section>
+
+    <!-- ============================ ARCHITECTURE ============================ -->
+    <section id="architecture">
+      <p class="eyebrow">Big picture</p>
+      <h2>System architecture</h2>
+      <p>MSVA is a small monorepo of three services plus shared types. The web app talks to the API for analytics/chat and to the telephony service for live-call audio. The telephony service is the orchestrator that bridges call audio to the agent brain.</p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 880 470" role="img" aria-label="Architecture diagram">
+          <defs>
+            <marker id="arr" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#7A1320"/></marker>
+            <style>
+              .box{fill:#fff;stroke:#E0C9A8;stroke-width:1.5;rx:12}
+              .lbl{font:600 13px Inter,sans-serif;fill:#1F1F1F}
+              .sub{font:11px Inter,sans-serif;fill:#7C7C7C}
+              .grp{font:700 11px Inter,sans-serif;fill:#B71F2C;letter-spacing:.06em}
+              .ln{stroke:#7A1320;stroke-width:1.6;fill:none;marker-end:url(#arr)}
+              .ext{fill:#DBF1F7;stroke:#18B8D8}
+            </style>
+          </defs>
+
+          <!-- Browser -->
+          <rect class="box" x="30" y="40" width="200" height="120" rx="12"/>
+          <text class="grp" x="45" y="62">BROWSER (apps/web)</text>
+          <text class="lbl" x="45" y="86">React SPA + Vite</text>
+          <text class="sub" x="45" y="106">Dashboard · Live Call</text>
+          <text class="sub" x="45" y="122">Voice Playground · VA Demo</text>
+          <text class="sub" x="45" y="142">mic capture + PCM playback</text>
+
+          <!-- Caddy -->
+          <rect class="box" x="30" y="210" width="200" height="70" rx="12"/>
+          <text class="grp" x="45" y="232">CADDY (prod)</text>
+          <text class="sub" x="45" y="252">HTTPS · reverse proxy</text>
+          <text class="sub" x="45" y="268">/api · /browser(wss) · static</text>
+
+          <!-- API -->
+          <rect class="box" x="350" y="40" width="220" height="150" rx="12"/>
+          <text class="grp" x="365" y="62">API SERVICE :4100 (apps/api)</text>
+          <text class="lbl" x="365" y="86">Agent brain</text>
+          <text class="sub" x="365" y="104">streamChat — function calling</text>
+          <text class="sub" x="365" y="120">analytics · TTS preview</text>
+          <text class="sub" x="365" y="136">tools: lookup_order, ticket…</text>
+          <text class="sub" x="365" y="152">demo failsafe</text>
+          <text class="sub" x="365" y="172">deterministic fallback</text>
+
+          <!-- Telephony -->
+          <rect class="box" x="350" y="230" width="220" height="120" rx="12"/>
+          <text class="grp" x="365" y="252">TELEPHONY :4200 (apps/telephony)</text>
+          <text class="lbl" x="365" y="276">Per-call pipeline</text>
+          <text class="sub" x="365" y="294">browser transport (WS)</text>
+          <text class="sub" x="365" y="310">exotel transport (PSTN)</text>
+          <text class="sub" x="365" y="326">ASR · VAD · TTS · barge-in</text>
+
+          <!-- External -->
+          <rect class="box ext" x="680" y="40" width="170" height="60" rx="12"/>
+          <text class="grp" x="695" y="62" style="fill:#0f7a90">SARVAM</text>
+          <text class="sub" x="695" y="82">ASR (saaras) + TTS</text>
+
+          <rect class="box ext" x="680" y="130" width="170" height="60" rx="12"/>
+          <text class="grp" x="695" y="152" style="fill:#0f7a90">OLLAMA</text>
+          <text class="sub" x="695" y="172">local LLM (qwen/llama)</text>
+
+          <rect class="box ext" x="680" y="250" width="170" height="60" rx="12"/>
+          <text class="grp" x="695" y="272" style="fill:#0f7a90">EXOTEL / TWILIO</text>
+          <text class="sub" x="695" y="292">real phone calls</text>
+
+          <!-- Data -->
+          <rect class="box" x="350" y="390" width="220" height="56" rx="12"/>
+          <text class="grp" x="365" y="412">DATA (data/)</text>
+          <text class="sub" x="365" y="430">reports.csv · orders.json · failsafe</text>
+
+          <!-- links -->
+          <path class="ln" d="M230,95 L350,95"/>            <!-- browser->api (dev direct) -->
+          <path class="ln" d="M130,160 L130,210"/>          <!-- browser->caddy -->
+          <path class="ln" d="M230,250 L350,250"/>          <!-- caddy->telephony -->
+          <path class="ln" d="M230,230 C300,200 300,140 350,120"/> <!-- caddy->api -->
+          <path class="ln" d="M460,230 L460,190"/>          <!-- telephony->api SSE -->
+          <path class="ln" d="M570,110 L680,80"/>           <!-- api->sarvam(tts preview) -->
+          <path class="ln" d="M570,150 L680,160"/>          <!-- api->ollama -->
+          <path class="ln" d="M570,300 L680,280"/>          <!-- telephony->exotel -->
+          <path class="ln" d="M620,300 C660,240 660,150 680,90"/> <!-- telephony->sarvam -->
+          <path class="ln" d="M460,350 L460,390"/>          <!-- api->data -->
+        </svg>
+        <figcaption>Three services + shared types. The telephony service bridges call audio (browser or phone) to the API brain, which talks to Sarvam and Ollama.</figcaption>
+      </figure>
+
+      <table>
+        <tr><th>Package</th><th>Port</th><th>Responsibility</th></tr>
+        <tr><td><code>apps/web</code></td><td>5173</td><td>React/Vite UI: dashboard, Live Call, Voice Playground, VA Demo, this guide.</td></tr>
+        <tr><td><code>apps/api</code></td><td>4100</td><td>The agent brain (<code>streamChat</code>), analytics from CSV, Sarvam TTS proxy, tools/backends, demo failsafe.</td></tr>
+        <tr><td><code>apps/telephony</code></td><td>4200</td><td>Per-call pipeline: ASR, VAD, TTS, barge-in. Two transports — browser WS &amp; Exotel.</td></tr>
+        <tr><td><code>packages/shared</code></td><td>—</td><td>TypeScript types shared across all apps (call state, stream events, metrics).</td></tr>
+      </table>
+    </section>
+
+    <hr/>
+
+    <!-- ============================ USER GUIDE ============================ -->
+    <section id="u-overview">
+      <p class="eyebrow">User guide</p>
+      <h2>Using the app</h2>
+      <p>The web app has a left sidebar with five areas. Most people will spend their time in <strong>Live Call</strong>.</p>
+      <ul>
+        <li><strong>Call Analytics</strong> — KPI dashboard built from historical call data.</li>
+        <li><strong>Live Call</strong> — have a real spoken conversation with the agent in your browser.</li>
+        <li><strong>VA Demo</strong> — type caller lines and read/hear the agent's replies (no mic).</li>
+        <li><strong>Voice Playground</strong> — audition Sarvam voices on any phrase.</li>
+        <li><strong>Platform Flow</strong> — a visual summary of how a call is handled.</li>
+      </ul>
+    </section>
+
+    <section id="u-livecall">
+      <h2>Live Call — talking to the agent</h2>
+      <p>This is the headline experience: press <strong>Call</strong>, speak in Hindi/Hinglish, and the agent talks back. It's hands-free and you can interrupt it.</p>
+      <ol>
+        <li>Open <strong>Live Call</strong>, pick a <em>caller profile</em> (the persona you're role-playing) and an <em>agent voice</em>.</li>
+        <li>Press <strong>Call</strong> and allow microphone access.</li>
+        <li>After the greeting, just start talking. Pause, and the agent replies.</li>
+        <li>To interrupt, simply talk over it — it stops and listens (<em>barge-in</em>).</li>
+        <li>Use <strong>Mute</strong> to hold your mic, <strong>End</strong> to hang up.</li>
+      </ol>
+      <div class="callout tip"><p><strong>Use headphones.</strong> Without them, the agent's voice from your speakers can be picked up by the mic and make it interrupt itself. Echo cancellation helps, but headphones are foolproof.</p></div>
+      <div class="callout warn"><p>The mic only works over <strong>HTTPS</strong> (or <code>localhost</code>). On the deployed site that's <code>https://msva.maplestudios.co.in</code>.</p></div>
+    </section>
+
+    <section id="u-failsafe">
+      <h2>Demo failsafe</h2>
+      <p>If the live pipeline misbehaves during an important demo, you can fall back to a pre-recorded clip that plays as a <em>native</em> agent turn — the speaking indicator, a caption that types out in sync with the audio, and a latency/outcome readout all appear exactly as in a real reply.</p>
+      <ul>
+        <li>A subtle <strong>Demo failsafe</strong> button sits under the call controls.</li>
+        <li>If a call fails to start, it becomes a prominent <strong>Play demo response instead</strong>.</li>
+        <li>The clip is served first-party by the API, so it looks like the tool generated it.</li>
+      </ul>
+      <div class="callout"><p>The on-screen caption text comes from <code>data/demo-failsafe.json</code> (<code>transcript</code>). Set it to the exact words of your clip so the caption matches.</p></div>
+    </section>
+
+    <section id="u-latency">
+      <h2>Reading the latency panel</h2>
+      <p>During a live call the right panel shows real numbers for the most recent turn, plus a rolling average for time-to-first-word.</p>
+      <table>
+        <tr><th>Metric</th><th>Meaning</th></tr>
+        <tr><td>Time to first word</td><td>Caller stops talking → first audio of the reply is heard. The number that "feels" like responsiveness.</td></tr>
+        <tr><td>ASR</td><td>How long transcription took after end-of-speech.</td></tr>
+        <tr><td>LLM first token</td><td>Time until the model produced its first word.</td></tr>
+        <tr><td>LLM total</td><td>Time for the full reply to generate.</td></tr>
+        <tr><td>TTS first byte</td><td>Time until the first chunk of synthesized audio was ready.</td></tr>
+      </table>
+    </section>
+
+    <section id="u-other">
+      <h2>Dashboard · VA Demo · Voices</h2>
+      <p><strong>Call Analytics</strong> summarizes inbound demand: total/unique callers, human answer rate, unserved demand (missed + unanswered), repeat-caller load, time-band coverage, and agent load — the case for AI coverage.</p>
+      <p><strong>VA Demo</strong> is the no-mic path: type a caller line, read the reply, and tap the speaker icon to hear it. Good for scripted walk-throughs.</p>
+      <p><strong>Voice Playground</strong> lets you type any phrase and audition it across Sarvam voices to pick a permanent agent voice.</p>
+    </section>
+
+    <hr/>
+
+    <!-- ============================ DEVELOPER GUIDE ============================ -->
+    <section id="d-layout">
+      <p class="eyebrow">Developer guide</p>
+      <h2>Repository layout</h2>
+<pre><code>MSVA/
+├─ apps/
+│  ├─ api/         Express API — agent brain, analytics, tools, failsafe
+│  ├─ telephony/   per-call pipeline (browser + Exotel transports)
+│  └─ web/         React/Vite UI  (public/guide.html ← you are here)
+├─ packages/shared/  shared TypeScript types
+├─ data/          reports.csv · orders.json · demo-failsafe.json
+├─ deploy/        Caddyfile · pm2 ecosystem · env templates · bootstrap.sh
+└─ docs/          markdown docs (architecture, live-call, telephony…)</code></pre>
+      <p>It's a pnpm workspace. Node ≥ 22, pnpm 10.</p>
+    </section>
+
+    <section id="d-run">
+      <h2>Running locally</h2>
+<pre><code>pnpm install
+pnpm dev:all      # api(4100) + web(5173) + telephony(4200)</code></pre>
+      <p>Then open <code>http://localhost:5173</code>. Real voice needs <code>SARVAM_API_KEY</code> in <code>apps/api/.env</code> and <code>apps/telephony/.env</code>. Natural replies (optional) need Ollama running locally; without it the deterministic fallback keeps everything working.</p>
+    </section>
+
+    <section id="d-pipeline">
+      <h2>The voice pipeline (in-browser call)</h2>
+      <p>The browser is treated as one more telephony transport. Mic audio is downsampled in an <code>AudioWorklet</code> to 16&nbsp;kHz PCM and streamed over a WebSocket to <code>/browser</code>; the telephony service runs ASR, detects end-of-speech, asks the agent, and streams TTS audio back for gapless playback.</p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 860 430" role="img" aria-label="Live call sequence">
+          <defs>
+            <marker id="a2" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#B71F2C"/></marker>
+            <style>
+              .col{font:700 12px Inter,sans-serif;fill:#B71F2C}
+              .life{stroke:#E0C9A8;stroke-width:1.4;stroke-dasharray:4 4}
+              .msg{stroke:#B71F2C;stroke-width:1.5;marker-end:url(#a2)}
+              .t{font:11px Inter,sans-serif;fill:#4A4A4A}
+              .ph{fill:#FDF1DC;stroke:#E0C9A8}
+            </style>
+          </defs>
+          <!-- lifelines -->
+          <text class="col" x="60" y="28">Browser</text>
+          <text class="col" x="300" y="28">Telephony :4200</text>
+          <text class="col" x="560" y="28">Sarvam</text>
+          <text class="col" x="720" y="28">API :4100</text>
+          <line class="life" x1="90" y1="40" x2="90" y2="410"/>
+          <line class="life" x1="350" y1="40" x2="350" y2="410"/>
+          <line class="life" x1="595" y1="40" x2="595" y2="410"/>
+          <line class="life" x1="760" y1="40" x2="760" y2="410"/>
+
+          <line class="msg" x1="90" y1="70" x2="350" y2="70"/>
+          <text class="t" x="100" y="64">mic PCM 16k (WS binary)</text>
+          <line class="msg" x1="350" y1="105" x2="595" y2="105"/>
+          <text class="t" x="360" y="99">ASR: speech → text</text>
+          <line class="msg" x1="595" y1="135" x2="350" y2="135"/>
+          <text class="t" x="360" y="129">final transcript</text>
+          <rect class="ph" x="330" y="150" width="40" height="22" rx="6"/>
+          <text class="t" x="338" y="165">VAD</text>
+          <line class="msg" x1="350" y1="200" x2="760" y2="200"/>
+          <text class="t" x="380" y="194">utterance (SSE chat/stream)</text>
+          <line class="msg" x1="760" y1="230" x2="350" y2="230"/>
+          <text class="t" x="380" y="224">reply tokens (stream)</text>
+          <line class="msg" x1="350" y1="262" x2="595" y2="262"/>
+          <text class="t" x="360" y="256">TTS: text → PCM</text>
+          <line class="msg" x1="595" y1="292" x2="350" y2="292"/>
+          <text class="t" x="360" y="286">audio chunks</text>
+          <line class="msg" x1="350" y1="322" x2="90" y2="322"/>
+          <text class="t" x="120" y="316">agent PCM (WS binary) → playback</text>
+          <line class="msg" x1="90" y1="360" x2="350" y2="360"/>
+          <text class="t" x="100" y="354">caller speaks over bot → barge-in</text>
+          <line class="msg" x1="350" y1="392" x2="90" y2="392"/>
+          <text class="t" x="120" y="386">clear (stop playback) + listen</text>
+        </svg>
+        <figcaption>One turn of an in-browser call. Captions, status, and per-turn metrics travel as JSON control messages on the same socket.</figcaption>
+      </figure>
+
+      <p>Key files: <code>apps/web/src/callClient.ts</code> (capture + playback + WS), <code>apps/telephony/src/browserPipeline.ts</code> (orchestration), <code>asr/sarvam.ts</code>, <code>tts/sarvam.ts</code>, <code>vad.ts</code>, <code>agentClient.ts</code> (SSE to the API).</p>
+    </section>
+
+    <section id="d-tools">
+      <h2>Function calling (two-pass)</h2>
+      <p>The agent doesn't fake tool calls. <code>streamChat</code> runs a decision pass with tool schemas; if the model chooses a tool, it's executed against a real backend, the result is appended to the thread, and a second streaming pass voices a reply grounded in that result. If the LLM is off or unreachable, deterministic fallback takes over.</p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 860 360" role="img" aria-label="Function calling flow">
+          <defs>
+            <marker id="a3" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#7A1320"/></marker>
+            <style>
+              .n{fill:#fff;stroke:#E0C9A8;stroke-width:1.5}
+              .nl{font:600 12px Inter,sans-serif;fill:#1F1F1F}
+              .ns{font:11px Inter,sans-serif;fill:#7C7C7C}
+              .e{stroke:#7A1320;stroke-width:1.6;fill:none;marker-end:url(#a3)}
+              .el{font:10px Inter,sans-serif;fill:#B71F2C}
+              .acc{fill:#DBF1F7;stroke:#18B8D8}
+              .fb{fill:#fdf3da;stroke:#F2BC4F}
+            </style>
+          </defs>
+          <rect class="n" x="20" y="150" width="130" height="56" rx="10"/>
+          <text class="nl" x="34" y="174">Caller utterance</text>
+          <text class="ns" x="34" y="192">+ conversation state</text>
+
+          <rect class="n" x="190" y="150" width="150" height="56" rx="10"/>
+          <text class="nl" x="204" y="174">Pass 1: decide</text>
+          <text class="ns" x="204" y="192">ollamaComplete(tools)</text>
+
+          <rect class="n acc" x="390" y="60" width="150" height="60" rx="10"/>
+          <text class="nl" x="404" y="84">dispatch tool</text>
+          <text class="ns" x="404" y="102">lookup_order, ticket…</text>
+
+          <rect class="n acc" x="590" y="60" width="130" height="60" rx="10"/>
+          <text class="nl" x="604" y="84">backend</text>
+          <text class="ns" x="604" y="102">orders.json, CRM</text>
+
+          <rect class="n" x="390" y="180" width="150" height="60" rx="10"/>
+          <text class="nl" x="404" y="204">Pass 2: speak</text>
+          <text class="ns" x="404" y="222">ollamaStream (grounded)</text>
+
+          <rect class="n fb" x="190" y="270" width="220" height="56" rx="10"/>
+          <text class="nl" x="204" y="294">Fallback (LLM off / down)</text>
+          <text class="ns" x="204" y="312">deterministic reply + synth tools</text>
+
+          <rect class="n" x="600" y="180" width="130" height="60" rx="10"/>
+          <text class="nl" x="614" y="204">reply tokens</text>
+          <text class="ns" x="614" y="222">→ SSE → TTS</text>
+
+          <path class="e" d="M150,178 L190,178"/>
+          <path class="e" d="M340,165 C360,140 370,110 390,95"/>
+          <text class="el" x="345" y="120">tool_calls</text>
+          <path class="e" d="M540,90 L590,90"/>
+          <path class="e" d="M515,120 C520,150 500,160 480,180"/>
+          <text class="el" x="520" y="150">results</text>
+          <path class="e" d="M540,210 L600,210"/>
+          <path class="e" d="M300,206 C300,240 280,255 300,270"/>
+          <text class="el" x="245" y="250">no tool / empty</text>
+          <path class="e" d="M410,300 C520,300 560,250 600,225"/>
+        </svg>
+        <figcaption>Decision pass → tool execution → grounded reply pass, with a deterministic fallback that keeps the demo alive.</figcaption>
+      </figure>
+
+      <p>Tools live in <code>apps/api/src/tools/</code>. <code>lookup_order</code> is a real backend that queries <code>data/orders.json</code> by order/invoice number or caller phone; the rest are stubs ready to wire to Freshdesk/Zoho/WhatsApp. Set <code>AGENT_LLM=off</code> to skip the model entirely for an instant demo.</p>
+    </section>
+
+    <section id="d-phone">
+      <h2>Real phone path (Exotel / Twilio)</h2>
+      <p>The phone transport mirrors the browser one. On an inbound call, the carrier POSTs to <code>/exotel/incoming</code>; the service returns markup telling the carrier to open a media-stream WebSocket to <code>/voice</code>, then the same ASR → agent → TTS loop runs.</p>
+      <ul>
+        <li><strong>Exotel</strong>: returns ExoML <code>&lt;Stream&gt;</code>; audio is 8&nbsp;kHz linear PCM.</li>
+        <li><strong>Twilio</strong>: return TwiML <code>&lt;Connect&gt;&lt;Stream&gt;</code>; audio is 8&nbsp;kHz µ-law (add a µ-law↔PCM transcode).</li>
+      </ul>
+      <p>Expose the service publicly (ngrok in dev, Caddy in prod) and point the carrier's voicebot flow at it. Full steps: <code>docs/live-call.md</code>.</p>
+    </section>
+
+    <section id="d-metrics">
+      <h2>Latency metrics</h2>
+      <p>The browser pipeline timestamps each turn — end-of-speech, first token, first audio byte, completion — and emits a <code>LiveTurnMetrics</code> control message (defined in <code>packages/shared</code>). The call screen renders the latest turn plus a rolling TTFW average. The <code>CallTurn</code> type captures the same breakdown for real phone calls.</p>
+    </section>
+
+    <section id="d-extend">
+      <h2>Extending</h2>
+      <ul>
+        <li><strong>Swap ASR/TTS</strong>: implement the <code>StreamingAsr</code>/<code>StreamingTts</code> interfaces in <code>apps/telephony/src/asr|tts</code> and point the pipeline at your factory. The loop never changes.</li>
+        <li><strong>Add a tool</strong>: add it to <code>ToolName</code> (shared), a handler in <code>tools/</code>, register it in <code>tools/index.ts</code>, and add its schema to <code>TOOL_SCHEMAS</code> in <code>voiceAgent.ts</code>.</li>
+        <li><strong>Better VAD</strong>: replace the energy endpointer in <code>vad.ts</code> with Silero (onnxruntime) — same interface.</li>
+        <li><strong>Persist state</strong>: conversation state is in-memory per socket; move it to Redis keyed on the call id for restart-safety.</li>
+      </ul>
+    </section>
+
+    <hr/>
+
+    <!-- ============================ REFERENCE ============================ -->
+    <section id="r-env">
+      <p class="eyebrow">Reference</p>
+      <h2>Environment variables</h2>
+      <h4>apps/api/.env</h4>
+      <table>
+        <tr><th>Var</th><th>Default</th><th>Notes</th></tr>
+        <tr><td><code>PORT</code></td><td>4100</td><td>API port.</td></tr>
+        <tr><td><code>AGENT_LLM</code></td><td>on</td><td><code>off</code> = skip Ollama, use deterministic replies (instant).</td></tr>
+        <tr><td><code>OLLAMA_BASE_URL</code></td><td>127.0.0.1:11434</td><td>Local LLM endpoint.</td></tr>
+        <tr><td><code>OLLAMA_MODEL</code></td><td>qwen3.5:4b</td><td>Use a small fast model on CPU (e.g. <code>llama3.2:3b</code>).</td></tr>
+        <tr><td><code>OLLAMA_TIMEOUT_MS</code></td><td>6000</td><td>Raise on CPU-only servers.</td></tr>
+        <tr><td><code>SARVAM_API_KEY</code></td><td>—</td><td>Required for real ASR/TTS.</td></tr>
+        <tr><td><code>CSV_PATH</code> / <code>ORDERS_PATH</code></td><td>../../data/…</td><td>Analytics + order datastore.</td></tr>
+        <tr><td><code>DEMO_FAILSAFE_CONFIG</code> / <code>_AUDIO</code></td><td>data/… · assets/…</td><td>Failsafe clip + caption config.</td></tr>
+      </table>
+      <h4>apps/telephony/.env</h4>
+      <table>
+        <tr><th>Var</th><th>Default</th><th>Notes</th></tr>
+        <tr><td><code>TELEPHONY_PORT</code></td><td>4200</td><td>HTTP + WS port.</td></tr>
+        <tr><td><code>AGENT_BASE_URL</code></td><td>127.0.0.1:4100</td><td>Where the API is reachable.</td></tr>
+        <tr><td><code>AGENT_LANGUAGE</code></td><td>hi-IN</td><td>Passed to ASR + TTS.</td></tr>
+        <tr><td><code>TTS_VOICE</code></td><td>neha</td><td>Sarvam bulbul voice id.</td></tr>
+        <tr><td><code>BROWSER_VAD_*</code> / <code>BARGE_IN_MS</code></td><td>see .env.example</td><td>Tune endpointing/barge-in for browser mic.</td></tr>
+        <tr><td><code>PUBLIC_WS_HOST</code> / <code>_SCHEME</code></td><td>—</td><td>Real-phone (Exotel) public reachability.</td></tr>
+      </table>
+      <h4>apps/web/.env (build-time)</h4>
+      <table>
+        <tr><th>Var</th><th>Notes</th></tr>
+        <tr><td><code>VITE_API_BASE_URL</code></td><td>e.g. <code>https://msva.maplestudios.co.in</code></td></tr>
+        <tr><td><code>VITE_TELEPHONY_WS_URL</code></td><td>e.g. <code>wss://msva.maplestudios.co.in</code></td></tr>
+      </table>
+    </section>
+
+    <section id="r-api">
+      <h2>API endpoints</h2>
+      <h4>API service (:4100)</h4>
+      <table>
+        <tr><th>Method · Path</th><th>Purpose</th></tr>
+        <tr><td><code>GET /health</code></td><td>Liveness + model + record count.</td></tr>
+        <tr><td><code>GET /api/analytics</code></td><td>KPI dashboard data.</td></tr>
+        <tr><td><code>POST /api/analytics/reload</code></td><td>Re-read the CSV.</td></tr>
+        <tr><td><code>GET /api/demo-calls</code></td><td>Demo caller personas.</td></tr>
+        <tr><td><code>GET /api/demo-calls/:id/state</code></td><td>Initial conversation state.</td></tr>
+        <tr><td><code>POST /api/voice-agent/chat</code></td><td>One turn → full reply (REST).</td></tr>
+        <tr><td><code>POST /api/voice-agent/chat/stream</code></td><td>One turn → token stream (SSE).</td></tr>
+        <tr><td><code>GET /api/voice-agent/voices</code></td><td>Sarvam voice catalog.</td></tr>
+        <tr><td><code>POST /api/voice-agent/tts-preview</code></td><td>Synthesize a phrase → audio.</td></tr>
+        <tr><td><code>GET /api/voice-agent/demo-failsafe</code></td><td>Failsafe metadata.</td></tr>
+        <tr><td><code>GET /api/voice-agent/demo-failsafe/audio</code></td><td>Failsafe audio stream.</td></tr>
+      </table>
+      <h4>Telephony service (:4200)</h4>
+      <table>
+        <tr><th>Path</th><th>Purpose</th></tr>
+        <tr><td><code>GET /health</code></td><td>Liveness + public WS URL.</td></tr>
+        <tr><td><code>POST /exotel/incoming</code></td><td>Exotel inbound webhook → ExoML.</td></tr>
+        <tr><td><code>WSS /voice</code></td><td>Phone media stream (Exotel/Twilio).</td></tr>
+        <tr><td><code>WSS /browser</code></td><td>In-browser Live Call audio.</td></tr>
+      </table>
+    </section>
+
+    <section id="r-deploy">
+      <h2>Deployment</h2>
+      <p>Production is a native deploy on a single VPS: Node + pnpm, the two services under <strong>pm2</strong>, the web build as static files, and <strong>Caddy</strong> for automatic HTTPS + reverse proxy. One command sets it up:</p>
+<pre><code>sudo bash deploy/bootstrap.sh</code></pre>
+      <p>Full walk-through (DNS, firewall, env, Ollama option, troubleshooting): <code>DEPLOY.md</code>. Caddy routes <code>/api</code> → 4100, <code>/browser</code> (wss) and <code>/voice</code> → 4200, and serves the static build for everything else.</p>
+      <figure class="diagram">
+        <svg viewBox="0 0 760 230" role="img" aria-label="Deployment topology">
+          <defs><marker id="a4" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#7A1320"/></marker>
+          <style>.b{fill:#fff;stroke:#E0C9A8;stroke-width:1.5}.l{font:600 12px Inter;fill:#1F1F1F}.s{font:11px Inter;fill:#7C7C7C}.x{stroke:#7A1320;stroke-width:1.6;fill:none;marker-end:url(#a4)}.vps{fill:#FDF1DC;stroke:#E0C9A8}</style></defs>
+          <rect class="b" x="20" y="90" width="150" height="56" rx="10"/>
+          <text class="l" x="34" y="114">Visitor browser</text>
+          <text class="s" x="34" y="132">https / wss</text>
+          <rect class="vps" x="230" y="30" width="490" height="170" rx="14"/>
+          <text class="l" x="248" y="54" style="fill:#B71F2C;font-weight:700">Hostinger KVM2 (Ubuntu)</text>
+          <rect class="b" x="250" y="70" width="130" height="50" rx="10"/>
+          <text class="l" x="262" y="92">Caddy</text><text class="s" x="262" y="108">TLS · proxy</text>
+          <rect class="b" x="420" y="66" width="130" height="40" rx="10"/>
+          <text class="l" x="432" y="90">pm2: api :4100</text>
+          <rect class="b" x="420" y="116" width="130" height="40" rx="10"/>
+          <text class="l" x="432" y="140">pm2: telephony :4200</text>
+          <rect class="b" x="580" y="90" width="120" height="50" rx="10"/>
+          <text class="l" x="592" y="112">Ollama</text><text class="s" x="592" y="128">(optional)</text>
+          <path class="x" x1="0" y1="0" d="M170,118 L250,95"/>
+          <path class="x" d="M380,90 L420,86"/>
+          <path class="x" d="M380,104 L420,134"/>
+          <path class="x" d="M550,90 L580,108"/>
+        </svg>
+        <figcaption>Single-VPS topology: Caddy terminates TLS and proxies to the two pm2-managed services; Ollama is optional.</figcaption>
+      </figure>
+    </section>
+  </main>
+</div>
+
+<div class="footer">
+  Madhusudan Voice Agent — internal user &amp; developer guide. Served at <code>/guide.html</code>.
+  Brand cue: <em>Sealed with care. Delivered with love. Always Madhusudan.</em>
+</div>
+
+<script>
+  // Highlight the active section in the sidebar as you scroll.
+  const links = [...document.querySelectorAll('.sidebar a')];
+  const map = new Map(links.map(a => [a.getAttribute('href').slice(1), a]));
+  const obs = new IntersectionObserver((entries) => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        links.forEach(l => l.classList.remove('active'));
+        const a = map.get(e.target.id);
+        if (a) a.classList.add('active');
+      }
+    });
+  }, { rootMargin: '-40% 0px -55% 0px' });
+  document.querySelectorAll('main section').forEach(s => obs.observe(s));
+
+  // Close the mobile menu after picking a link.
+  links.forEach(a => a.addEventListener('click', () => document.querySelector('.sidebar').classList.remove('open')));
+</script>
+</body>
+</html>

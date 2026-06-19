@@ -51,7 +51,7 @@ import {
   type VoicePreview
 } from "./api";
 import { CallClient, type CallStatus } from "./callClient";
-import { PhoneOff, ShieldAlert } from "lucide-react";
+import { BookOpen, PhoneOff, ShieldAlert } from "lucide-react";
 
 const statusColors: Record<string, string> = {
   UNANSWERED: "#d1495b",
@@ -1191,6 +1191,10 @@ export function App() {
           <button className={tab === "platform" ? "active" : ""} onClick={() => setTab("platform")}>
             <Route size={18} />
             Platform Flow
+          </button>
+          <button onClick={() => window.open("/guide.html", "_blank")}>
+            <BookOpen size={18} />
+            Guide &amp; Docs
           </button>
         </nav>
         <div className="sidebar-note">

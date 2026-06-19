@@ -52,11 +52,14 @@ If Ollama is unavailable, the demo still works through a deterministic fallback 
 
 ## Documentation
 
+- **User & Developer Guide (HTML)** — open the running app and click **Guide & Docs** in the sidebar, or visit `/guide.html` (served from `apps/web/public/guide.html`). Includes concepts, architecture, and flow diagrams.
+- [Deployment runbook](DEPLOY.md)
 - [Project Brief](docs/project-brief.md)
 - [Call Metadata Analysis](docs/call-metadata-analysis.md)
 - [Architecture](docs/architecture.md)
 - [Agent Streaming](docs/agent-streaming.md)
 - [Live Call (browser + real phone)](docs/live-call.md)
+- [Real inbound calls with Exotel](docs/exotel-inbound.md)
 - [Telephony](docs/telephony.md)
 - [Calling Roadmap (master checklist)](docs/calling-roadmap.md)
 - [Platform Features (Thinkly-inspired)](docs/platform-features.md)

@@ -33,8 +33,11 @@ msva.maplestudios.co.in {
 	}
 
 	# Everything else: the static web build (single-page app).
+	# IMPORTANT: serve ONLY the built SPA, never the repo root — otherwise source
+	# files and .env secrets would be publicly downloadable. If the repo lives at
+	# /var/www/msva, the build output is the apps/web/dist subfolder below.
 	handle {
-		root * /var/www/msva
+		root * /var/www/msva/apps/web/dist
 		try_files {path} /index.html
 		file_server
 	}

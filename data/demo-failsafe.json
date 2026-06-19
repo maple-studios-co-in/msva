@@ -1,0 +1,19 @@
+{
+  "_comment": "Pre-recorded failsafe used during demos when the live pipeline is unavailable. The audio file lives at apps/api/assets/demo-failsafe.mp3. Replace `transcript` with the EXACT script of that clip so the on-screen caption matches what is spoken. `callerName`/`voice` are cosmetic labels shown in the UI; `outcome`/`collected` populate the live-outcome panel so the failsafe looks like a real, completed turn.",
+  "callerName": "Madhusudan VA",
+  "voice": "neha",
+  "transcript": "Namaste, Madhusudan family se baat ho rahi hai. Aapke order ki jaankari ke liye dhanyavaad. Main aapki request register kar raha hoon aur hamari team aapse jald hi sampark karegi.",
+  "outcome": "resolved_by_va",
+  "collected": {
+    "product": "Desi Ghee",
+    "area": "Ghaziabad",
+    "reference": "MS-ORD-4582"
+  },
+  "syntheticMetrics": {
+    "asrMs": 540,
+    "llmFirstTokenMs": 410,
+    "llmTotalMs": 1180,
+    "ttsFirstByteMs": 620,
+    "ttfwMs": 820
+  }
+}

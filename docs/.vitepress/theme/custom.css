@@ -1,0 +1,76 @@
+/* ---------------------------------------------------------------------------
+   MSVA Docs — Madhusudan brand override for VitePress default theme.
+   Customizes brand colors, gradient accents, and inline-code styling.
+   --------------------------------------------------------------------------- */
+
+:root {
+  /* Brand reds */
+  --ms-red:         #E63946;
+  --ms-red-dark:    #B71F2C;
+  --ms-red-deep:    #7A1320;
+
+  /* Cream backgrounds */
+  --ms-cream:       #FDF1DC;
+  --ms-cream-soft:  #FCE7D2;
+  --ms-cream-bg:    #FFF8EE;
+  --ms-pink-pale:   #FDF0EB;
+  --ms-border:      #F0E1CC;
+
+  /* VitePress brand color tokens */
+  --vp-c-brand-1:        var(--ms-red);
+  --vp-c-brand-2:        var(--ms-red-dark);
+  --vp-c-brand-3:        var(--ms-red-deep);
+  --vp-c-brand-soft:     var(--ms-pink-pale);
+
+  --vp-c-tip-1:          var(--ms-red);
+  --vp-c-tip-2:          var(--ms-red-dark);
+  --vp-c-tip-3:          var(--ms-red-deep);
+  --vp-c-tip-soft:       var(--ms-pink-pale);
+
+  --vp-button-brand-bg:           var(--ms-red);
+  --vp-button-brand-hover-bg:     var(--ms-red-dark);
+  --vp-button-brand-active-bg:    var(--ms-red-deep);
+  --vp-button-brand-border:       var(--ms-red);
+  --vp-button-brand-hover-border: var(--ms-red-dark);
+
+  /* Home hero gradient — Madhusudan red into cream */
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background:
+    -webkit-linear-gradient(120deg, var(--ms-red) 30%, var(--ms-red-deep));
+  --vp-home-hero-image-background-image:
+    linear-gradient(-45deg, var(--ms-cream-soft) 50%, var(--ms-pink-pale) 50%);
+  --vp-home-hero-image-filter: blur(40px);
+
+  /* Custom blocks — info/tip/warning surfaces */
+  --vp-custom-block-tip-border:  var(--ms-red);
+  --vp-custom-block-tip-text:    var(--ms-red-dark);
+  --vp-custom-block-tip-bg:      var(--ms-pink-pale);
+}
+
+/* Dark mode — keep red recognizable, swap to deep brand tones */
+.dark {
+  --vp-c-brand-1:    #FF6B7A;
+  --vp-c-brand-2:    var(--ms-red);
+  --vp-c-brand-3:    var(--ms-red-dark);
+  --vp-c-brand-soft: rgba(230, 57, 70, 0.16);
+}
+
+/* Inline code — Madhusudan red, cream background */
+.vp-doc :not(pre) > code {
+  color: var(--ms-red-dark);
+  background: var(--ms-cream);
+}
+.dark .vp-doc :not(pre) > code {
+  color: #FFB3BB;
+  background: rgba(230, 57, 70, 0.12);
+}
+
+/* Anchor link underline accent */
+.vp-doc a {
+  color: var(--ms-red);
+  text-decoration-color: var(--ms-cream-soft);
+}
+.vp-doc a:hover {
+  color: var(--ms-red-dark);
+  text-decoration-color: var(--ms-red);
+}

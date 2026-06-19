@@ -1,0 +1,27 @@
+{
+  "name": "msva-platform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Madhu Sudhan Voice Agent MVP monorepo",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @msva/api --filter @msva/web dev",
+    "dev:all": "pnpm --parallel --filter @msva/api --filter @msva/web --filter @msva/telephony dev",
+    "dev:api": "pnpm --filter @msva/api dev",
+    "dev:web": "pnpm --filter @msva/web dev",
+    "dev:telephony": "pnpm --filter @msva/telephony dev",
+    "dev:docs": "pnpm --filter @msva/docs dev",
+    "build:docs": "pnpm --filter @msva/docs build",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "start": "pnpm --filter @msva/api start"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.21",
+    "typescript": "^5.8.3"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.6.4"
+}

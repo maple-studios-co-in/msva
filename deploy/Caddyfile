@@ -1,0 +1,41 @@
+# Caddy reverse proxy for the MSVA demo.
+# Place at /etc/caddy/Caddyfile, then: sudo systemctl reload caddy
+#
+# Caddy auto-provisions a Let's Encrypt TLS cert for the domain below (needs
+# ports 80 + 443 open and a DNS A record pointing the domain at this server).
+# HTTPS is required: browsers block microphone access and wss:// from non-secure
+# origins, so the in-browser Live Call only works over https.
+
+{
+	email admin@maplestudios.co.in
+}
+
+msva.maplestudios.co.in {
+	encode zstd gzip
+
+	# REST API + SSE (analytics, voice-agent chat, TTS preview, demo failsafe)
+	handle /api/* {
+		reverse_proxy 127.0.0.1:4100
+	}
+
+	# In-browser Live Call WebSocket (mic <-> agent audio). Caddy upgrades WS
+	# transparently.
+	handle /browser* {
+		reverse_proxy 127.0.0.1:4200
+	}
+
+	# Real-phone (Exotel/Twilio) endpoints — only used if you connect a DID.
+	handle /voice* {
+		reverse_proxy 127.0.0.1:4200
+	}
+	handle /exotel/* {
+		reverse_proxy 127.0.0.1:4200
+	}
+
+	# Everything else: the static web build (single-page app).
+	handle {
+		root * /var/www/msva
+		try_files {path} /index.html
+		file_server
+	}
+}

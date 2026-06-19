@@ -1,0 +1,50 @@
+[
+  {
+    "orderId": "MS-ORD-4582",
+    "reference": "4582",
+    "phone": "9818160910",
+    "callerName": "Rajesh Gupta",
+    "status": "out_for_delivery",
+    "eta": "aaj shaam 6 baje tak",
+    "area": "Ghaziabad",
+    "items": ["Desi Ghee Tin 15kg x2", "Ceka Pack 1L x40"],
+    "carrier": "Route-7 truck",
+    "note": "Truck Ghaziabad route par hai, thoda traffic delay."
+  },
+  {
+    "orderId": "MS-ORD-3310",
+    "reference": "3310",
+    "phone": "9997269252",
+    "callerName": "Amit Dairy Store",
+    "status": "scheduled",
+    "eta": "kal subah 9 baje tak",
+    "area": "Ghaziabad",
+    "items": ["Dahi Magic 400g Cup x20 crates", "Dahi Lite 5kg Jar x6 crates"],
+    "carrier": "Cold-chain van",
+    "note": "Dispatch confirm, cold-chain van assign ho gayi hai."
+  },
+  {
+    "orderId": "MS-INV-7841",
+    "reference": "7841",
+    "phone": "9650462147",
+    "callerName": "Sanjay Traders",
+    "status": "invoice_open",
+    "eta": "credit note review 48 ghante mein",
+    "area": "Delhi",
+    "items": ["Desi Ghee Poly Pack 1kg x80"],
+    "carrier": "n/a",
+    "note": "Credit note adjustment accounts team ke paas pending hai, amount approx 84,000."
+  },
+  {
+    "orderId": "MS-ORD-1209",
+    "reference": "1209",
+    "phone": "8757401698",
+    "callerName": "Neha Sharma",
+    "status": "delivered",
+    "eta": "delivered",
+    "area": "Noida",
+    "items": ["Fresh Paneer 1kg x1"],
+    "carrier": "Local rider",
+    "note": "Order delivered; quality complaint isase alag se handle ho rahi hai."
+  }
+]

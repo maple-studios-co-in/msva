@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+**/.vitepress/dist/
+**/.vitepress/cache/
+**/.vitepress/.temp/
+
+# Env / secrets — NEVER commit real keys.
+# Only the `.env.example` template files (with placeholder values) should be tracked.
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Misc temp
+*.tmp
+*.bak
+
+# Customer audio fixtures — real call recordings, never commit.
+# The transcribe script writes outputs to the same folder; .gitignore those too.
+**/test-fixtures/calls/
+**/test-fixtures/transcripts/

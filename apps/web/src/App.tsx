@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   Clock,
   Headphones,
+  Info,
   Loader2,
   Mic,
   PhoneCall,
@@ -95,6 +96,13 @@ function Dashboard({ analytics }: { analytics: AnalyticsResponse }) {
 
   return (
     <section className="section-grid">
+      <div className="sample-note" role="note">
+        <Info size={16} />
+        <span>
+          <strong>Sample data.</strong> These figures come from an illustrative call log bundled with the demo, not from
+          Madhusudan&apos;s records. They will be replaced with real call detail records once received.
+        </span>
+      </div>
       <div className="kpi-grid">
         <KpiCard
           icon={PhoneCall}
@@ -1219,6 +1227,7 @@ export function App() {
           <button className={tab === "dashboard" ? "active" : ""} onClick={() => setTab("dashboard")}>
             <BarChart3 size={18} />
             Call Analytics
+            <em className="nav-tag">sample</em>
           </button>
           <button className={tab === "call" ? "active" : ""} onClick={() => setTab("call")}>
             <PhoneCall size={18} />

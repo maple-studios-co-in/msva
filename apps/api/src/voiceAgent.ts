@@ -123,6 +123,32 @@ function inferState(state: ConversationState, message: string): ConversationStat
   return next;
 }
 
+// What the caller actually said on this call, newest last — the honest source
+// for a ticket summary. Falls back to the profile seed only when nothing has
+// been said yet (e.g. a scripted demo persona).
+function callerSummary(state: ConversationState): string {
+  const said = state.messages
+    .filter((m) => m.role === "caller")
+    .map((m) => m.text.trim())
+    .filter((t) => t && !t.startsWith("["));
+  if (said.length === 0) return state.call.transcriptSeed;
+  return said.slice(-3).join(" | ").slice(0, 500);
+}
+
+// Remember what a tool gave back so the spoken reply can quote it (ticket
+// number, order status) instead of inventing a placeholder.
+function applyToolResult(state: ConversationState, result: ToolResult): void {
+  if (!result.ok || !result.data || typeof result.data !== "object") return;
+  const data = result.data as Record<string, unknown>;
+  if (result.name === "create_ticket" && typeof data.ticketId === "string") {
+    state.collected.ticketId = data.ticketId;
+  }
+  if (result.name === "lookup_order" && data.found === true && typeof data.status === "string") {
+    state.collected.orderStatus = data.status;
+    if (typeof data.eta === "string") state.collected.orderEta = data.eta;
+  }
+}
+
 function fallbackReply(state: ConversationState): string {
   const { intent } = state.call;
 
@@ -130,7 +156,7 @@ function fallbackReply(state: ConversationState): string {
     return `Bilkul samajh gaya. Is case ko main Madhusudan ki human support team ko transfer kar raha hoon. Summary unke paas pahunch jayegi: caller ${state.call.callerName}, issue ${state.collected.issue ?? intent}, phone ${state.call.phone}. Kripya line par rahiye.`;
   }
   if (state.outcome === "ticket_created") {
-    return `Theek hai. Maine aapki request register kar di hai. Ticket MS-${state.call.phone.slice(-4)} ban gaya hai. Madhusudan ki team delivery status check karke 30 minute ke andar callback karegi.`;
+    return `Theek hai. Maine aapki request register kar di hai. Ticket number ${state.collected.ticketId ?? `MS-${state.call.phone.slice(-4)}`} hai. Madhusudan ki team delivery status check karke 30 minute ke andar callback karegi.`;
   }
   if (state.outcome === "resolved_by_va") {
     return "Theek hai. Aapke area ke liye Dahi Magic aur Dahi Lite ki availability note kar li hai. Distributor ko aaj evening tak request forward ho jayegi, aur confirmation SMS bhej diya jayega.";
@@ -499,6 +525,7 @@ async function* anthropicAgent(
       const result = await dispatchTool(callId, toolCall);
       executed.push(toolCall);
       applyToolToOutcome(nextState, toolCall);
+      applyToolResult(nextState, result);
       yield { type: "tool_result", result };
       toolResults.push({
         type: "tool_result",
@@ -542,7 +569,7 @@ function normalizeToolCall(call: ToolCall, state: ConversationState): ToolCall {
   }
   if (call.name === "create_ticket") {
     if (!args.intent) args.intent = state.call.intent;
-    if (!args.summary) args.summary = state.collected.reference ?? state.call.transcriptSeed;
+    if (!args.summary) args.summary = callerSummary(state);
     if (!args.priority) args.priority = state.call.urgency;
   }
   if (call.name === "transfer_to_human") {
@@ -590,7 +617,7 @@ function synthesizeToolCalls(state: ConversationState): ToolCall[] {
         args: {
           phone: state.call.phone,
           intent: state.call.intent,
-          summary: state.collected.reference ?? state.call.transcriptSeed,
+          summary: callerSummary(state),
           priority: state.call.urgency
         }
       }
@@ -683,6 +710,7 @@ export async function* streamChat(
         const result: ToolResult = await dispatchTool(toolCallId, toolCall);
         executedToolCalls.push(toolCall);
         applyToolToOutcome(nextState, toolCall);
+        applyToolResult(nextState, result);
         yield { type: "tool_result", result };
         messages.push({
           role: "tool",
@@ -716,6 +744,7 @@ export async function* streamChat(
         const result: ToolResult = await dispatchTool(toolCallId, synthCall);
         executedToolCalls.push(synthCall);
         applyToolToOutcome(nextState, synthCall);
+        applyToolResult(nextState, result);
         yield { type: "tool_result", result };
       }
     }

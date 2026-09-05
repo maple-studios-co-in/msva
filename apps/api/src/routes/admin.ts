@@ -34,6 +34,13 @@ const pageOf = (query: Record<string, unknown>) => {
   return { page, pageSize, skip: (page - 1) * pageSize, take: pageSize };
 };
 
+// "#12", "TKT-12" or "12" → 12. Phone numbers are far too large for the
+// ticket counter, so anything outside a sane range is not a ticket search.
+const ticketNumberFrom = (needle: string): number | null => {
+  const match = /^(?:#|tkt-?)?(\d{1,7})$/i.exec(needle.trim());
+  return match ? Number(match[1]) : null;
+};
+
 const dateOrUndefined = (value: unknown): Date | undefined => {
   if (typeof value !== "string" || !value) return undefined;
   const date = new Date(value);
@@ -160,11 +167,11 @@ adminRouter.get("/calls", async (request, response, next) => {
     if (from || to) where.startedAt = { gte: from, lte: to };
     if (q.q) {
       const needle = q.q.trim();
-      const asNumber = Number(needle.replace(/^tkt-?/i, ""));
+      const asNumber = ticketNumberFrom(needle);
       where.OR = [
         { fromNumber: { contains: needle } },
         { callerName: { contains: needle, mode: "insensitive" } },
-        ...(Number.isInteger(asNumber) ? [{ tickets: { some: { number: asNumber } } }] : [])
+        ...(asNumber !== null ? [{ tickets: { some: { number: asNumber } } }] : [])
       ];
     }
 
@@ -264,12 +271,12 @@ adminRouter.get("/tickets", async (request, response, next) => {
     if (q.intent) where.intent = q.intent;
     if (q.q) {
       const needle = q.q.trim();
-      const asNumber = Number(needle.replace(/^tkt-?/i, ""));
+      const asNumber = ticketNumberFrom(needle);
       where.OR = [
         { phone: { contains: needle } },
         { callerName: { contains: needle, mode: "insensitive" } },
         { summary: { contains: needle, mode: "insensitive" } },
-        ...(Number.isInteger(asNumber) ? [{ number: asNumber }] : [])
+        ...(asNumber !== null ? [{ number: asNumber }] : [])
       ];
     }
     const [total, items] = await Promise.all([

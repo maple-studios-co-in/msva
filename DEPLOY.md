@@ -171,3 +171,49 @@ pm2 reload all
 The same backend handles live PSTN calls via Exotel/Twilio — Caddy already
 proxies `/voice` and `/exotel`. See [docs/live-call.md](docs/live-call.md) for
 wiring a DID. Not required for the in-browser demo.
+
+---
+
+## Phase 0: database, console, service token
+
+The platform needs PostgreSQL alongside the two services. Done once per server:
+
+```bash
+sudo apt-get install -y postgresql postgresql-contrib
+sudo -u postgres psql -c "CREATE ROLE msva LOGIN PASSWORD '<strong password>';"
+sudo -u postgres createdb -O msva msva
+sudo -u postgres psql -c 'GRANT ALL ON SCHEMA public TO msva;' msva
+```
+
+Then in the env files (see `deploy/*.env.example`):
+
+- `apps/api/.env`: `DATABASE_URL`, `INTERNAL_API_TOKEN`, `NODE_ENV=production`
+- `apps/telephony/.env`: `INTERNAL_API_TOKEN` (same value), `AGENT_BASE_URL=http://127.0.0.1:4100`
+- `packages/db/.env`: `DATABASE_URL` (used by the Prisma CLI only)
+
+Every deploy:
+
+```bash
+cd /var/www/msva && git pull --ff-only origin main
+pnpm install --frozen-lockfile
+pnpm --filter @msva/db generate
+pnpm --filter @msva/db migrate            # applies pending migrations
+for p in packages/shared packages/db apps/api apps/telephony; do (cd $p && npx tsc -p tsconfig.json); done
+(cd apps/web && npx vite build --outDir dist-next && rm -rf dist-prev && mv dist dist-prev && mv dist-next dist)
+pm2 restart msva-api msva-telephony --update-env
+curl -s http://127.0.0.1:4100/health      # expect "database": true
+```
+
+First admin user (idempotent):
+
+```bash
+cd packages/db && export $(grep -v '^#' .env | tr -d '"' | xargs)
+ADMIN_EMAIL=you@example.com ADMIN_NAME="Your Name" node --experimental-strip-types prisma/seed.ts
+```
+
+The console lives at `https://msva.maplestudios.co.in/console.html`. Sign-in codes are
+printed to the API log until an email provider is configured:
+
+```bash
+pm2 logs msva-api --lines 50 --nostream | grep "login code"
+```

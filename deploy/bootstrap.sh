@@ -69,6 +69,9 @@ echo "==> Installing dependencies"
 pnpm install --frozen-lockfile
 echo "==> Building"
 pnpm --filter @msva/shared build
+pnpm --filter @msva/db generate
+pnpm --filter @msva/db build
+pnpm --filter @msva/db migrate
 pnpm --filter @msva/api build
 pnpm --filter @msva/telephony build
 pnpm --filter @msva/web build

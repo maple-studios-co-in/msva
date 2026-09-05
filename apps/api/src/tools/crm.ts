@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { ToolResult } from "@msva/shared";
+import { databaseReady, prisma } from "@msva/db";
+import { ensureCaller, toCallerType } from "../calls.js";
 
 // ---------------------------------------------------------------------------
 // CRM / helpdesk tools
@@ -104,18 +106,57 @@ export async function createTicket(
   callId: string,
   args: CreateTicketArgs
 ): Promise<ToolResult> {
-  // TODO: POST to Freshdesk / Zoho. For now return a fabricated ticket id.
+  const priority = args.priority ?? "medium";
+  const intent = args.intent || "unknown";
+  const summary = args.summary?.trim() || "Caller request (no summary captured)";
+
+  // Built-in ticket queue. External helpdesk sync (Freshdesk / Zoho) arrives in
+  // Phase 2 and will mirror this row rather than replace it.
+  try {
+    if (await databaseReady()) {
+      const call = await prisma.call.findUnique({
+        where: { id: callId },
+        select: { id: true, fromNumber: true, callerName: true, callerType: true, callerId: true }
+      });
+      const phone = digits(args.phone) || digits(call?.fromNumber);
+      const caller =
+        call?.callerId ??
+        (await ensureCaller(phone, { name: call?.callerName, type: toCallerType(call?.callerType) }))?.id ??
+        null;
+      const ticket = await prisma.ticket.create({
+        data: {
+          callId: call?.id,
+          callerId: caller,
+          phone: phone || "unknown",
+          callerName: call?.callerName ?? undefined,
+          intent,
+          priority: priority.toUpperCase() as "LOW" | "MEDIUM" | "HIGH",
+          summary,
+          details: { source: "voice_agent", args }
+        }
+      });
+      if (call) {
+        await prisma.call.update({ where: { id: call.id }, data: { outcome: "TICKET_CREATED" } });
+      }
+      return {
+        id: callId,
+        name: "create_ticket",
+        ok: true,
+        data: { ticketId: `TKT-${ticket.number}`, ticketNumber: ticket.number, priority, intent, summary }
+      };
+    }
+  } catch (error) {
+    console.error("[crm] ticket persistence failed, falling back to in-memory id", error);
+  }
+
+  // No database (or it is down): keep the call alive with a reference the
+  // caller can quote; the console will not see it.
   const ticketId = `TKT-${args.phone.slice(-4)}-${Date.now().toString().slice(-4)}`;
   return {
     id: callId,
     name: "create_ticket",
     ok: true,
-    data: {
-      ticketId,
-      priority: args.priority ?? "medium",
-      intent: args.intent,
-      summary: args.summary
-    }
+    data: { ticketId, priority, intent, summary, persisted: false }
   };
 }
 

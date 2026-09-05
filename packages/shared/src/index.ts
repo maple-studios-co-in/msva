@@ -114,6 +114,10 @@ export type ChatRequest = {
   callId: string;
   message: string;
   state?: ConversationState;
+  // Persistence id of the live call (minted by the telephony service). Tools
+  // use it to link records (tickets) to the stored call. Optional so the text
+  // demo keeps working without one.
+  sessionId?: string;
 };
 
 export type ChatResponse = {

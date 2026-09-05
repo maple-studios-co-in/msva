@@ -13,12 +13,13 @@ const AGENT_BASE_URL = process.env.AGENT_BASE_URL ?? "http://127.0.0.1:4100";
 export async function* streamAgent(
   callId: string,
   message: string,
-  state?: ConversationState
+  state?: ConversationState,
+  sessionId?: string
 ): AsyncGenerator<ChatStreamEvent, void, void> {
   const response = await fetch(`${AGENT_BASE_URL}/api/voice-agent/chat/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-    body: JSON.stringify({ callId, message, state })
+    body: JSON.stringify({ callId, message, state, sessionId })
   });
 
   if (!response.ok || !response.body) {

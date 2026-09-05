@@ -14,7 +14,12 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
-    "start": "pnpm --filter @msva/api start"
+    "start": "pnpm --filter @msva/api start",
+    "db:generate": "pnpm --filter @msva/db generate",
+    "db:migrate": "pnpm --filter @msva/db migrate",
+    "db:migrate:dev": "pnpm --filter @msva/db migrate:dev",
+    "db:seed": "pnpm --filter @msva/db seed",
+    "db:studio": "pnpm --filter @msva/db studio"
   },
   "devDependencies": {
     "@types/node": "^22.15.21",

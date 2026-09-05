@@ -13,6 +13,7 @@ import { clearFrame, mediaFrame, type ExotelInboundEvent } from "./exotel.js";
 import type { StreamingTts } from "./tts/index.js";
 import { createSarvamTts } from "./tts/sarvam.js";
 import { createEndpointer, type Endpointer } from "./vad.js";
+import { callLog } from "./callLog.js";
 
 // ---------------------------------------------------------------------------
 // Per-call pipeline (Exotel inbound)
@@ -69,6 +70,14 @@ export function createCallPipeline(ws: WebSocket, call: TelephonyCall): CallPipe
   let tts: StreamingTts | null = null;
   let botSpeaking = false;
   let turnInFlight = false;
+  // Persistence: the provider call sid is unique per call, so it doubles as
+  // the stored call id. `started` gates end-of-call logging.
+  const sessionId = call.callSid;
+  let started = false;
+  let ended = false;
+  let turnIndex = 0;
+  let turnSource: string | null = null;
+  let turnTools: string[] = [];
 
   const sendOut = (payload: unknown) => {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(payload));
@@ -143,13 +152,25 @@ export function createCallPipeline(ws: WebSocket, call: TelephonyCall): CallPipe
   const runTurn = async (utterance: string) => {
     if (turnInFlight) return; // simple lock; production uses a real queue.
     turnInFlight = true;
+    const index = ++turnIndex;
+    const turnStart = Date.now();
+    let firstTokenAt: number | null = null;
+    let finalAt: number | null = null;
+    let reply = "";
+    turnSource = null;
+    turnTools = [];
     try {
       tts = createSarvamTts({ voice: TTS_VOICE, language: LANGUAGE, sampleRate: SAMPLE_RATE });
       botSpeaking = true;
 
       const playback = streamTtsOut(tts!);
 
-      for await (const event of streamAgent(call.callSid, utterance, conversation)) {
+      for await (const event of streamAgent(call.callSid, utterance, conversation, sessionId)) {
+        if (event.type === "token") {
+          if (firstTokenAt === null) firstTokenAt = Date.now();
+          reply += event.text;
+        }
+        if (event.type === "final") finalAt = Date.now();
         handleAgentEvent(event);
       }
       tts?.end();
@@ -159,6 +180,20 @@ export function createCallPipeline(ws: WebSocket, call: TelephonyCall): CallPipe
     } finally {
       botSpeaking = false;
       turnInFlight = false;
+      const since = (at: number | null) => (at === null ? null : at - turnStart);
+      void callLog.turn(sessionId, {
+        index,
+        callerText: utterance,
+        replyText: reply,
+        llmFirstTokenMs: since(firstTokenAt),
+        llmTotalMs: since(finalAt),
+        source: turnSource,
+        toolCalls: turnTools,
+        outcome: conversation?.outcome,
+        collected: conversation?.collected,
+        escalationReason: conversation?.escalationReason,
+        intent: conversation?.call.intent
+      });
     }
   };
 
@@ -168,10 +203,12 @@ export function createCallPipeline(ws: WebSocket, call: TelephonyCall): CallPipe
         tts?.push(event.text);
         break;
       case "tool_result":
+        turnTools.push(event.result.name);
         handleToolResult(event.result);
         break;
       case "final":
         conversation = event.state;
+        turnSource = event.source;
         break;
       case "error":
         console.error("agent error", event.message);
@@ -206,6 +243,19 @@ export function createCallPipeline(ws: WebSocket, call: TelephonyCall): CallPipe
           call.profile = { ...call.profile, phone: digits(from) };
           conversation = initialCallState(call.profile);
           console.log(`[telephony] start call=${call.callSid} from=${from} to=${to} stream=${streamSid}`);
+          started = true;
+          void callLog.start({
+            id: sessionId,
+            provider: call.provider === "twilio" ? "twilio" : "exotel",
+            providerSid: call.callSid,
+            fromNumber: from,
+            toNumber: to,
+            callerName: call.profile.callerName,
+            callerType: call.profile.callerType,
+            isTest: process.env.CALLS_ARE_TEST === "true",
+            language: LANGUAGE,
+            metadata: { streamSid }
+          });
 
           startAsr();
           // Greet immediately and reliably (does not depend on the LLM).
@@ -241,6 +291,10 @@ export function createCallPipeline(ws: WebSocket, call: TelephonyCall): CallPipe
       asr = null;
       endpointer = null;
       tts = null;
+      if (started && !ended) {
+        ended = true;
+        void callLog.end(sessionId, { outcome: conversation?.outcome });
+      }
     }
   };
 }

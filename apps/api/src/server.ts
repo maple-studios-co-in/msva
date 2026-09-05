@@ -8,24 +8,34 @@ import { demoCalls, findDemoCall } from "./demoCalls.js";
 import { BULBUL_V3_VOICES, previewVoice } from "./sarvamPreview.js";
 import { getActiveModel, getLlmEnabled, handleChat, initialState, setLlmEnabled, streamChat } from "./voiceAgent.js";
 import { DEMO_FAILSAFE_AUDIO_PATH, demoFailsafeAvailable, loadDemoFailsafe } from "./demoFailsafe.js";
+import { databaseReady } from "@msva/db";
+import { adminRouter } from "./routes/admin.js";
+import { internalRouter } from "./routes/internal.js";
 
 const app = express();
 const port = Number(process.env.PORT ?? 4100);
 const csvPath = process.env.CSV_PATH ?? "../../data/reports.csv";
 
-app.use(cors());
+// The console sends its session cookie, so CORS must name the origin rather
+// than use "*". Same-origin deployments (Caddy) never hit this path.
+app.use(cors({ origin: process.env.CORS_ORIGIN?.split(",").map((o) => o.trim()) ?? true, credentials: true }));
 app.use(express.json({ limit: "1mb" }));
+app.set("trust proxy", true);
 
 let records = loadCallRecords(path.resolve(process.cwd(), csvPath));
 
-app.get("/health", (_request, response) => {
+app.get("/health", async (_request, response) => {
   response.json({
     ok: true,
     service: "msva-api",
     model: getActiveModel(),
-    records: records.length
+    records: records.length,
+    database: await databaseReady()
   });
 });
+
+app.use("/api/internal", internalRouter);
+app.use("/api/admin", adminRouter);
 
 app.get("/api/analytics", (_request, response) => {
   response.json(buildAnalytics(records));
@@ -47,7 +57,8 @@ app.get("/api/demo-calls/:id/state", (request, response) => {
 const chatSchema = z.object({
   callId: z.string(),
   message: z.string().min(1),
-  state: z.any().optional()
+  state: z.any().optional(),
+  sessionId: z.string().optional()
 });
 
 app.post("/api/voice-agent/chat", async (request, response) => {
@@ -57,7 +68,7 @@ app.post("/api/voice-agent/chat", async (request, response) => {
     return;
   }
 
-  const result = await handleChat(parsed.data.callId, parsed.data.message, parsed.data.state);
+  const result = await handleChat(parsed.data.callId, parsed.data.message, parsed.data.state, parsed.data.sessionId);
   response.json(result);
 });
 
@@ -77,7 +88,7 @@ app.post("/api/voice-agent/chat/stream", async (request, response) => {
   response.flushHeaders?.();
 
   try {
-    for await (const event of streamChat(parsed.data.callId, parsed.data.message, parsed.data.state)) {
+    for await (const event of streamChat(parsed.data.callId, parsed.data.message, parsed.data.state, parsed.data.sessionId)) {
       response.write(`data: ${JSON.stringify(event)}\n\n`);
     }
   } catch (error) {

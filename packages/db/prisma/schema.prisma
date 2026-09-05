@@ -1,0 +1,292 @@
+// MSVA platform schema — Phase 0 foundations.
+//
+// Everything hangs off `Call`. Each call has ordered `Turn`s (one per
+// caller utterance + agent reply, with latency numbers) and `Utterance`s
+// (the transcript as spoken). Tickets link back to the call and caller that
+// raised them. Users, sessions and login codes power the admin console;
+// AuditLog records who did what.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// People who use the console
+// ---------------------------------------------------------------------------
+
+enum UserRole {
+  ADMIN
+  SUPERVISOR
+  AGENT
+  VIEWER
+}
+
+model User {
+  id          String      @id @default(cuid())
+  email       String      @unique
+  name        String
+  role        UserRole    @default(VIEWER)
+  active      Boolean     @default(true)
+  createdAt   DateTime    @default(now())
+  lastLoginAt DateTime?
+  sessions    Session[]
+  loginCodes  LoginCode[]
+  tickets     Ticket[]    @relation("TicketAssignee")
+  notes       TicketNote[]
+  audits      AuditLog[]
+}
+
+model LoginCode {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  codeHash  String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, createdAt])
+}
+
+model Session {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String   @unique
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Voice agents and the people who call them
+// ---------------------------------------------------------------------------
+
+model Agent {
+  id            String   @id @default(cuid())
+  slug          String   @unique
+  name          String
+  channel       String   @default("voice")
+  promptVersion String   @default("v1")
+  voice         String   @default("neha")
+  language      String   @default("hi-IN")
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  calls         Call[]
+}
+
+enum CallerType {
+  DISTRIBUTOR
+  RETAILER
+  CUSTOMER
+  FARMER
+  UNKNOWN
+}
+
+model Caller {
+  id        String     @id @default(cuid())
+  phone     String     @unique
+  name      String?
+  type      CallerType @default(UNKNOWN)
+  code      String?
+  area      String?
+  route     String?
+  notes     String?
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+  calls     Call[]
+  tickets   Ticket[]
+}
+
+// ---------------------------------------------------------------------------
+// Calls
+// ---------------------------------------------------------------------------
+
+enum CallProvider {
+  BROWSER
+  EXOTEL
+  TWILIO
+}
+
+enum CallDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum CallStatus {
+  QUEUED
+  RINGING
+  IN_PROGRESS
+  COMPLETED
+  NO_ANSWER
+  FAILED
+}
+
+enum CallOutcome {
+  IN_PROGRESS
+  RESOLVED_BY_VA
+  TICKET_CREATED
+  HUMAN_TRANSFER
+  ABANDONED
+}
+
+model Call {
+  // Client-supplied id: the telephony service mints a session id per call
+  // and uses it for every lifecycle event, so tools can link to the row.
+  id               String        @id
+  provider         CallProvider
+  providerSid      String?       @unique
+  direction        CallDirection @default(INBOUND)
+  isTest           Boolean       @default(false)
+  status           CallStatus    @default(IN_PROGRESS)
+  outcome          CallOutcome   @default(IN_PROGRESS)
+  agentId          String?
+  agent            Agent?        @relation(fields: [agentId], references: [id])
+  callerId         String?
+  caller           Caller?       @relation(fields: [callerId], references: [id])
+  fromNumber       String
+  toNumber         String?
+  callerName       String?
+  callerType       CallerType    @default(UNKNOWN)
+  intent           String?
+  language         String?
+  escalationReason String?
+  collected        Json          @default("{}")
+  startedAt        DateTime      @default(now())
+  endedAt          DateTime?
+  durationMs       Int?
+  recordingKey     String?
+  costPaise        Int?
+  source           String?
+  metadata         Json?
+  turns            Turn[]
+  utterances       Utterance[]
+  tickets          Ticket[]
+
+  @@index([startedAt])
+  @@index([callerId])
+  @@index([status])
+  @@index([isTest, startedAt])
+}
+
+model Turn {
+  id              String   @id @default(cuid())
+  callId          String
+  call            Call     @relation(fields: [callId], references: [id], onDelete: Cascade)
+  index           Int
+  callerText      String?
+  replyText       String?
+  asrMs           Int?
+  llmFirstTokenMs Int?
+  llmTotalMs      Int?
+  ttsFirstByteMs  Int?
+  ttfwMs          Int?
+  interrupted     Boolean  @default(false)
+  source          String?
+  toolCalls       Json?
+  createdAt       DateTime @default(now())
+
+  @@unique([callId, index])
+}
+
+enum Speaker {
+  CALLER
+  AGENT
+}
+
+model Utterance {
+  id        String   @id @default(cuid())
+  callId    String
+  call      Call     @relation(fields: [callId], references: [id], onDelete: Cascade)
+  seq       Int
+  speaker   Speaker
+  text      String
+  atMs      Int?
+  createdAt DateTime @default(now())
+
+  @@index([callId, seq])
+}
+
+// ---------------------------------------------------------------------------
+// Tickets — the built-in queue. External helpdesk sync (Phase 2) fills
+// `externalRef` and mirrors status.
+// ---------------------------------------------------------------------------
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  WAITING
+  RESOLVED
+  CLOSED
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+model Ticket {
+  id             String         @id @default(cuid())
+  number         Int            @unique @default(autoincrement())
+  callId         String?
+  call           Call?          @relation(fields: [callId], references: [id])
+  callerId       String?
+  caller         Caller?        @relation(fields: [callerId], references: [id])
+  phone          String
+  callerName     String?
+  intent         String
+  priority       TicketPriority @default(MEDIUM)
+  status         TicketStatus   @default(OPEN)
+  summary        String
+  details        Json?
+  assigneeId     String?
+  assignee       User?          @relation("TicketAssignee", fields: [assigneeId], references: [id])
+  slaDueAt       DateTime?
+  callbackStart  DateTime?
+  callbackEnd    DateTime?
+  resolutionCode String?
+  externalRef    String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  resolvedAt     DateTime?
+  notes          TicketNote[]
+
+  @@index([status, priority])
+  @@index([createdAt])
+}
+
+model TicketNote {
+  id        String   @id @default(cuid())
+  ticketId  String
+  ticket    Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  authorId  String?
+  author    User?    @relation(fields: [authorId], references: [id])
+  text      String
+  createdAt DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Audit
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  action    String
+  entity    String
+  entityId  String?
+  meta      Json?
+  ip        String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([entity, entityId])
+}

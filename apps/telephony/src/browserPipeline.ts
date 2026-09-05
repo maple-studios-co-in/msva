@@ -4,7 +4,9 @@ import type {
   DemoCall,
   ToolResult
 } from "@msva/shared";
+import { randomUUID } from "node:crypto";
 import type { WebSocket } from "ws";
+import { callLog } from "./callLog.js";
 import { streamAgent } from "./agentClient.js";
 import { createSarvamAsr } from "./asr/sarvam.js";
 import type { StreamingAsr } from "./asr/index.js";
@@ -82,6 +84,13 @@ export function createBrowserPipeline(
   let lastEndpointAt: number | null = null;
   let turnIndex = 0;
   let turnInterrupted = false;
+  // Persistence: one session id per browser call, reported to the API so the
+  // call, its turns and any tickets land in the database. Browser calls are
+  // demo traffic, so they are stored as test calls.
+  const sessionId = randomUUID();
+  let ended = false;
+  let turnSource: string | null = null;
+  let turnTools: string[] = [];
 
   const sendJson = (payload: unknown) => {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(payload));
@@ -132,6 +141,8 @@ export function createBrowserPipeline(
     let firstAudioAt: number | null = null;
     let finalAt: number | null = null;
     let reply = "";
+    turnSource = null;
+    turnTools = [];
     try {
       sendJson({ type: "status", state: "thinking" });
       tts = createSarvamTts({ voice, language, sampleRate: SAMPLE_RATE });
@@ -152,7 +163,7 @@ export function createBrowserPipeline(
         }
       })();
 
-      for await (const event of streamAgent(callId, utterance, conversation)) {
+      for await (const event of streamAgent(callId, utterance, conversation, sessionId)) {
         if (event.type === "token" && firstTokenAt === null) firstTokenAt = Date.now();
         if (event.type === "final") finalAt = Date.now();
         reply = handleAgentEvent(event, reply);
@@ -166,19 +177,34 @@ export function createBrowserPipeline(
       botSpeaking = false;
       turnInFlight = false;
       const since = (at: number | null) => (at === null ? null : at - turnStart);
-      sendJson({
-        type: "metrics",
-        metrics: {
-          turnIndex: index,
-          asrMs: endpointAt === null ? null : turnStart - endpointAt,
-          llmFirstTokenMs: since(firstTokenAt),
-          llmTotalMs: since(finalAt),
-          ttsFirstByteMs: since(firstAudioAt),
-          ttfwMs: endpointAt === null || firstAudioAt === null ? null : firstAudioAt - endpointAt,
-          interrupted: turnInterrupted
-        }
-      });
+      const metrics = {
+        turnIndex: index,
+        asrMs: endpointAt === null ? null : turnStart - endpointAt,
+        llmFirstTokenMs: since(firstTokenAt),
+        llmTotalMs: since(finalAt),
+        ttsFirstByteMs: since(firstAudioAt),
+        ttfwMs: endpointAt === null || firstAudioAt === null ? null : firstAudioAt - endpointAt,
+        interrupted: turnInterrupted
+      };
+      sendJson({ type: "metrics", metrics });
       sendJson({ type: "status", state: "listening" });
+      void callLog.turn(sessionId, {
+        index,
+        callerText: utterance,
+        replyText: reply,
+        asrMs: metrics.asrMs,
+        llmFirstTokenMs: metrics.llmFirstTokenMs,
+        llmTotalMs: metrics.llmTotalMs,
+        ttsFirstByteMs: metrics.ttsFirstByteMs,
+        ttfwMs: metrics.ttfwMs,
+        interrupted: metrics.interrupted,
+        source: turnSource,
+        toolCalls: turnTools,
+        outcome: conversation?.outcome,
+        collected: conversation?.collected,
+        escalationReason: conversation?.escalationReason,
+        intent: conversation?.call.intent
+      });
     }
   };
 
@@ -190,10 +216,12 @@ export function createBrowserPipeline(
         sendJson({ type: "agent_transcript", text: reply, final: false });
         return reply;
       case "tool_result":
+        turnTools.push(event.result.name);
         handleToolResult(event.result);
         return reply;
       case "final":
         conversation = event.state;
+        turnSource = event.source;
         sendJson({
           type: "outcome",
           outcome: event.state.outcome,
@@ -224,6 +252,16 @@ export function createBrowserPipeline(
         if (message.voice) voice = message.voice;
         if (message.language) language = message.language;
         sendJson({ type: "ready" });
+        void callLog.start({
+          id: sessionId,
+          provider: "browser",
+          fromNumber: profile.phone || "browser",
+          callerName: profile.callerName,
+          callerType: profile.callerType,
+          isTest: true,
+          language,
+          metadata: { profileId: callId, voice }
+        });
         startAsr();
         // Greet the caller exactly as the phone path does.
         void runTurn("[call-started]");
@@ -252,6 +290,10 @@ export function createBrowserPipeline(
       asr = null;
       endpointer = null;
       tts = null;
+      if (started && !ended) {
+        ended = true;
+        void callLog.end(sessionId, { outcome: conversation?.outcome });
+      }
     }
   };
 }

@@ -645,9 +645,13 @@ function synthesizeToolCalls(state: ConversationState): ToolCall[] {
 export async function* streamChat(
   callId: string,
   message: string,
-  state?: ConversationState
+  state?: ConversationState,
+  sessionId?: string
 ): AsyncGenerator<ChatStreamEvent, void, void> {
   const call = findDemoCall(callId);
+  // Tools receive the persisted call id when there is one, so a ticket created
+  // mid-call links to the stored call rather than to the demo persona id.
+  const toolCallId = sessionId ?? callId;
   const baseState = state ?? initialState(call);
   const nextState = inferState(baseState, message);
 
@@ -663,7 +667,7 @@ export async function* streamChat(
     // Pass 1: let the model decide whether to call a tool (unless LLM disabled).
     if (llmEnabled && usingAnthropic) {
       // Hosted Claude — fast tool-calling agent.
-      const result = yield* anthropicAgent(systemPrompt, history, nextState, callId, executedToolCalls);
+      const result = yield* anthropicAgent(systemPrompt, history, nextState, toolCallId, executedToolCalls);
       reply = result.reply;
       if (result.used) source = "anthropic";
     } else if (llmEnabled) {
@@ -676,7 +680,7 @@ export async function* streamChat(
       for (const rawCall of decision.toolCalls) {
         const toolCall = normalizeToolCall(rawCall, nextState);
         yield { type: "tool_call", call: toolCall };
-        const result: ToolResult = await dispatchTool(callId, toolCall);
+        const result: ToolResult = await dispatchTool(toolCallId, toolCall);
         executedToolCalls.push(toolCall);
         applyToolToOutcome(nextState, toolCall);
         yield { type: "tool_result", result };
@@ -709,7 +713,7 @@ export async function* streamChat(
       source = "fallback";
       for (const synthCall of synthesizeToolCalls(nextState)) {
         yield { type: "tool_call", call: synthCall };
-        const result: ToolResult = await dispatchTool(callId, synthCall);
+        const result: ToolResult = await dispatchTool(toolCallId, synthCall);
         executedToolCalls.push(synthCall);
         applyToolToOutcome(nextState, synthCall);
         yield { type: "tool_result", result };
@@ -747,12 +751,13 @@ export async function* streamChat(
 export async function handleChat(
   callId: string,
   message: string,
-  state?: ConversationState
+  state?: ConversationState,
+  sessionId?: string
 ): Promise<ChatResponse> {
   let response: ChatResponse | undefined;
   const toolCalls: ToolCall[] = [];
 
-  for await (const event of streamChat(callId, message, state)) {
+  for await (const event of streamChat(callId, message, state, sessionId)) {
     if (event.type === "tool_call") toolCalls.push(event.call);
     if (event.type === "final") {
       response = {

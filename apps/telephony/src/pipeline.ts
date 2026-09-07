@@ -12,6 +12,7 @@ import { createSarvamAsr } from "./asr/sarvam.js";
 import { clearFrame, mediaFrame, type ExotelInboundEvent } from "./exotel.js";
 import type { StreamingTts } from "./tts/index.js";
 import { createSarvamTts } from "./tts/sarvam.js";
+import { createBufferTts, lookupPrompt } from "./tts/promptCache.js";
 import { createEndpointer, type Endpointer } from "./vad.js";
 import { callLog } from "./callLog.js";
 
@@ -135,7 +136,18 @@ export function createCallPipeline(ws: WebSocket, call: TelephonyCall): CallPipe
     if (turnInFlight) return;
     turnInFlight = true;
     try {
-      tts = createSarvamTts({ voice: TTS_VOICE, language: LANGUAGE, sampleRate: SAMPLE_RATE });
+      // Fixed lines are rendered ahead of time (see data/prompts.json). On a
+      // hit we replay bytes from disk: no network round-trip, no per-call fee,
+      // and the caller hears the line immediately. A miss falls through to
+      // live synthesis, so a missing or stale cache is never fatal.
+      const prerendered = lookupPrompt(text, {
+        voice: TTS_VOICE,
+        language: LANGUAGE,
+        sampleRate: SAMPLE_RATE
+      });
+      tts = prerendered
+        ? createBufferTts(prerendered)
+        : createSarvamTts({ voice: TTS_VOICE, language: LANGUAGE, sampleRate: SAMPLE_RATE });
       botSpeaking = true;
       const playback = streamTtsOut(tts);
       tts.push(text);

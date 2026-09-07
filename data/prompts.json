@@ -1,0 +1,35 @@
+{
+  "_comment": "Fixed lines the agent says on every call. These are rendered once by `pnpm --filter @msva/telephony render:prompts` and played from disk, so they cost nothing per call and add no synthesis latency. The `text` must match EXACTLY what the code speaks — if you change CALL_GREETING or a line below, re-run the render script or the line quietly falls back to live synthesis.",
+  "prompts": [
+    {
+      "key": "greeting",
+      "text": "Namaste! Madhusudan family se baat ho rahi hai. Main aapki AI assistant hoon. Bataiye, milk, ghee, paneer, dahi ya kisi order ke baare mein kaise madad karun?",
+      "usedFor": "Spoken on every inbound call before the caller says anything."
+    },
+    {
+      "key": "hold",
+      "text": "Ek minute, main check kar raha hoon.",
+      "usedFor": "Filler while a lookup runs."
+    },
+    {
+      "key": "transfer",
+      "text": "Main aapko abhi hamari team se jod raha hoon. Kripya line par rahiye.",
+      "usedFor": "Spoken immediately before a warm transfer to a human."
+    },
+    {
+      "key": "not-understood",
+      "text": "Maaf kijiye, main theek se samajh nahi paya. Kripya dobara bataiye.",
+      "usedFor": "Recognition returned nothing usable."
+    },
+    {
+      "key": "closing",
+      "text": "Madhusudan family se baat karne ke liye dhanyavaad. Aapka din shubh ho.",
+      "usedFor": "Sign-off at the end of a call."
+    },
+    {
+      "key": "fallback",
+      "text": "Namaste, Madhusudan family se baat ho rahi hai. Aapke order ki jaankari ke liye dhanyavaad. Main aapki request register kar raha hoon aur hamari team aapse jald hi sampark karegi.",
+      "usedFor": "Scripted line that keeps the line alive if the live pipeline is unreachable."
+    }
+  ]
+}

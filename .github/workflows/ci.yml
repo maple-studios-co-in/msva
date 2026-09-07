@@ -37,5 +37,7 @@ jobs:
         run: pnpm --filter @msva/db migrate
       - name: Typecheck
         run: pnpm -r typecheck
+      - name: Test
+        run: pnpm test
       - name: Build
         run: pnpm -r build

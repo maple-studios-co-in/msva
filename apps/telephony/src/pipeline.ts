@@ -146,7 +146,7 @@ export function createCallPipeline(ws: WebSocket, call: TelephonyCall): CallPipe
         sampleRate: SAMPLE_RATE
       });
       tts = prerendered
-        ? createBufferTts(prerendered)
+        ? createBufferTts(prerendered, { sampleRate: SAMPLE_RATE })
         : createSarvamTts({ voice: TTS_VOICE, language: LANGUAGE, sampleRate: SAMPLE_RATE });
       botSpeaking = true;
       const playback = streamTtsOut(tts);

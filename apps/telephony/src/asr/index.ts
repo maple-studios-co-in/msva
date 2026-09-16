@@ -10,7 +10,10 @@
 // `deepgram.ts`. The pipeline picks one by env var `ASR_PROVIDER`.
 // ---------------------------------------------------------------------------
 
+export type AsrErrorCode = "recognition_failed" | "backlog_full";
+
 export type AsrEvent =
+  | { type: "error"; code: AsrErrorCode; message: string; retryable: true }
   | { type: "partial"; text: string; confidence: number }
   | { type: "final"; text: string; confidence: number; durationMs: number };
 
@@ -25,4 +28,4 @@ export type StreamingAsr = {
   close(): Promise<void>;
 };
 
-export type AsrFactory = (options: { language: string; sampleRate: number }) => StreamingAsr;
+export type AsrFactory = (options: { language: string; sampleRate: number; energyFloor?: number }) => StreamingAsr;

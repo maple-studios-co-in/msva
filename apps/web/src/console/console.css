@@ -99,6 +99,18 @@
   font-size: 13.5px;
 }
 
+.co-head .co-update-status {
+  font-size: 12px;
+}
+
+.co-refresh-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
 /* Buttons + inputs */
 .co-btn {
   appearance: none;

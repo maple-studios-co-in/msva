@@ -5,6 +5,8 @@ import type {
   ToolResult
 } from "@msva/shared";
 import { randomUUID } from "node:crypto";
+import { CALL_GREETING, ASR_RETRY } from "./prompts.js";
+import { createBufferTts, lookupPrompt } from "./tts/promptCache.js";
 import type { WebSocket } from "ws";
 import { callLog } from "./callLog.js";
 import { streamAgent } from "./agentClient.js";
@@ -78,7 +80,12 @@ export function createBrowserPipeline(
   let endpointer: Endpointer | null = null;
   let tts: StreamingTts | null = null;
   let botSpeaking = false;
+  let bargeInAudio = Buffer.alloc(0);
   let turnInFlight = false;
+  let closed = false;
+  const pendingUtterances: { text: string; endpointAt: number | null }[] = [];
+  let retryPending = false;
+  let retryAnnounced = false;
   let started = false;
   // Latency instrumentation.
   let lastEndpointAt: number | null = null;
@@ -93,15 +100,15 @@ export function createBrowserPipeline(
   let turnTools: string[] = [];
 
   const sendJson = (payload: unknown) => {
-    if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(payload));
+    if (!closed && ws.readyState === ws.OPEN) ws.send(JSON.stringify(payload));
   };
   const sendAudio = (pcm: Buffer) => {
-    if (pcm.byteLength > 0 && ws.readyState === ws.OPEN) ws.send(pcm);
+    if (!closed && pcm.byteLength > 0 && ws.readyState === ws.OPEN) ws.send(pcm);
   };
 
   const startAsr = () => {
     asr?.close().catch(() => undefined);
-    asr = createSarvamAsr({ language, sampleRate: SAMPLE_RATE });
+    asr = createSarvamAsr({ language, sampleRate: SAMPLE_RATE, energyFloor: VAD_ENERGY_FLOOR });
     endpointer = createEndpointer({
       sampleRate: SAMPLE_RATE,
       silenceMs: VAD_SILENCE_MS,
@@ -113,10 +120,75 @@ export function createBrowserPipeline(
       for await (const event of asr!.events()) {
         if (event.type === "final" && event.text.trim()) {
           sendJson({ type: "user_transcript", text: event.text, final: true });
-          void runTurn(event.text);
+          if (pendingUtterances.length < 3) {
+            retryAnnounced = false;
+            retryPending = false;
+            pendingUtterances.push({ text: event.text, endpointAt: lastEndpointAt });
+          } else {
+            console.warn("[browser] caller turn queue full; requesting repetition");
+            queueRetry();
+          }
+          lastEndpointAt = null;
+          void drainPending();
+        } else if (event.type === "error") {
+          console.warn(`[browser] recognition unavailable: ${event.code}`);
+          queueRetry();
         }
       }
     })().catch((error) => console.error("[browser] asr loop error", error));
+  };
+
+  const queueRetry = () => {
+    if (closed || retryAnnounced) return;
+    retryAnnounced = true;
+    retryPending = true;
+    void drainPending();
+  };
+
+  const drainPending = async (): Promise<void> => {
+    if (closed || turnInFlight) return;
+    const utterance = pendingUtterances.shift();
+    if (utterance) await runTurn(utterance.text, utterance.endpointAt);
+    else if (retryPending) {
+      retryPending = false;
+      await speak(ASR_RETRY);
+    }
+  };
+
+  const speak = async (text: string): Promise<void> => {
+    if (closed || turnInFlight) return;
+    turnInFlight = true;
+    try {
+      const cached = lookupPrompt(text, { voice, language, sampleRate: SAMPLE_RATE });
+      const instance = cached
+        ? createBufferTts(cached, { sampleRate: SAMPLE_RATE })
+        : createSarvamTts({ voice, language, sampleRate: SAMPLE_RATE });
+      tts = instance;
+      botSpeaking = true;
+      sendJson({ type: "status", state: "speaking" });
+      sendJson({ type: "agent_transcript", text, final: true });
+      instance.push(text);
+      instance.end();
+      let reported = false;
+      for await (const chunk of instance.chunks()) {
+        if (closed || tts !== instance) break;
+        sendAudio(chunk.pcm);
+        if (text === ASR_RETRY && chunk.pcm.byteLength > 0 && !reported) {
+          reported = true;
+          void callLog.turn(sessionId, { index: ++turnIndex, callerText: null, replyText: text, source: "asr_error", toolCalls: [] });
+        }
+        if (chunk.isFinal) break;
+      }
+    } catch (error) {
+      console.error("[browser] prompt error", error);
+    } finally {
+      botSpeaking = false;
+      bargeInAudio = Buffer.alloc(0);
+      turnInFlight = false;
+      tts = null;
+      sendJson({ type: "status", state: "listening" });
+      void drainPending();
+    }
   };
 
   const interruptBot = () => {
@@ -129,14 +201,12 @@ export function createBrowserPipeline(
     sendJson({ type: "status", state: "listening" });
   };
 
-  const runTurn = async (utterance: string) => {
-    if (turnInFlight) return;
+  const runTurn = async (utterance: string, endpointAt: number | null) => {
+    if (closed || turnInFlight) return;
     turnInFlight = true;
     turnInterrupted = false;
     const index = ++turnIndex;
     const turnStart = Date.now();
-    const endpointAt = lastEndpointAt; // when the caller stopped talking
-    lastEndpointAt = null;
     let firstTokenAt: number | null = null;
     let firstAudioAt: number | null = null;
     let finalAt: number | null = null;
@@ -145,12 +215,14 @@ export function createBrowserPipeline(
     turnTools = [];
     try {
       sendJson({ type: "status", state: "thinking" });
-      tts = createSarvamTts({ voice, language, sampleRate: SAMPLE_RATE });
+      const instance = createSarvamTts({ voice, language, sampleRate: SAMPLE_RATE });
+      tts = instance;
       botSpeaking = true;
 
       const playback = (async () => {
         let announced = false;
-        for await (const chunk of tts!.chunks()) {
+        for await (const chunk of instance.chunks()) {
+          if (closed || tts !== instance) break;
           if (chunk.pcm.byteLength > 0) {
             if (!announced) {
               announced = true;
@@ -164,6 +236,7 @@ export function createBrowserPipeline(
       })();
 
       for await (const event of streamAgent(callId, utterance, conversation, sessionId)) {
+        if (closed) break;
         if (event.type === "token" && firstTokenAt === null) firstTokenAt = Date.now();
         if (event.type === "final") finalAt = Date.now();
         reply = handleAgentEvent(event, reply);
@@ -175,7 +248,9 @@ export function createBrowserPipeline(
       console.error("[browser] turn error", error);
     } finally {
       botSpeaking = false;
+      bargeInAudio = Buffer.alloc(0);
       turnInFlight = false;
+      tts = null;
       const since = (at: number | null) => (at === null ? null : at - turnStart);
       const metrics = {
         turnIndex: index,
@@ -205,6 +280,7 @@ export function createBrowserPipeline(
         escalationReason: conversation?.escalationReason,
         intent: conversation?.call.intent
       });
+      void drainPending();
     }
   };
 
@@ -246,6 +322,7 @@ export function createBrowserPipeline(
 
   return {
     handleText(message) {
+      if (closed) return;
       if (message.type === "start") {
         if (started) return;
         started = true;
@@ -264,7 +341,7 @@ export function createBrowserPipeline(
         });
         startAsr();
         // Greet the caller exactly as the phone path does.
-        void runTurn("[call-started]");
+        void speak(CALL_GREETING);
       } else if (message.type === "stop") {
         void this.close();
       }
@@ -274,10 +351,17 @@ export function createBrowserPipeline(
       endpointer.feed(pcm);
       // Caller talking over the bot → barge-in.
       if (botSpeaking) {
-        if (endpointer.voicedMs() > BARGE_IN_MS) interruptBot();
-        return; // don't transcribe bot echo into the next utterance
+        const retainBytes = Math.round(SAMPLE_RATE * 2 * (BARGE_IN_MS + 400) / 1000);
+        bargeInAudio = Buffer.from(Buffer.concat([bargeInAudio, pcm]).subarray(-retainBytes));
+        if (endpointer.voicedMs() <= BARGE_IN_MS) return;
+        interruptBot();
+        const interruptedAudio = bargeInAudio;
+        bargeInAudio = Buffer.alloc(0);
+        await asr.feed(interruptedAudio);
+      } else {
+        bargeInAudio = Buffer.alloc(0);
+        await asr.feed(pcm);
       }
-      await asr.feed(pcm);
       if (endpointer.endpointed()) {
         endpointer.reset();
         lastEndpointAt = Date.now(); // caller just stopped talking
@@ -285,6 +369,11 @@ export function createBrowserPipeline(
       }
     },
     async close() {
+      if (closed) return;
+      closed = true;
+      pendingUtterances.length = 0;
+      bargeInAudio = Buffer.alloc(0);
+      retryPending = false;
       tts?.cancel();
       await asr?.close().catch(() => undefined);
       asr = null;

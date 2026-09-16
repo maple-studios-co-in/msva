@@ -12,8 +12,10 @@ import { createSarvamAsr } from "./asr/sarvam.js";
 import { clearFrame, mediaFrame, type ExotelInboundEvent } from "./exotel.js";
 import type { StreamingTts } from "./tts/index.js";
 import { createSarvamTts } from "./tts/sarvam.js";
+import { createBufferTts, lookupPrompt } from "./tts/promptCache.js";
 import { createEndpointer, type Endpointer } from "./vad.js";
 import { callLog } from "./callLog.js";
+import { CALL_GREETING, ASR_RETRY } from "./prompts.js";
 
 // ---------------------------------------------------------------------------
 // Per-call pipeline (Exotel inbound)
@@ -35,9 +37,6 @@ const SAMPLE_RATE = 8000;
 const LANGUAGE = process.env.AGENT_LANGUAGE ?? "hi-IN";
 const TTS_VOICE = process.env.TTS_VOICE ?? "neha";
 const OUT_FRAME_BYTES = 1600; // 100 ms @ 8 kHz/16-bit; multiple of 320
-const GREETING =
-  process.env.CALL_GREETING ??
-  "Namaste! Madhusudan family se baat ho rahi hai. Main aapki AI assistant hoon. Bataiye, milk, ghee, paneer, dahi ya kisi order ke baare mein kaise madad karun?";
 
 function digits(value: string): string {
   return value.replace(/[^0-9]/g, "");
@@ -69,10 +68,15 @@ export function createCallPipeline(ws: WebSocket, call: TelephonyCall): CallPipe
   let endpointer: Endpointer | null = null;
   let tts: StreamingTts | null = null;
   let botSpeaking = false;
+  let bargeInAudio = Buffer.alloc(0);
   let turnInFlight = false;
+  let closed = false;
+  const pendingUtterances: string[] = [];
+  let retryPending = false;
+  let retryAnnounced = false;
   // Persistence: the provider call sid is unique per call, so it doubles as
   // the stored call id. `started` gates end-of-call logging.
-  const sessionId = call.callSid;
+  let sessionId = call.callSid;
   let started = false;
   let ended = false;
   let turnIndex = 0;
@@ -80,7 +84,7 @@ export function createCallPipeline(ws: WebSocket, call: TelephonyCall): CallPipe
   let turnTools: string[] = [];
 
   const sendOut = (payload: unknown) => {
-    if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(payload));
+    if (!closed && ws.readyState === ws.OPEN) ws.send(JSON.stringify(payload));
   };
 
   const startAsr = () => {
@@ -91,10 +95,38 @@ export function createCallPipeline(ws: WebSocket, call: TelephonyCall): CallPipe
     (async () => {
       for await (const event of asr!.events()) {
         if (event.type === "final" && event.text.trim()) {
-          void runTurn(event.text);
+          if (pendingUtterances.length < 3) {
+            retryAnnounced = false;
+            retryPending = false;
+            pendingUtterances.push(event.text);
+          } else {
+            console.warn("[telephony] caller turn queue full; requesting repetition");
+            queueRetry();
+          }
+          void drainPending();
+        } else if (event.type === "error") {
+          console.warn(`[telephony] recognition unavailable: ${event.code}`);
+          queueRetry();
         }
       }
     })().catch((error) => console.error("asr loop error", error));
+  };
+
+  const queueRetry = () => {
+    if (closed || retryAnnounced) return;
+    retryAnnounced = true;
+    retryPending = true;
+    void drainPending();
+  };
+
+  const drainPending = async (): Promise<void> => {
+    if (closed || turnInFlight) return;
+    const utterance = pendingUtterances.shift();
+    if (utterance !== undefined) await runTurn(utterance);
+    else if (retryPending) {
+      retryPending = false;
+      await speak(ASR_RETRY);
+    }
   };
 
   const interruptBot = () => {
@@ -106,21 +138,24 @@ export function createCallPipeline(ws: WebSocket, call: TelephonyCall): CallPipe
   };
 
   // Stream a TTS instance out to Exotel, re-chunked to 320-byte multiples.
-  const streamTtsOut = async (instance: StreamingTts): Promise<void> => {
+  const streamTtsOut = async (instance: StreamingTts): Promise<boolean> => {
+    let played = false;
     let buffer = Buffer.alloc(0);
     const flush = (final: boolean) => {
+      if (closed || tts !== instance) { buffer = Buffer.alloc(0); return; }
       while (buffer.byteLength >= OUT_FRAME_BYTES) {
-        if (streamSid) sendOut(mediaFrame(streamSid, buffer.subarray(0, OUT_FRAME_BYTES)));
+        if (streamSid) { sendOut(mediaFrame(streamSid, buffer.subarray(0, OUT_FRAME_BYTES))); played = true; }
         buffer = buffer.subarray(OUT_FRAME_BYTES);
       }
       if (final && buffer.byteLength > 0) {
         const pad = (320 - (buffer.byteLength % 320)) % 320;
         const frame = pad > 0 ? Buffer.concat([buffer, Buffer.alloc(pad)]) : buffer;
-        if (streamSid) sendOut(mediaFrame(streamSid, frame));
+        if (streamSid) { sendOut(mediaFrame(streamSid, frame)); played = true; }
         buffer = Buffer.alloc(0);
       }
     };
     for await (const chunk of instance.chunks()) {
+      if (closed || tts !== instance) break;
       if (chunk.pcm.byteLength > 0) {
         buffer = Buffer.concat([buffer, chunk.pcm]);
         flush(false);
@@ -128,29 +163,47 @@ export function createCallPipeline(ws: WebSocket, call: TelephonyCall): CallPipe
       if (chunk.isFinal) break;
     }
     flush(true);
+    return played;
   };
 
   // Speak a fixed line (greeting / prompt) without invoking the agent.
   const speak = async (text: string): Promise<void> => {
-    if (turnInFlight) return;
+    if (closed || turnInFlight) return;
     turnInFlight = true;
     try {
-      tts = createSarvamTts({ voice: TTS_VOICE, language: LANGUAGE, sampleRate: SAMPLE_RATE });
+      // Fixed lines are rendered ahead of time (see data/prompts.json). On a
+      // hit we replay bytes from disk: no network round-trip, no per-call fee,
+      // and the caller hears the line immediately. A miss falls through to
+      // live synthesis, so a missing or stale cache is never fatal.
+      const prerendered = lookupPrompt(text, {
+        voice: TTS_VOICE,
+        language: LANGUAGE,
+        sampleRate: SAMPLE_RATE
+      });
+      tts = prerendered
+        ? createBufferTts(prerendered, { sampleRate: SAMPLE_RATE })
+        : createSarvamTts({ voice: TTS_VOICE, language: LANGUAGE, sampleRate: SAMPLE_RATE });
       botSpeaking = true;
       const playback = streamTtsOut(tts);
       tts.push(text);
       tts.end();
-      await playback;
+      const played = await playback;
+      if (text === ASR_RETRY && played) {
+        void callLog.turn(sessionId, { index: ++turnIndex, callerText: null, replyText: text, source: "asr_error", toolCalls: [] });
+      }
     } catch (error) {
       console.error("greeting error", error);
     } finally {
       botSpeaking = false;
+      bargeInAudio = Buffer.alloc(0);
       turnInFlight = false;
+      tts = null;
+      void drainPending();
     }
   };
 
   const runTurn = async (utterance: string) => {
-    if (turnInFlight) return; // simple lock; production uses a real queue.
+    if (closed || turnInFlight) return;
     turnInFlight = true;
     const index = ++turnIndex;
     const turnStart = Date.now();
@@ -166,6 +219,7 @@ export function createCallPipeline(ws: WebSocket, call: TelephonyCall): CallPipe
       const playback = streamTtsOut(tts!);
 
       for await (const event of streamAgent(call.callSid, utterance, conversation, sessionId)) {
+        if (closed) break;
         if (event.type === "token") {
           if (firstTokenAt === null) firstTokenAt = Date.now();
           reply += event.text;
@@ -179,7 +233,9 @@ export function createCallPipeline(ws: WebSocket, call: TelephonyCall): CallPipe
       console.error("turn error", error);
     } finally {
       botSpeaking = false;
+      bargeInAudio = Buffer.alloc(0);
       turnInFlight = false;
+      tts = null;
       const since = (at: number | null) => (at === null ? null : at - turnStart);
       void callLog.turn(sessionId, {
         index,
@@ -194,6 +250,7 @@ export function createCallPipeline(ws: WebSocket, call: TelephonyCall): CallPipe
         escalationReason: conversation?.escalationReason,
         intent: conversation?.call.intent
       });
+      void drainPending();
     }
   };
 
@@ -228,11 +285,15 @@ export function createCallPipeline(ws: WebSocket, call: TelephonyCall): CallPipe
   return {
     call,
     async handleInbound(event) {
+      if (closed) return;
       switch (event.event) {
         case "connected":
           // No-op; "start" gives us the streamSid + caller details.
           break;
         case "start": {
+          if (started) break;
+          call.callSid = event.start?.call_sid || call.callSid;
+          sessionId = call.callSid;
           streamSid = event.stream_sid ?? "";
           // The caller's real number arrives here — update the profile so the
           // agent looks them up by it.
@@ -259,18 +320,26 @@ export function createCallPipeline(ws: WebSocket, call: TelephonyCall): CallPipe
 
           startAsr();
           // Greet immediately and reliably (does not depend on the LLM).
-          void speak(GREETING);
+          void speak(CALL_GREETING);
           break;
         }
         case "media": {
           if (!asr || !endpointer) return;
           const pcm = Buffer.from(event.media.payload, "base64");
           endpointer.feed(pcm);
-          if (botSpeaking && endpointer.voicedMs() > 200) {
-            // Caller is talking over the bot — interrupt.
+          if (botSpeaking) {
+            // Keep a bounded pre-roll so the words that trigger interruption
+            // survive the voice-activity threshold.
+            bargeInAudio = Buffer.from(Buffer.concat([bargeInAudio, pcm]).subarray(-Math.round(SAMPLE_RATE * 2 * 0.8)));
+            if (endpointer.voicedMs() <= 200) return;
             interruptBot();
+            const interruptedAudio = bargeInAudio;
+            bargeInAudio = Buffer.alloc(0);
+            await asr.feed(interruptedAudio);
+          } else {
+            bargeInAudio = Buffer.alloc(0);
+            await asr.feed(pcm);
           }
-          if (!botSpeaking) await asr.feed(pcm);
           if (endpointer.endpointed()) {
             endpointer.reset();
             await asr.endpoint();
@@ -286,6 +355,11 @@ export function createCallPipeline(ws: WebSocket, call: TelephonyCall): CallPipe
       }
     },
     async close() {
+      if (closed) return;
+      closed = true;
+      pendingUtterances.length = 0;
+      bargeInAudio = Buffer.alloc(0);
+      retryPending = false;
       tts?.cancel();
       await asr?.close().catch(() => undefined);
       asr = null;

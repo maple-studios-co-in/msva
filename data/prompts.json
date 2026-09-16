@@ -1,0 +1,35 @@
+{
+  "_comment": "Fixed lines the agent says on every call. These are rendered once by `pnpm --filter @msva/telephony render:prompts` and played from disk, so they cost nothing per call and add no synthesis latency. The `text` must match EXACTLY what the code speaks — if you change CALL_GREETING or a line below, re-run the render script or the line quietly falls back to live synthesis.",
+  "prompts": [
+    {
+      "key": "greeting",
+      "text": "Namaste, main Madhusudan ki AI assistant hoon. Kaise madad kar sakti hoon?",
+      "usedFor": "Spoken on every inbound call before the caller says anything."
+    },
+    {
+      "key": "hold",
+      "text": "Ek pal, main jaankari dekh rahi hoon.",
+      "usedFor": "Filler while a lookup runs."
+    },
+    {
+      "key": "transfer",
+      "text": "Maaf kijiye, abhi call transfer nahi kar sakti. Kripya customer care se sampark kijiye.",
+      "usedFor": "Honest fallback while provider-side human transfer is unavailable."
+    },
+    {
+      "key": "not-understood",
+      "text": "Maaf kijiye, aapki baat sun nahi paayi. Dobara kahiye.",
+      "usedFor": "Recognition failure retry; never passed to the business agent as caller text."
+    },
+    {
+      "key": "closing",
+      "text": "Madhusudan family se baat karne ke liye dhanyavaad. Aapka din shubh ho.",
+      "usedFor": "Sign-off at the end of a call."
+    },
+    {
+      "key": "fallback",
+      "text": "Maaf kijiye, abhi seva uplabdh nahi hai. Kripya thodi der baad dobara call kijiye.",
+      "usedFor": "Service-unavailable line without claiming an order, request, or ticket was saved."
+    }
+  ]
+}

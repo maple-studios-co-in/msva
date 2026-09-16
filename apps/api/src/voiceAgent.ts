@@ -52,7 +52,7 @@ export function initialState(call: DemoCall): ConversationState {
       {
         role: "assistant",
         text:
-          "Namaste, Madhusudan family se baat ho rahi hai. Main AI assistant hoon. Bataiye, milk, ghee, dahi, paneer ya kisi aur product ke baare mein call hai?",
+          "Namaste, main Madhusudan ki AI assistant hoon. Kaise madad kar sakti hoon?",
         timestamp: now()
       },
       {
@@ -68,6 +68,7 @@ function inferState(state: ConversationState, message: string): ConversationStat
   const next: ConversationState = {
     ...state,
     collected: { ...state.collected },
+    outcome: state.outcome === "ticket_created" && state.collected.ticketId ? "ticket_created" : "in_progress",
     messages: [
       ...state.messages,
       { role: "caller", text: message, timestamp: now() }
@@ -81,43 +82,29 @@ function inferState(state: ConversationState, message: string): ConversationStat
   if (/\b(order|invoice|bill|payment|credit|adjust|due)\b/i.test(text)) {
     next.collected.reference = message;
   }
-  if (/\b(ghaziabad|delhi|noida|meerut|gurgaon|gurugram|faridabad|lucknow|kanpur|agra|aligarh|moradabad)\b/i.test(text)) {
-    next.collected.location = message;
-  }
-  // Madhusudan SKU recognition — catch the most common product mentions.
-  if (/\b(cow milk|toned milk|full cream|tea special|double toned|uht|flavored milk|elaichi|kesar badam)\b/i.test(text)) {
-    next.collected.product = "milk";
-  }
-  if (/\b(desi ghee|ghee tin|ghee bucket|ghee jar|poly pack|ceka pack)\b/i.test(text)) {
-    next.collected.product = "ghee";
-  }
-  if (/\b(dahi|curd|yogurt|magic|dahi lite|dahi magic)\b/i.test(text)) {
-    next.collected.product = "dahi";
-  }
-  if (/\b(paneer|cottage cheese|fresh paneer)\b/i.test(text)) {
-    next.collected.product = "paneer";
-  }
-  if (/\b(butter|chiplet|makkhan)\b/i.test(text)) {
-    next.collected.product = "butter";
-  }
-  if (/\b(gulab jamun|fresh cream|chaach|chaas|dairy whitener)\b/i.test(text)) {
-    next.collected.product = "specialty";
-  }
+  const acceptedMention = (match: RegExpMatchArray) =>
+    !/^\s*(?:nahi\b|nahin\b|not\b|नहीं)/i.test(message.slice(match.index! + match[0].length));
+  const places = [...message.matchAll(/\b(ghaziabad|delhi|noida|meerut|gurgaon|gurugram|faridabad|lucknow|kanpur|agra|aligarh|moradabad)\b/gi)].filter(acceptedMention);
+  if (places.length) next.collected.location = places.at(-1)![0];
+  // The latest mention wins, including "paneer nahi, dahi" corrections.
+  const products = [
+    { name: "milk", pattern: /\b(milk|full cream|tea special|double toned|uht|elaichi|kesar badam)\b/gi },
+    { name: "ghee", pattern: /\b(ghee|poly pack|ceka pack)\b/gi },
+    { name: "dahi", pattern: /\b(dahi|curd|yogurt|magic)\b/gi },
+    { name: "paneer", pattern: /\b(paneer|cottage cheese)\b/gi },
+    { name: "butter", pattern: /\b(butter|chiplet|makkhan)\b/gi },
+    { name: "specialty", pattern: /\b(gulab jamun|fresh cream|chaach|chaas|dairy whitener)\b/gi }
+  ].flatMap(({ name, pattern }) => [...message.matchAll(pattern)].filter(acceptedMention).map((match) => ({ name, index: match.index })))
+    .sort((left, right) => left.index - right.index);
+  if (products.length) next.collected.product = products.at(-1)!.name;
   if (/\b(agent|insaan|human|senior|manager|baat karwao|baat karwa)\b/i.test(text)) {
-    next.outcome = "human_transfer";
     next.escalationReason = "Caller requested human support.";
   }
 
   if (next.call.intent === "product_complaint" && next.call.urgency === "high") {
-    next.outcome = "human_transfer";
     next.escalationReason = "Food quality or safety complaint should be escalated.";
   } else if (next.call.intent === "invoice_payment") {
-    next.outcome = "human_transfer";
     next.escalationReason = "Payment or invoice dispute needs manual validation.";
-  } else if (next.call.intent === "delivery_delay") {
-    next.outcome = "ticket_created";
-  } else if (next.call.intent === "product_availability" && Object.keys(next.collected).length >= 1) {
-    next.outcome = "resolved_by_va";
   }
 
   return next;
@@ -149,44 +136,124 @@ function applyToolResult(state: ConversationState, result: ToolResult): void {
   }
 }
 
-function fallbackReply(state: ConversationState): string {
-  const { intent } = state.call;
+const providerRetryReply = "Maaf kijiye, abhi jawab dene mein dikkat aa rahi hai. Ek baar phir koshish karein?";
+const providerUnavailableReply = "Maaf kijiye, abhi bhi jawab dene mein dikkat aa rahi hai. Thodi der baad dobara call kijiye.";
 
-  if (state.outcome === "human_transfer") {
-    return `Bilkul samajh gaya. Is case ko main Madhusudan ki human support team ko transfer kar raha hoon. Summary unke paas pahunch jayegi: caller ${state.call.callerName}, issue ${state.collected.issue ?? intent}, phone ${state.call.phone}. Kripya line par rahiye.`;
+function providerFailureReply(state: ConversationState): string {
+  const repeated = state.messages.some((message) => message.role === "assistant" &&
+    (message.text === providerRetryReply || message.text === providerUnavailableReply));
+  return repeated ? providerUnavailableReply : providerRetryReply;
+}
+
+function fallbackReply(state: ConversationState): string {
+  if (state.collected.ticketId) {
+    return `Aapki request ka ticket ${state.collected.ticketId} hai. Aur kis baat mein madad chahiye?`;
   }
-  if (state.outcome === "ticket_created") {
-    return `Theek hai. Maine aapki request register kar di hai. Ticket number ${state.collected.ticketId ?? `MS-${state.call.phone.slice(-4)}`} hai. Madhusudan ki team delivery status check karke 30 minute ke andar callback karegi.`;
+  if (state.call.intent === "delivery_delay" || state.call.intent === "order_status") {
+    return "Aapka order ya invoice number kya hai?";
   }
-  if (state.outcome === "resolved_by_va") {
-    return "Theek hai. Aapke area ke liye Dahi Magic aur Dahi Lite ki availability note kar li hai. Distributor ko aaj evening tak request forward ho jayegi, aur confirmation SMS bhej diya jayega.";
+  if (state.call.intent === "product_complaint") {
+    return state.collected.product ? "Packet par batch number kya likha hai?" : "Kis product mein dikkat hai?";
   }
-  if (intent === "delivery_delay") {
-    return "Order ya invoice number bata dijiye. Agar number na ho to delivery area, product (Desi Ghee, Paneer, ya jo bhi ho), aur expected date bata dijiye — main turant ticket register kar deta hoon.";
+  if (state.call.intent === "invoice_payment") return "Aapka invoice number kya hai?";
+  if (!state.collected.product) return "Kis baat mein madad chahiye?";
+  if (!state.collected.location) return "Aapko kis area mein chahiye?";
+  return "Abhi live stock confirm nahi kar sakti hoon.";
+}
+
+// Speak only confirmed results, without a second model pass that could turn a
+// failed integration into a promise. At most two results are spoken per turn.
+function toolReply(results: ToolResult[]): string {
+  const lines = results.map((result) => {
+    const data = result.data && typeof result.data === "object" ? result.data as Record<string, unknown> : {};
+    if (!result.ok) {
+      switch (result.name) {
+        case "create_ticket": return "Maaf kijiye, abhi ticket save nahi ho paya.";
+        case "transfer_to_human": return "Maaf kijiye, abhi human support se connect nahi kar sakti hoon.";
+        case "check_inventory": return "Abhi live stock ki availability confirm nahi kar sakti hoon.";
+        case "send_whatsapp_confirmation": return "Maaf kijiye, WhatsApp message nahi bhej paayi hoon.";
+        default: return "Maaf kijiye, abhi order ki jaankari nahi mil paayi.";
+      }
+    }
+    if (result.name === "create_ticket" && typeof data.ticketId === "string") {
+      return `Aapki request save ho gayi hai, ticket number ${data.ticketId} hai.`;
+    }
+    if (result.name === "lookup_order") {
+      if (data.found === false) return "Is number par order nahi mila.";
+      if (data.found === true && typeof data.status === "string") {
+        const statuses: Record<string, string> = {
+          out_for_delivery: "order delivery ke liye nikal chuka hai",
+          scheduled: "order ki delivery schedule hai",
+          invoice_open: "invoice ka kaam abhi pending hai",
+          delivered: "order deliver ho chuka hai"
+        };
+        const status = statuses[data.status] ?? `status ${data.status.replaceAll("_", " ")} hai`;
+        const detail = data.status !== "delivered" && typeof data.eta === "string" && data.eta
+          ? `, record mein ${data.eta}` : "";
+        return `Order record ke mutabik ${status}${detail}.`;
+      }
+    }
+    if (result.name === "check_inventory" && typeof data.available === "boolean") {
+      return data.available ? "Stock record mein product available hai." : "Stock record mein product available nahi hai.";
+    }
+    return "Abhi is action ki confirmation nahi mili hai.";
+  });
+  // Keep a saved ticket reference alongside any failed follow-up action.
+  const saved = results.findIndex((result) => result.name === "create_ticket" && result.ok);
+  const failed = results.findIndex((result) => !result.ok);
+  const indices = [...new Set([saved, failed, ...results.map((_, index) => index)])].filter((index) => index >= 0);
+  return indices.slice(0, 2).map((index) => lines[index]).join(" ");
+}
+
+// Direct model text is bounded before yielding to TTS. Confirmations use
+// toolReply instead, so common unsupported action claims never reach speech.
+function directModelReply(text: string, state: ConversationState): string {
+  const cleaned = text.replace(/[\p{Extended_Pictographic}\uFE0F\u200D]/gu, "")
+    .replace(/[*_`#]/g, "").replace(/\s+/g, " ").trim()
+    .replace(/\bsamajh gaya\b/gi, "samajh gayi")
+    .replace(/\bkar sakta hoon\b/gi, "kar sakti hoon")
+    .replace(/\bkar raha hoon\b/gi, "kar rahi hoon");
+  const phone = state.call.phone.replace(/\D/g, "");
+  const sentences = cleaned.match(/[^.!?।]+[.!?।]+|[^.!?।]+$/g) ?? [];
+  const spoken: string[] = [];
+  let questionAsked = false;
+  for (const raw of sentences) {
+    const sentence = raw.trim();
+    const references = sentence.match(/\bTKT-\d+\b/gi) ?? [];
+    if (references.some((reference) => reference !== state.collected.ticketId)) {
+      return "Abhi ticket ki confirmation nahi mili hai.";
+    }
+    if (phone.length >= 8 && sentence.replace(/\D/g, "").includes(phone)) continue;
+    const action = /\b(ticket|request|transfer|connect|whatsapp|sms|message|forward|callback|call back|stock|availability)\b|टिकट|ट्रांसफर|मैसेज|स्टॉक/i.test(sentence);
+    if (action) {
+      const claims = sentence.matchAll(/\b(created|saved|registered|sent|queued|available|confirmed|scheduled|transferred|connected|will|kar diy[ai]|kar di|bana diy[ai]|kar rah[ai]|bhej|karegi|karega|karungi|ho gay[ai]|ho jayega)\b|बना दिया|कर दिया|भेज दिया|कर रही|करेगी|उपलब्ध/gi);
+      for (const claim of claims) {
+        // A question at the end or an unrelated "nahi" does not negate an
+        // earlier assertion. Only negation next to this action can do that.
+        const before = sentence.slice(0, claim.index);
+        const after = sentence.slice(claim.index! + claim[0].length);
+        const deniedBefore = /(?:\b(?:nahi|nahin|not|no|cannot|can't|unable|unavailable)|नहीं)(?:\s+\w+){0,2}\s*$/i.test(before);
+        const deniedAfter = /^\s+(?:(?:nahi|nahin|not)\b|नहीं)/i.test(after);
+        if (!deniedBefore && !deniedAfter) return "Abhi is action ki confirmation nahi mili hai.";
+      }
+    }
+    if (sentence.endsWith("?")) {
+      if (questionAsked) break;
+      questionAsked = true;
+    }
+    spoken.push(sentence);
+    if (spoken.length === 2) break;
   }
-  if (intent === "product_complaint") {
-    return "Mujhe product name (Cow Milk, Paneer, Dahi etc.), pack size, batch number, aur expiry date bata dijiye, aur aapka area bhi. Food quality serious matter hai, isliye details leke priority par escalate karunga.";
-  }
-  if (intent === "invoice_payment") {
-    return "Distributor code, invoice number, aur amount bata dijiye. Main details capture karke accounts team ko warm-transfer karunga taaki adjustment ho sake.";
-  }
-  return "Product name, quantity aur area bata dijiye. Main Madhusudan ke catalog mein availability check karke next step confirm karta hoon.";
+  const reply = spoken.join(" ");
+  return reply.split(/\s+/).length > 45 ? spoken[0]!.split(/\s+/).slice(0, 45).join(" ").replace(/[.!?,:;]$/, "") + "." : reply;
 }
 
 // ---------------------------------------------------------------------------
 // Ollama chat client (with native function-calling)
 //
-// Two entry points:
-//   • ollamaComplete(messages, tools) — non-streaming. Returns the assistant
-//     message so we can inspect `tool_calls`. This is the "decide what to do"
-//     pass.
-//   • ollamaStream(messages)          — streaming NDJSON. Yields content
-//     deltas for the spoken reply (the "say it" pass), grounded in any tool
-//     results we appended to the thread.
-//
-// If Ollama is unreachable or times out, both return empty and the caller
-// falls back to deterministic replies + heuristic tool synthesis so the demo
-// never breaks.
+// One decision call returns either a short reply or requested tools. Tool
+// results receive deterministic spoken confirmations. Provider failures get a
+// brief retry/unavailable reply and never launch guessed actions.
 // ---------------------------------------------------------------------------
 
 type OllamaMessage = {
@@ -200,11 +267,13 @@ type OllamaToolCall = { function: { name: string; arguments: Record<string, unkn
 function buildSystemPrompt(state: ConversationState): string {
   return [
     "You are the Madhusudan inbound dairy voice agent (brand: Madhusudan, legal entity: Creamy Foods Ltd).",
-    "Brand voice: warm, family-like, respectful. Tagline cue: 'Sealed with care. Delivered with love. Always Madhusudan.'",
+    "Speak as one warm, respectful female AI assistant. Use consistent feminine Hindi phrasing: kar sakti hoon, samajh gayi. Never pretend to be human.",
     "Catalog you can talk about: Cow Milk, Toned Milk, Full Cream Milk, Tea Special Milk, Double Toned Milk, UHT Milk; Desi Ghee in Tin / Bucket / Jar / Poly Pack / Ceka Pack; Dahi Lite and Dahi Magic (cup + jar); Fresh Paneer; Butter and Butter Chiplet; Chaach; Gulab Jamun Mix (Pouch + Ziplock); Flavored Milk in Elaichi / Kesar Badam / Coffee; Fresh Cream 200 ml + 1 L; Dairy Whitener.",
     "Respond only in natural Hinglish, using Devanagari only if the caller does.",
-    "Keep voice replies short: 1-3 sentences.",
-    "Use the provided tools to take real action: call lookup_order for delivery/order/invoice status, check_inventory for availability, create_ticket to log a request, transfer_to_human to escalate, send_whatsapp_confirmation to confirm.",
+    "Use 1-2 short spoken sentences, usually under 35 words, with at most one question. No emojis, markdown, taglines, marketing copy, or catalog lists unless requested.",
+    "Read the conversation before replying. Reuse details already given, accept the caller's latest correction over older details, and ask only the next missing question. Never repeat a generic availability question or the greeting.",
+    "Use tools before reporting an action. lookup_order reads a seeded order record, not a live ERP feed; describe it as the order record. create_ticket saves to the support queue. Inventory, WhatsApp and human transfer are currently unavailable; never claim stock, a sent message or a completed handoff.",
+    "Only claim an action succeeded after a successful tool result. A failure is not completion. Never invent ticket IDs, callbacks, callback deadlines, SMS, forwarding, availability or ETAs. Never read out the caller's phone number. Do not create another ticket when one is already recorded unless the caller explicitly requests a separate issue.",
     "When a tool returns data, base your reply ONLY on that data. Never invent order status, ETAs, or batch info. If a lookup returns found=false, say so and offer to create a ticket.",
     "Escalate food-quality / safety complaints, payment disputes, angry callers, or explicit human-agent requests via transfer_to_human.",
     `Caller phone on file: ${state.call.phone}. Use it as the phone argument when a tool needs one and the caller hasn't given another.`,
@@ -220,7 +289,7 @@ const TOOL_SCHEMAS = [
     type: "function",
     function: {
       name: "lookup_order",
-      description: "Look up live delivery/order/invoice status by order or invoice number, or by caller phone.",
+      description: "Read seeded delivery/order/invoice records by order or invoice number, or by caller phone.",
       parameters: {
         type: "object",
         properties: {
@@ -235,7 +304,7 @@ const TOOL_SCHEMAS = [
     type: "function",
     function: {
       name: "check_inventory",
-      description: "Check product availability for an area.",
+      description: "Request product availability for an area; currently returns unavailable because no inventory provider is connected.",
       parameters: {
         type: "object",
         properties: {
@@ -250,7 +319,7 @@ const TOOL_SCHEMAS = [
     type: "function",
     function: {
       name: "create_ticket",
-      description: "Log a support request for follow-up / callback.",
+      description: "Save a support request to the built-in ticket queue; no callback time is guaranteed.",
       parameters: {
         type: "object",
         properties: {
@@ -267,7 +336,7 @@ const TOOL_SCHEMAS = [
     type: "function",
     function: {
       name: "transfer_to_human",
-      description: "Warm-transfer the caller to a human queue for escalations.",
+      description: "Request a human transfer; currently returns unavailable because no telephony handoff is connected.",
       parameters: {
         type: "object",
         properties: {
@@ -283,7 +352,7 @@ const TOOL_SCHEMAS = [
     type: "function",
     function: {
       name: "send_whatsapp_confirmation",
-      description: "Queue a WhatsApp confirmation message to the caller.",
+      description: "Request WhatsApp confirmation; currently returns unavailable because no messaging provider is connected.",
       parameters: {
         type: "object",
         properties: {
@@ -361,77 +430,19 @@ async function ollamaComplete(
   }
 }
 
-async function* ollamaStream(messages: OllamaMessage[]): AsyncGenerator<string, void, void> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), ollamaTimeoutMs);
-
-  let response: Response;
-  try {
-    response = await fetch(`${ollamaBaseUrl}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: controller.signal,
-      body: JSON.stringify({
-        model: defaultModel,
-        stream: true,
-        think: false,
-        messages,
-        options: { temperature: 0.35, num_predict: 160 }
-      })
-    });
-  } catch {
-    clearTimeout(timeout);
-    return;
-  }
-
-  if (!response.ok || !response.body) {
-    clearTimeout(timeout);
-    return;
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let newlineIndex = buffer.indexOf("\n");
-      while (newlineIndex !== -1) {
-        const line = buffer.slice(0, newlineIndex).trim();
-        buffer = buffer.slice(newlineIndex + 1);
-        newlineIndex = buffer.indexOf("\n");
-        if (!line) continue;
-        try {
-          const parsed = JSON.parse(line) as { message?: { content?: string }; done?: boolean };
-          const delta = parsed.message?.content;
-          if (delta) yield delta;
-          if (parsed.done) return;
-        } catch {
-          // Ignore partial / malformed lines.
-        }
-      }
-    }
-  } finally {
-    clearTimeout(timeout);
-    reader.releaseLock();
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Anthropic (hosted Claude) client — fast tool-calling agent. Used when
 // LLM_PROVIDER=anthropic. One decision call (with tools); if Claude calls a
-// tool we execute it and stream a grounded follow-up reply.
+// tool we execute it and speak the confirmed result.
 // ---------------------------------------------------------------------------
 
 type AnthropicBlock = { type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> };
 
-async function anthropicRequest(system: string, messages: unknown[], stream: boolean): Promise<Response> {
+async function anthropicRequest(system: string, messages: unknown[]): Promise<{ content?: AnthropicBlock[] } | null> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), anthropicTimeoutMs);
   try {
-    return await fetch(`${anthropicBaseUrl}/v1/messages`, {
+    const response = await fetch(`${anthropicBaseUrl}/v1/messages`, {
       method: "POST",
       signal: controller.signal,
       headers: {
@@ -439,44 +450,16 @@ async function anthropicRequest(system: string, messages: unknown[], stream: boo
         "anthropic-version": "2023-06-01",
         "content-type": "application/json"
       },
-      body: JSON.stringify({ model: anthropicModel, max_tokens: 400, system, tools: ANTHROPIC_TOOLS, messages, stream })
+      body: JSON.stringify({ model: anthropicModel, max_tokens: 400, system, tools: ANTHROPIC_TOOLS, messages, stream: false })
     });
+    if (!response.ok) {
+      console.error("[anthropic] HTTP", response.status);
+      return null;
+    }
+    // Keep the abort deadline active until the whole JSON body is consumed.
+    return await response.json() as { content?: AnthropicBlock[] };
   } finally {
     clearTimeout(timeout);
-  }
-}
-
-async function* readAnthropicStream(response: Response): AsyncGenerator<string, void, void> {
-  const reader = response.body!.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let sep = buffer.indexOf("\n\n");
-      while (sep !== -1) {
-        const block = buffer.slice(0, sep);
-        buffer = buffer.slice(sep + 2);
-        sep = buffer.indexOf("\n\n");
-        const dataLine = block.split("\n").find((l) => l.startsWith("data:"));
-        if (!dataLine) continue;
-        try {
-          const ev = JSON.parse(dataLine.slice(5).trim()) as {
-            type?: string;
-            delta?: { type?: string; text?: string };
-          };
-          if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta" && ev.delta.text) {
-            yield ev.delta.text;
-          }
-        } catch {
-          // ignore keep-alives / malformed frames
-        }
-      }
-    }
-  } finally {
-    reader.releaseLock();
   }
 }
 
@@ -492,19 +475,15 @@ async function* anthropicAgent(
     content: m.content
   }));
 
-  let res: Response;
+  let data: { content?: AnthropicBlock[] } | null;
   try {
-    res = await anthropicRequest(systemPrompt, messages, false);
+    data = await anthropicRequest(systemPrompt, messages);
   } catch (error) {
     console.error("[anthropic] request failed", error);
     return { reply: "", used: false };
   }
-  if (!res.ok) {
-    console.error("[anthropic] HTTP", res.status, (await res.text()).slice(0, 200));
-    return { reply: "", used: false };
-  }
+  if (!data) return { reply: "", used: false };
 
-  const data = (await res.json()) as { content?: AnthropicBlock[] };
   const blocks = data.content ?? [];
   const toolUses = blocks.filter((b) => b.type === "tool_use");
   const textOut = blocks
@@ -514,8 +493,7 @@ async function* anthropicAgent(
 
   let reply = "";
   if (toolUses.length > 0) {
-    messages.push({ role: "assistant", content: blocks });
-    const toolResults: Array<Record<string, unknown>> = [];
+    const toolResults: ToolResult[] = [];
     for (const tu of toolUses) {
       const toolCall = normalizeToolCall(
         { id: tu.id ?? nextToolCallId(), name: (tu.name ?? "") as ToolName, args: tu.input ?? {} },
@@ -524,33 +502,18 @@ async function* anthropicAgent(
       yield { type: "tool_call", call: toolCall };
       const result = await dispatchTool(callId, toolCall);
       executed.push(toolCall);
-      applyToolToOutcome(nextState, toolCall);
+      applyToolToOutcome(nextState, toolCall, result);
       applyToolResult(nextState, result);
       yield { type: "tool_result", result };
-      toolResults.push({
-        type: "tool_result",
-        tool_use_id: tu.id,
-        content: JSON.stringify(result.ok ? result.data ?? { ok: true } : { error: result.error })
-      });
+      toolResults.push(result);
     }
-    messages.push({ role: "user", content: toolResults });
-
-    try {
-      const res2 = await anthropicRequest(systemPrompt, messages, true);
-      if (res2.ok && res2.body) {
-        for await (const delta of readAnthropicStream(res2)) {
-          reply += delta;
-          yield { type: "token", text: delta };
-        }
-      }
-    } catch (error) {
-      console.error("[anthropic] follow-up failed", error);
-    }
+    reply = toolReply(toolResults);
+    yield { type: "token", text: reply };
     return { reply, used: true };
   }
 
   if (textOut.trim()) {
-    reply = textOut.trim();
+    reply = directModelReply(textOut, nextState);
     yield { type: "token", text: reply };
     return { reply, used: true };
   }
@@ -579,13 +542,18 @@ function normalizeToolCall(call: ToolCall, state: ConversationState): ToolCall {
   return { ...call, args };
 }
 
-function applyToolToOutcome(state: ConversationState, call: ToolCall): void {
-  if (call.name === "create_ticket" && state.outcome === "in_progress") {
+function applyToolToOutcome(state: ConversationState, call: ToolCall, result: ToolResult): void {
+  if (!result.ok) return;
+  const data = result.data && typeof result.data === "object" ? result.data as Record<string, unknown> : {};
+  if (call.name === "create_ticket" && typeof data.ticketId === "string") {
     state.outcome = "ticket_created";
   }
-  if (call.name === "transfer_to_human") {
+  if (call.name === "transfer_to_human" && data.transferred === true) {
     state.outcome = "human_transfer";
     if (!state.escalationReason) state.escalationReason = String(call.args.reason ?? "escalation");
+  }
+  if (call.name === "check_inventory" && typeof data.available === "boolean" && state.outcome === "in_progress") {
+    state.outcome = "resolved_by_va";
   }
 }
 
@@ -602,14 +570,12 @@ function toOllamaHistory(state: ConversationState): OllamaMessage[] {
 // ---------------------------------------------------------------------------
 // Tool-call synthesis
 //
-// The qwen3.5:4b checkpoint is unreliable at native function calling, so for
-// the skeleton we derive tool calls deterministically from the inferred
-// outcome. Once the LLM is upgraded (or the prompt is tuned to emit JSON
-// tool calls) this function gets replaced by a parser over the model output.
+// Explicit LLM-off demo mode only. Actions are derived from intent and known
+// details; conversation outcomes change only after confirmed tool success.
 // ---------------------------------------------------------------------------
 
 function synthesizeToolCalls(state: ConversationState): ToolCall[] {
-  if (state.outcome === "ticket_created") {
+  if (state.call.intent === "delivery_delay" && !state.escalationReason && !state.collected.ticketId) {
     return [
       {
         id: nextToolCallId(),
@@ -623,7 +589,7 @@ function synthesizeToolCalls(state: ConversationState): ToolCall[] {
       }
     ];
   }
-  if (state.outcome === "human_transfer") {
+  if (state.escalationReason || state.call.intent === "human_agent") {
     return [
       {
         id: nextToolCallId(),
@@ -641,14 +607,14 @@ function synthesizeToolCalls(state: ConversationState): ToolCall[] {
       }
     ];
   }
-  if (state.outcome === "resolved_by_va" && state.call.intent === "product_availability") {
+  if (state.call.intent === "product_availability" && state.collected.product && state.collected.location) {
     return [
       {
         id: nextToolCallId(),
         name: "check_inventory",
         args: {
-          sku: state.collected.product ?? "lassi+dahi",
-          area: state.collected.location ?? "unknown"
+          sku: state.collected.product,
+          area: state.collected.location
         }
       }
     ];
@@ -660,13 +626,10 @@ function synthesizeToolCalls(state: ConversationState): ToolCall[] {
 // streamChat — primary entry point
 //
 // Yields a sequence of events for one caller turn:
-//   1. zero or more `token` events with incremental reply text (Ollama path),
-//   2. zero or more `tool_call` / `tool_result` pairs as tools execute,
-//   3. exactly one `final` event with the assembled reply + new state.
-//
-// The telephony pipeline pipes the `token` stream straight into TTS so audio
-// playback begins before generation finishes. The REST endpoint just
-// collects everything into a `ChatResponse`.
+//   1. zero or more `tool_call` / `tool_result` pairs as tools execute,
+//   2. a bounded `token` reply ready for TTS,
+//   3. exactly one `final` event with the reply and new state.
+// The REST endpoint collects the same events into a `ChatResponse`.
 // ---------------------------------------------------------------------------
 
 export async function* streamChat(
@@ -700,35 +663,28 @@ export async function* streamChat(
     } else if (llmEnabled) {
       const decision = await ollamaComplete(messages, TOOL_SCHEMAS);
 
-    if (decision && decision.toolCalls.length > 0) {
-      source = "ollama";
-      messages.push({ role: "assistant", content: decision.content, tool_calls: decision.rawToolCalls });
+      if (decision && decision.toolCalls.length > 0) {
+        source = "ollama";
 
-      for (const rawCall of decision.toolCalls) {
-        const toolCall = normalizeToolCall(rawCall, nextState);
-        yield { type: "tool_call", call: toolCall };
-        const result: ToolResult = await dispatchTool(toolCallId, toolCall);
-        executedToolCalls.push(toolCall);
-        applyToolToOutcome(nextState, toolCall);
-        applyToolResult(nextState, result);
-        yield { type: "tool_result", result };
-        messages.push({
-          role: "tool",
-          content: JSON.stringify(result.ok ? result.data ?? { ok: true } : { error: result.error })
-        });
+        const toolResults: ToolResult[] = [];
+        for (const rawCall of decision.toolCalls) {
+          const toolCall = normalizeToolCall(rawCall, nextState);
+          yield { type: "tool_call", call: toolCall };
+          const result: ToolResult = await dispatchTool(toolCallId, toolCall);
+          executedToolCalls.push(toolCall);
+          applyToolToOutcome(nextState, toolCall, result);
+          applyToolResult(nextState, result);
+          yield { type: "tool_result", result };
+          toolResults.push(result);
+        }
+        reply = toolReply(toolResults);
+        yield { type: "token", text: reply };
+      } else if (decision && decision.content.trim()) {
+        // Model answered directly, no tool needed.
+        source = "ollama";
+        reply = directModelReply(decision.content, nextState);
+        yield { type: "token", text: reply };
       }
-
-      // Pass 2: stream the spoken reply, now grounded in the tool results.
-      for await (const token of ollamaStream(messages)) {
-        reply += token;
-        yield { type: "token", text: token };
-      }
-    } else if (decision && decision.content.trim()) {
-      // Model answered directly, no tool needed.
-      source = "ollama";
-      reply = decision.content.trim();
-      yield { type: "token", text: reply };
-    }
     }
   } catch (error) {
     yield { type: "error", message: error instanceof Error ? error.message : "stream error" };
@@ -737,18 +693,21 @@ export async function* streamChat(
   // Safety net: if the model produced no usable reply, fall back deterministically
   // so the demo never goes silent.
   if (!reply.trim()) {
-    if (executedToolCalls.length === 0) {
+    source = "fallback";
+    const toolResults: ToolResult[] = [];
+    if (!llmEnabled && executedToolCalls.length === 0) {
       source = "fallback";
       for (const synthCall of synthesizeToolCalls(nextState)) {
         yield { type: "tool_call", call: synthCall };
         const result: ToolResult = await dispatchTool(toolCallId, synthCall);
         executedToolCalls.push(synthCall);
-        applyToolToOutcome(nextState, synthCall);
+        applyToolToOutcome(nextState, synthCall, result);
         applyToolResult(nextState, result);
+        toolResults.push(result);
         yield { type: "tool_result", result };
       }
     }
-    reply = fallbackReply(nextState);
+    reply = toolResults.length ? toolReply(toolResults) : llmEnabled ? providerFailureReply(nextState) : fallbackReply(nextState);
     yield { type: "token", text: reply };
   }
 
@@ -804,7 +763,7 @@ export async function handleChat(
     // minimal response if something exotic happens (e.g. consumer throws).
     const fallback = inferState(state ?? initialState(findDemoCall(callId)), message);
     return {
-      reply: fallbackReply(fallback),
+      reply: providerFailureReply(fallback),
       state: fallback,
       model: defaultModel,
       source: "fallback",

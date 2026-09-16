@@ -23,6 +23,8 @@ import {
   type TicketStatus,
   type UserRow
 } from "./api";
+import { isCallActive } from "./polling";
+import { usePollingLoad } from "./usePollingLoad";
 
 // ---------------------------------------------------------------------------
 // Console v0 — overview, call history with drawer, ticket queue, users.
@@ -268,8 +270,8 @@ function Shell({ user, onSignOut, onAuthError }: { user: SessionUser; onSignOut:
 // ---------------------------------------------------------------------------
 
 function OverviewPage({ onAuthError, navigate }: { onAuthError: (e: unknown) => void; navigate: (r: Route) => void }) {
-  const overview = useLoad<Overview>(() => api.overview().catch((e) => (onAuthError(e), Promise.reject(e))), []);
-  const recent = useLoad<Paged<CallRow>>(() => api.calls({ isTest: "all", pageSize: 8 }), []);
+  const overview = usePollingLoad<Overview>((signal) => api.overview(signal), [], { intervalMs: 5000, onError: onAuthError });
+  const recent = usePollingLoad<Paged<CallRow>>((signal) => api.calls({ isTest: "all", pageSize: 8 }, signal), [], { intervalMs: 5000, onError: onAuthError });
   const o = overview.data;
   return (
     <>
@@ -277,10 +279,11 @@ function OverviewPage({ onAuthError, navigate }: { onAuthError: (e: unknown) => 
         <div>
           <h1>Today</h1>
           <p>Live traffic only. Test calls are excluded from these numbers.</p>
+          <p className="co-update-status">{overview.error || recent.error ? "Updates delayed" : "Updates automatically"}</p>
         </div>
         <button className="co-btn" onClick={() => { overview.reload(); recent.reload(); }}>Refresh</button>
       </div>
-      {overview.error && <div className="co-error">{overview.error}</div>}
+      {overview.error && <RefreshError error={overview.error} hasData={!!overview.data} />}
       <div className="co-kpis">
         <div className="co-kpi"><span>Calls today</span><strong className="co-num">{o?.today.calls ?? "—"}</strong><small>{o ? `${o.today.handledByAgent} handled by the agent` : ""}</small></div>
         <div className="co-kpi"><span>Transferred to a human</span><strong className="co-num">{o?.today.transferred ?? "—"}</strong><small>{o && o.today.calls ? `${Math.round((o.today.transferred / o.today.calls) * 100)}% of calls` : ""}</small></div>
@@ -289,6 +292,7 @@ function OverviewPage({ onAuthError, navigate }: { onAuthError: (e: unknown) => 
         <div className="co-kpi"><span>Time to first word</span><strong className="co-num">{o?.today.avgTtfwMs ? `${(o.today.avgTtfwMs / 1000).toFixed(1)}s` : "—"}</strong><small>average today</small></div>
       </div>
       <div className="co-head"><div><h1 style={{ fontSize: 18 }}>Recent calls</h1></div><a className="co-btn" href="#/calls">All calls</a></div>
+      {recent.error && <RefreshError error={recent.error} hasData={!!recent.data} />}
       <CallsTable page={recent.data} loading={recent.loading} onOpen={(id) => navigate({ page: "calls", id })} />
     </>
   );
@@ -297,6 +301,15 @@ function OverviewPage({ onAuthError, navigate }: { onAuthError: (e: unknown) => 
 // ---------------------------------------------------------------------------
 // Calls
 // ---------------------------------------------------------------------------
+
+function RefreshError({ error, hasData, automatic = true }: { error: string; hasData: boolean; automatic?: boolean }) {
+  return (
+    <div className="co-error" role="status">
+      {hasData ? "Could not refresh. Showing the last saved update." : "Could not load the latest data."}{" "}
+      {automatic ? "Retrying automatically." : "Use Refresh to try again."}{" "}{error}
+    </div>
+  );
+}
 
 function CallsTable({ page, loading, onOpen, selectedId }: { page: Paged<CallRow> | null; loading: boolean; onOpen: (id: string) => void; selectedId?: string }) {
   return (
@@ -331,15 +344,17 @@ function CallsTable({ page, loading, onOpen, selectedId }: { page: Paged<CallRow
 
 function CallsPage({ user, route, navigate, onAuthError }: { user: SessionUser; route: Route; navigate: (r: Route) => void; onAuthError: (e: unknown) => void }) {
   const [filters, setFilters] = useState({ isTest: "all", outcome: "", q: "", page: 1 });
-  const list = useLoad<Paged<CallRow>>(
-    () => api.calls({ ...filters, pageSize: 25 }).catch((e) => (onAuthError(e), Promise.reject(e))),
-    [filters.isTest, filters.outcome, filters.q, filters.page]
+  const list = usePollingLoad<Paged<CallRow>>(
+    (signal) => api.calls({ ...filters, pageSize: 25 }, signal),
+    [filters.isTest, filters.outcome, filters.q, filters.page],
+    { intervalMs: 5000, onError: onAuthError }
   );
   const pages = list.data ? Math.max(1, Math.ceil(list.data.total / list.data.pageSize)) : 1;
   return (
     <>
       <div className="co-head">
-        <div><h1>Calls</h1><p>{list.data ? `${list.data.total} calls` : ""}</p></div>
+        <div><h1>Calls</h1><p>{list.data ? `${list.data.total} calls · ` : ""}{list.error ? "Updates delayed" : "Updates automatically"}</p></div>
+        <button className="co-btn" onClick={list.reload} disabled={list.loading || list.refreshing}>Refresh</button>
       </div>
       <div className="co-filters">
         <select className="co-select" value={filters.isTest} onChange={(e) => setFilters({ ...filters, isTest: e.target.value, page: 1 })}>
@@ -355,7 +370,7 @@ function CallsPage({ user, route, navigate, onAuthError }: { user: SessionUser; 
         </select>
         <input className="co-input" placeholder="Phone, name or ticket #" value={filters.q} onChange={(e) => setFilters({ ...filters, q: e.target.value, page: 1 })} />
       </div>
-      {list.error && <div className="co-error">{list.error}</div>}
+      {list.error && <RefreshError error={list.error} hasData={!!list.data} />}
       <CallsTable page={list.data} loading={list.loading} selectedId={route.id} onOpen={(id) => navigate({ page: "calls", id })} />
       <div className="co-pager">
         <span>Page {filters.page} of {pages}</span>
@@ -364,7 +379,7 @@ function CallsPage({ user, route, navigate, onAuthError }: { user: SessionUser; 
           <button className="co-btn" disabled={filters.page >= pages} onClick={() => setFilters({ ...filters, page: filters.page + 1 })}>Next</button>
         </span>
       </div>
-      {route.id && <CallDrawer id={route.id} user={user} onClose={() => { navigate({ page: "calls" }); list.reload(); }} onAuthError={onAuthError} />}
+      {route.id && <CallDrawer key={route.id} id={route.id} user={user} onClose={() => { navigate({ page: "calls" }); list.reload(); }} onAuthError={onAuthError} />}
     </>
   );
 }
@@ -390,15 +405,21 @@ function Drawer({ title, subtitle, onClose, children }: { title: ReactNode; subt
 }
 
 function CallDrawer({ id, user, onClose, onAuthError }: { id: string; user: SessionUser; onClose: () => void; onAuthError: (e: unknown) => void }) {
-  const call = useLoad<CallDetail>(() => api.call(id).catch((e) => (onAuthError(e), Promise.reject(e))), [id]);
+  const call = usePollingLoad<CallDetail>((signal) => api.call(id, signal), [id], { intervalMs: 2500, onError: onAuthError, shouldPoll: isCallActive });
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const c = call.data;
+  const active = !c || isCallActive(c);
   const toggleTest = async () => {
     if (!c) return;
     setBusy(true);
+    setError(null);
     try {
       await api.patchCall(c.id, { isTest: !c.isTest });
       call.reload();
+    } catch (err) {
+      onAuthError(err);
+      setError(err instanceof Error ? err.message : "Could not update the call");
     } finally {
       setBusy(false);
     }
@@ -406,7 +427,13 @@ function CallDrawer({ id, user, onClose, onAuthError }: { id: string; user: Sess
   const tools = useMemo(() => (c ? c.turns.flatMap((t) => (Array.isArray(t.toolCalls) ? (t.toolCalls as string[]) : [])) : []), [c]);
   return (
     <Drawer title={c ? c.callerName || c.caller?.name || "Unknown caller" : "Call"} subtitle={c ? `${c.fromNumber} · ${fmtTime(c.startedAt)} · ${fmtDuration(c.durationMs)}` : undefined} onClose={onClose}>
-      {call.error && <div className="co-error">{call.error}</div>}
+      <div className="co-refresh-row">
+        <span className="co-hint">{call.error ? "Updates delayed" : active ? "Updates automatically" : "Call finished · Saved transcript"}</span>
+        <button className="co-btn" onClick={call.reload} disabled={call.loading || call.refreshing}>Refresh</button>
+      </div>
+      {call.error && <RefreshError error={call.error} hasData={!!c} automatic={active} />}
+      {error && <div className="co-error" role="status">{error}</div>}
+      {call.loading && !c && <p className="co-hint">Loading call…</p>}
       {c && (
         <>
           <div className="co-filters">
@@ -417,6 +444,12 @@ function CallDrawer({ id, user, onClose, onAuthError }: { id: string; user: Sess
               <button className="co-btn" disabled={busy} onClick={toggleTest}>{c.isTest ? "Mark as live" : "Mark as test"}</button>
             )}
           </div>
+          {c.turns.some((turn) => turn.source === "fallback") && (
+            <p className="co-hint" role="note">The assistant used a fallback reply on this call. Review the transcript.</p>
+          )}
+          {c.turns.some((turn) => turn.source === "asr_error") && (
+            <p className="co-hint" role="note">Speech recognition needed a retry on this call. Review the transcript.</p>
+          )}
           <section className="co-section">
             <h3>Call details</h3>
             <div className="co-meta">
@@ -446,7 +479,8 @@ function CallDrawer({ id, user, onClose, onAuthError }: { id: string; user: Sess
           </section>
           <section className="co-section">
             <h3>Transcript</h3>
-            {c.utterances.length === 0 ? <p className="co-hint">No transcript was stored for this call.</p> : (
+            {active && <p className="co-hint">Saved speech appears here as the call progresses.</p>}
+            {c.utterances.length === 0 ? <p className="co-hint">{active ? "Waiting for the first transcript update…" : "No transcript was stored for this call."}</p> : (
               <div className="co-transcript">
                 {c.utterances.map((u) => (
                   <div key={u.id} className={`co-bubble ${u.speaker === "AGENT" ? "agent" : "caller"}`}>

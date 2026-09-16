@@ -1,0 +1,65 @@
+{
+  "generatedAt": "2026-09-16T07:48:52.938Z",
+  "entries": [
+    {
+      "key": "greeting",
+      "text": "Namaste, main Madhusudan ki AI assistant hoon. Kaise madad kar sakti hoon?",
+      "file": "greeting.hi-IN.neha.8000.pcm",
+      "voice": "neha",
+      "language": "hi-IN",
+      "sampleRate": 8000,
+      "bytes": 96938,
+      "renderedAt": "2026-09-16T07:48:45.810Z"
+    },
+    {
+      "key": "hold",
+      "text": "Ek pal, main jaankari dekh rahi hoon.",
+      "file": "hold.hi-IN.neha.8000.pcm",
+      "voice": "neha",
+      "language": "hi-IN",
+      "sampleRate": 8000,
+      "bytes": 50518,
+      "renderedAt": "2026-09-16T07:48:46.649Z"
+    },
+    {
+      "key": "transfer",
+      "text": "Maaf kijiye, abhi call transfer nahi kar sakti. Kripya customer care se sampark kijiye.",
+      "file": "transfer.hi-IN.neha.8000.pcm",
+      "voice": "neha",
+      "language": "hi-IN",
+      "sampleRate": 8000,
+      "bytes": 116054,
+      "renderedAt": "2026-09-16T07:48:48.299Z"
+    },
+    {
+      "key": "not-understood",
+      "text": "Maaf kijiye, aapki baat sun nahi paayi. Dobara kahiye.",
+      "file": "not-understood.hi-IN.neha.8000.pcm",
+      "voice": "neha",
+      "language": "hi-IN",
+      "sampleRate": 8000,
+      "bytes": 86016,
+      "renderedAt": "2026-09-16T07:48:49.583Z"
+    },
+    {
+      "key": "closing",
+      "text": "Madhusudan family se baat karne ke liye dhanyavaad. Aapka din shubh ho.",
+      "file": "closing.hi-IN.neha.8000.pcm",
+      "voice": "neha",
+      "language": "hi-IN",
+      "sampleRate": 8000,
+      "bytes": 102400,
+      "renderedAt": "2026-09-16T07:48:51.077Z"
+    },
+    {
+      "key": "fallback",
+      "text": "Maaf kijiye, abhi seva uplabdh nahi hai. Kripya thodi der baad dobara call kijiye.",
+      "file": "fallback.hi-IN.neha.8000.pcm",
+      "voice": "neha",
+      "language": "hi-IN",
+      "sampleRate": 8000,
+      "bytes": 114688,
+      "renderedAt": "2026-09-16T07:48:52.938Z"
+    }
+  ]
+}

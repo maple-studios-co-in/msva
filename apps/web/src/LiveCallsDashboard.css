@@ -1,0 +1,48 @@
+.live-data { display: grid; gap: 18px; min-width: 0; }
+.live-data-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; }
+.live-data-heading h2 { margin: 3px 0 7px; font-size: 28px; }
+.live-data-heading p:not(.eyebrow) { margin: 0; color: var(--ms-ink-soft); font-size: 14px; line-height: 1.6; }
+.live-data-console { color: var(--ms-red-dark); font-size: 13px; white-space: nowrap; padding-top: 12px; }
+.live-data-toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.live-data button, .live-data select { border: 1px solid var(--ms-border); background: var(--ms-surface); border-radius: 7px; padding: 9px 12px; color: var(--ms-ink-soft); font: inherit; font-size: 13px; }
+.live-data button:hover:not(:disabled) { border-color: var(--ms-red); color: var(--ms-red-dark); }
+.live-data button:disabled { opacity: 0.5; cursor: default; }
+.live-data button:focus-visible, .live-data select:focus-visible, .live-data-table-scroll:focus-visible { outline: 2px solid var(--ms-red); outline-offset: 3px; }
+.live-data-period { display: flex; gap: 6px; }
+.live-data button.selected { background: var(--ms-red); border-color: var(--ms-red); color: white; }
+.live-data button.selected:hover { background: var(--ms-red-dark); color: white; }
+.live-data-filter { display: flex; align-items: center; gap: 7px; color: var(--ms-ink-soft); font-size: 13px; }
+.live-data-refresh { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; }
+.live-data-context { display: flex; justify-content: space-between; gap: 10px 20px; flex-wrap: wrap; font-size: 12px; color: var(--ms-ink-soft); }
+.live-data-context span { display: inline-flex; align-items: center; gap: 6px; }
+.live-data-help { margin: -8px 0 0; color: var(--ms-ink-muted); font-size: 12px; line-height: 1.6; }
+.live-data-quality { display: flex; flex-wrap: wrap; gap: 12px 24px; font-size: 13px; color: var(--ms-ink-soft); }
+.live-data-quality strong { font-variant-numeric: tabular-nums; }
+.live-data-table-panel { min-width: 0; padding-bottom: 0; }
+.live-data-table-scroll { overflow-x: auto; }
+.live-data-table { border-collapse: collapse; width: 100%; font-size: 12px; text-align: left; }
+.live-data-table th { padding: 12px 10px; color: var(--ms-ink-soft); background: var(--ms-cream); font-weight: 600; white-space: nowrap; }
+.live-data-table td { padding: 15px 10px; border-bottom: 1px solid var(--ms-border-soft); vertical-align: middle; }
+.live-data-table time, .live-data-duration { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.live-data-status { display: inline-block; padding: 4px 7px; border-radius: 5px; background: #f1f1f1; white-space: nowrap; }
+.live-data-status.in_progress, .live-data-status.ringing, .live-data-status.queued { color: #166273; background: #e3f4f8; }
+.live-data-status.completed { color: #27603a; background: #e8f3e9; }
+.live-data-status.failed { color: #9f2330; background: #fde7e8; }
+.live-data-test { display: inline-block; margin-left: 6px; padding: 2px 5px; border-radius: 4px; background: var(--ms-cream); color: var(--ms-ink-soft); font-size: 10px; border: 1px solid var(--ms-border); }
+.live-data-warning { color: #875400; font-size: 12px; }
+.live-data-warning > span { display: block; line-height: 1.5; }
+.live-data-muted { color: var(--ms-ink-muted); }
+.live-data-error { display: flex; align-items: center; gap: 10px; padding: 12px; border: 1px solid #e9c6ac; border-radius: 8px; background: #fff1e7; color: #844124; font-size: 13px; }
+.live-data-error button { margin-left: auto; }
+.live-data-empty { display: grid; justify-items: center; text-align: center; padding: 32px 20px 38px; color: var(--ms-ink-muted); }
+.live-data-empty h3 { font-size: 20px; margin: 12px 0 8px; }
+.live-data-empty p { font-size: 13px; max-width: 440px; line-height: 1.6; margin: 0 0 14px; }
+.live-data-pagination { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 15px 0; font-size: 12px; color: var(--ms-ink-soft); }
+.live-data-pagination > div { display: flex; gap: 6px; }
+@media (max-width: 720px) {
+  .live-data-heading { flex-direction: column; gap: 4px; }
+  .live-data-console { padding-top: 0; }
+  .live-data-refresh { margin-left: 0; }
+  .live-data-context { gap: 8px; }
+  .live-data-pagination { flex-wrap: wrap; }
+}

@@ -81,7 +81,10 @@ export default defineConfig({
       {
         text: "Data",
         collapsed: true,
-        items: [{ text: "Call Metadata Analysis", link: "/call-metadata-analysis" }]
+        items: [
+          { text: "Live Call Data", link: "/live-call-data" },
+          { text: "Call Metadata Analysis (sample)", link: "/call-metadata-analysis" }
+        ]
       }
     ],
 

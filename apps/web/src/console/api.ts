@@ -182,10 +182,10 @@ export const api = {
     call<{ user: SessionUser }>("/api/admin/auth/verify", { method: "POST", body: JSON.stringify({ email, code }) }),
   logout: () => call<{ ok: true }>("/api/admin/auth/logout", { method: "POST" }),
 
-  overview: () => call<Overview>("/api/admin/overview"),
+  overview: (signal?: AbortSignal) => call<Overview>("/api/admin/overview", { signal }),
 
-  calls: (params: Record<string, string | number | undefined>) => call<Paged<CallRow>>(`/api/admin/calls${qs(params)}`),
-  call: (id: string) => call<CallDetail>(`/api/admin/calls/${encodeURIComponent(id)}`),
+  calls: (params: Record<string, string | number | undefined>, signal?: AbortSignal) => call<Paged<CallRow>>(`/api/admin/calls${qs(params)}`, { signal }),
+  call: (id: string, signal?: AbortSignal) => call<CallDetail>(`/api/admin/calls/${encodeURIComponent(id)}`, { signal }),
   patchCall: (id: string, body: { isTest?: boolean }) =>
     call<CallDetail>(`/api/admin/calls/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) }),
 

@@ -3,23 +3,23 @@
   "prompts": [
     {
       "key": "greeting",
-      "text": "Namaste! Madhusudan family se baat ho rahi hai. Main aapki AI assistant hoon. Bataiye, milk, ghee, paneer, dahi ya kisi order ke baare mein kaise madad karun?",
+      "text": "Namaste, main Madhusudan ki AI assistant hoon. Kaise madad kar sakti hoon?",
       "usedFor": "Spoken on every inbound call before the caller says anything."
     },
     {
       "key": "hold",
-      "text": "Ek minute, main check kar raha hoon.",
+      "text": "Ek pal, main jaankari dekh rahi hoon.",
       "usedFor": "Filler while a lookup runs."
     },
     {
       "key": "transfer",
-      "text": "Main aapko abhi hamari team se jod raha hoon. Kripya line par rahiye.",
-      "usedFor": "Spoken immediately before a warm transfer to a human."
+      "text": "Maaf kijiye, abhi call transfer nahi kar sakti. Kripya customer care se sampark kijiye.",
+      "usedFor": "Honest fallback while provider-side human transfer is unavailable."
     },
     {
       "key": "not-understood",
-      "text": "Maaf kijiye, main theek se samajh nahi paya. Kripya dobara bataiye.",
-      "usedFor": "Recognition returned nothing usable."
+      "text": "Maaf kijiye, aapki baat sun nahi paayi. Dobara kahiye.",
+      "usedFor": "Recognition failure retry; never passed to the business agent as caller text."
     },
     {
       "key": "closing",
@@ -28,8 +28,8 @@
     },
     {
       "key": "fallback",
-      "text": "Namaste, Madhusudan family se baat ho rahi hai. Aapke order ki jaankari ke liye dhanyavaad. Main aapki request register kar raha hoon aur hamari team aapse jald hi sampark karegi.",
-      "usedFor": "Scripted line that keeps the line alive if the live pipeline is unreachable."
+      "text": "Maaf kijiye, abhi seva uplabdh nahi hai. Kripya thodi der baad dobara call kijiye.",
+      "usedFor": "Service-unavailable line without claiming an order, request, or ticket was saved."
     }
   ]
 }

@@ -7,9 +7,10 @@ import { ensureCaller, toCallerType } from "../calls.js";
 // ---------------------------------------------------------------------------
 // CRM / helpdesk tools
 //
-// `lookupOrder` is a REAL backend: it queries a seeded order datastore
+// `lookupOrder` queries a seeded order datastore
 // (data/orders.json) by reference (order/invoice number) or caller phone and
-// returns live status / ETA / items. The remaining tools are still stubs —
+// returns that snapshot status / ETA / items. Ticket creation persists to the
+// built-in queue. Unconnected integrations return explicit failures —
 // wire them to whatever the customer actually uses (Freshdesk, Zoho Desk,
 // Salesforce, WhatsApp Business API) by replacing the function bodies. The
 // shape — args in, ToolResult out — is what the agent loop and the telephony
@@ -136,7 +137,13 @@ export async function createTicket(
         }
       });
       if (call) {
-        await prisma.call.update({ where: { id: call.id }, data: { outcome: "TICKET_CREATED" } });
+        try {
+          await prisma.call.update({ where: { id: call.id }, data: { outcome: "TICKET_CREATED" } });
+        } catch (error) {
+          // The ticket is already saved; a dashboard update must not turn it
+          // into a failed creation or encourage a duplicate ticket.
+          console.error("[crm] ticket saved but call outcome update failed", error);
+        }
       }
       return {
         id: callId,
@@ -146,44 +153,38 @@ export async function createTicket(
       };
     }
   } catch (error) {
-    console.error("[crm] ticket persistence failed, falling back to in-memory id", error);
+    console.error("[crm] ticket persistence failed", error);
   }
 
-  // No database (or it is down): keep the call alive with a reference the
-  // caller can quote; the console will not see it.
-  const ticketId = `TKT-${args.phone.slice(-4)}-${Date.now().toString().slice(-4)}`;
   return {
     id: callId,
     name: "create_ticket",
-    ok: true,
-    data: { ticketId, priority, intent, summary, persisted: false }
+    ok: false,
+    error: "Ticket storage is unavailable; the request was not saved."
   };
 }
 
 export async function checkInventory(
   callId: string,
-  args: CheckInventoryArgs
+  _args: CheckInventoryArgs
 ): Promise<ToolResult> {
-  // TODO: hit warehouse / DMS. Stub returns a believable availability bucket.
-  const available = !/lassi/i.test(args.sku) || /ghaziabad|delhi|noida/i.test(args.area);
+  // No inventory provider is connected; never infer stock from an SKU/area.
   return {
     id: callId,
     name: "check_inventory",
-    ok: true,
-    data: { sku: args.sku, area: args.area, available, nextRestockHours: available ? 0 : 18 }
+    ok: false,
+    error: "Live inventory is not connected; availability cannot be confirmed."
   };
 }
 
 export async function sendWhatsappConfirmation(
   callId: string,
-  args: SendWhatsappArgs
+  _args: SendWhatsappArgs
 ): Promise<ToolResult> {
-  // TODO: integrate WhatsApp Business API (Gupshup, Wati, or Meta direct).
-  // For now just echo what would be sent.
   return {
     id: callId,
     name: "send_whatsapp_confirmation",
-    ok: true,
-    data: { queued: true, template: args.template, to: args.phone, vars: args.vars }
+    ok: false,
+    error: "WhatsApp delivery is not configured; no message was sent or queued."
   };
 }

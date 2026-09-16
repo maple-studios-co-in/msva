@@ -29,16 +29,20 @@ call simulator. Fixed call lines served from pre-rendered audio.
 
 Nothing else matters until a real call can land and be handled honestly.
 
+The [call quality update](call-quality-update.md) adds truthful unavailable
+results, bounded per-call turn queues, ordered speech and live transcript
+refresh. These fixes do not complete the external integrations below.
+
 1. **Exotel account, KYC, applet enablement, number.** Start immediately, it is
    the long pole and it is external. Decide whose account and whose KYC first.
-2. **Warm transfer for real.** Today it reports success without dialling
-   anyone. The proposal promises food-safety and angry callers reach a human.
+2. **Warm transfer for real.** The unconnected integration now reports
+   unavailable. The proposal promises food-safety and angry callers reach a human.
    Until this is real, no live traffic.
 3. **Console sign-in by email.** Codes only reach the server log, so nobody at
    the client can log in. Security work in this stage: rate limit code
    requests, confirm expiry and single use, review session cookie flags.
-4. *Cleanup:* replace the single in-flight lock in the pipeline with a real
-   per-call queue. It is a known shortcut and it will not survive two callers.
+4. **Completed in the call quality update:** each call has a bounded queue for
+   final utterances received while an earlier reply is being processed.
 
 ## Stage 2 — Harden before traffic
 
@@ -57,8 +61,8 @@ Nothing else matters until a real call can land and be handled honestly.
    recognition actually requires.
 10. **ERP read-only adapter** behind an interface, with a fake implementation
     so tests never depend on their systems being up.
-11. **Real WhatsApp confirmation.** Another stub that currently reports
-    success. Same rule as warm transfer.
+11. **Real WhatsApp confirmation.** The unconnected integration now reports
+    unavailable. Same rule as warm transfer.
 12. **Ops dashboard on live call data**, replacing the sample spreadsheet the
     analytics view still reads.
 13. *Cleanup:* delete the CSV analytics path once the live one is trusted.
@@ -73,8 +77,10 @@ Nothing else matters until a real call can land and be handled honestly.
 
 Listed so they are decisions rather than surprises.
 
-- Warm transfer and WhatsApp confirmation are stubs that report success.
-- The pipeline serialises turns with a single boolean lock.
+- Warm transfer, inventory and WhatsApp confirmation are not connected and
+  report unavailable.
+- Recognition uses bounded REST requests; true streaming recognition and
+  provider playback acknowledgements remain follow-up work.
 - The analytics view reads a sample spreadsheet, not the database.
 - Login codes are written to the server log because no sender is configured.
 - Demo data, when seeded, is not marked as test data, because the overview

@@ -33,7 +33,9 @@ class SarvamStreamingTts implements StreamingTts {
   private cancelled = false;
   private queue: TtsChunk[] = [];
   private resolver: ((value: IteratorResult<TtsChunk>) => void) | null = null;
-  private inFlight = 0;
+  private textQueue: string[] = [];
+  private synthesizing = false;
+  private finished = false;
   private currentAbort: AbortController | null = null;
 
   constructor(
@@ -43,35 +45,33 @@ class SarvamStreamingTts implements StreamingTts {
   ) {}
 
   push(text: string): void {
-    if (this.cancelled) return;
+    if (this.cancelled || this.ended) return;
     this.pending += text;
-    const boundary = this.pending.search(/[.!?।]\s|[\n]/);
-    if (boundary !== -1) {
-      const chunk = this.pending.slice(0, boundary + 1);
+    let boundary: number;
+    while ((boundary = this.pending.search(/[.!?।]\s|[\n]/)) !== -1) {
+      this.enqueue(this.pending.slice(0, boundary + 1));
       this.pending = this.pending.slice(boundary + 1);
-      void this.synth(chunk, false);
-    } else if (this.pending.length > 80) {
-      const chunk = this.pending;
-      this.pending = "";
-      void this.synth(chunk, false);
     }
+    if (this.pending.length > 80) {
+      this.enqueue(this.pending);
+      this.pending = "";
+    }
+    void this.drain();
   }
 
   end(): void {
+    if (this.cancelled || this.ended) return;
     this.ended = true;
-    if (this.pending.length > 0) {
-      void this.synth(this.pending, true);
-      this.pending = "";
-    } else {
-      this.maybeClose();
-    }
+    this.enqueue(this.pending);
+    this.pending = "";
+    void this.drain();
   }
 
   cancel(): void {
     this.cancelled = true;
     this.pending = "";
+    this.textQueue = [];
     this.queue = [];
-    // Abort any in-flight Sarvam request so its body reader stops producing.
     this.currentAbort?.abort();
     this.currentAbort = null;
     this.maybeClose();
@@ -84,36 +84,44 @@ class SarvamStreamingTts implements StreamingTts {
           if (this.queue.length > 0) {
             return Promise.resolve({ value: this.queue.shift()!, done: false });
           }
-          if (this.cancelled || (this.ended && this.inFlight === 0 && this.pending.length === 0)) {
+          if (this.cancelled || this.finished) {
             return Promise.resolve({ value: undefined, done: true });
           }
-          return new Promise((resolve) => {
-            this.resolver = resolve;
-          });
+          return new Promise((resolve) => { this.resolver = resolve; });
         }
       })
     };
   }
 
-  private async synth(text: string, isFinalChunk: boolean): Promise<void> {
-    if (this.cancelled || !text.trim()) return;
-    this.inFlight += 1;
+  private enqueue(text: string): void {
+    if (text.trim()) this.textQueue.push(text.trim());
+  }
+
+  private async drain(): Promise<void> {
+    if (this.synthesizing || this.cancelled || this.finished) return;
+    this.synthesizing = true;
     try {
-      if (SARVAM_API_KEY) {
-        await this.sarvamStreamTts(text, isFinalChunk);
-      } else {
-        const stub = await this.stubAudio(text);
-        if (!this.cancelled) this.emit({ pcm: stub, isFinal: isFinalChunk });
-      }
-    } catch (error) {
-      if (!this.cancelled) {
-        console.error("[sarvam:tts] synth error", error);
-        const stub = await this.stubAudio(text);
-        if (!this.cancelled) this.emit({ pcm: stub, isFinal: isFinalChunk });
+      while (!this.cancelled && this.textQueue.length > 0) {
+        const text = this.textQueue.shift()!;
+        try {
+          if (SARVAM_API_KEY) await this.sarvamStreamTts(text);
+          else this.emit({ pcm: await this.stubAudio(text), isFinal: false });
+        } catch (error) {
+          if (!this.cancelled) {
+            console.error("[sarvam:tts] synth error", error);
+            this.emit({ pcm: await this.stubAudio(text), isFinal: false });
+          }
+        }
       }
     } finally {
-      this.inFlight -= 1;
-      if (this.ended && this.inFlight === 0 && this.pending.length === 0) this.maybeClose();
+      this.synthesizing = false;
+      // A single final marker belongs to the whole utterance, never an
+      // individual request. All preceding PCM is already queued in order.
+      if (!this.cancelled && this.ended && this.textQueue.length === 0) {
+        this.finished = true;
+        this.emit({ pcm: Buffer.alloc(0), isFinal: true });
+      }
+      this.maybeClose();
     }
   }
 
@@ -122,7 +130,7 @@ class SarvamStreamingTts implements StreamingTts {
    * body bytes into our TTS chunk queue as they arrive. Each `value` from
    * the reader is a Uint8Array of raw 16-bit PCM samples at `sampleRate`.
    */
-  private async sarvamStreamTts(text: string, isFinalChunk: boolean): Promise<void> {
+  private async sarvamStreamTts(text: string): Promise<void> {
     const abort = new AbortController();
     this.currentAbort = abort;
     const timeout = setTimeout(() => abort.abort(), SARVAM_TTS_TIMEOUT_MS);
@@ -152,10 +160,12 @@ class SarvamStreamingTts implements StreamingTts {
     }
 
     if (!response.ok || !response.body) {
+      // Error bodies can stall too. Status is enough to diagnose this failure;
+      // abort the response without waiting for its body and release the queue.
+      abort.abort();
       clearTimeout(timeout);
       if (this.currentAbort === abort) this.currentAbort = null;
-      const body = response.body ? await response.text() : "(no body)";
-      throw new Error(`Sarvam TTS stream HTTP ${response.status}: ${body.slice(0, 240)}`);
+      throw new Error(`Sarvam TTS stream HTTP ${response.status}`);
     }
 
     const reader = response.body.getReader();
@@ -164,7 +174,7 @@ class SarvamStreamingTts implements StreamingTts {
       while (true) {
         if (this.cancelled) break;
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done || this.cancelled) break;
         if (value && value.byteLength > 0) {
           receivedBytes += value.byteLength;
           // Forward bytes immediately — don't wait for the whole clip.
@@ -180,12 +190,6 @@ class SarvamStreamingTts implements StreamingTts {
     if (!this.cancelled && receivedBytes === 0) {
       throw new Error("Sarvam TTS stream returned zero bytes");
     }
-    // After the stream is fully drained, emit a sentinel chunk so the
-    // consumer (pipeline.ts playback loop) can advance / mark this segment
-    // complete. `isFinal` only true when the LLM has also said "end".
-    if (!this.cancelled && isFinalChunk && this.pending.length === 0) {
-      this.emit({ pcm: Buffer.alloc(0), isFinal: true });
-    }
   }
 
   private async stubAudio(text: string): Promise<Buffer> {
@@ -195,6 +199,7 @@ class SarvamStreamingTts implements StreamingTts {
   }
 
   private emit(chunk: TtsChunk) {
+    if (this.cancelled) return;
     if (this.resolver) {
       this.resolver({ value: chunk, done: false });
       this.resolver = null;
@@ -204,16 +209,12 @@ class SarvamStreamingTts implements StreamingTts {
   }
 
   private maybeClose() {
-    if (this.resolver && this.cancelled) {
-      this.resolver({ value: undefined, done: true });
-      this.resolver = null;
-      return;
-    }
-    if (this.resolver && this.ended && this.inFlight === 0 && this.pending.length === 0) {
+    if (this.resolver && (this.cancelled || (this.finished && this.queue.length === 0))) {
       this.resolver({ value: undefined, done: true });
       this.resolver = null;
     }
   }
+
 }
 
 export const createSarvamTts: TtsFactory = ({ voice, sampleRate, language }) =>

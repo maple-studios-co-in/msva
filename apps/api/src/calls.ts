@@ -182,11 +182,12 @@ export async function recordTurn(callId: string, turn: TurnInput): Promise<void>
 
   const outcome = toOutcome(turn.outcome);
   const callUpdate: Prisma.CallUpdateInput = {};
+  let reconciledOutcome: CallOutcome | undefined;
   if (outcome && outcome !== "IN_PROGRESS") callUpdate.outcome = outcome;
   else if (call.endedAt && call.outcome === "ABANDONED") {
     // Hangup may be saved before the model's final turn report. A late turn
     // proves interaction, not resolution; keep the original disconnect time.
-    callUpdate.outcome = call._count.tickets > 0 ? "TICKET_CREATED" : "IN_PROGRESS";
+    reconciledOutcome = call._count.tickets > 0 ? "TICKET_CREATED" : "IN_PROGRESS";
   }
   if (turn.collected && Object.keys(turn.collected).length > 0) callUpdate.collected = turn.collected;
   if (turn.escalationReason) callUpdate.escalationReason = turn.escalationReason;
@@ -204,7 +205,13 @@ export async function recordTurn(callId: string, turn: TurnInput): Promise<void>
           prisma.utterance.createMany({ data: utterances })
         ]
       : []),
-    ...(Object.keys(callUpdate).length > 0 ? [prisma.call.update({ where: { id: callId }, data: callUpdate })] : [])
+    ...(Object.keys(callUpdate).length > 0 ? [prisma.call.update({ where: { id: callId }, data: callUpdate })] : []),
+    ...(reconciledOutcome ? [prisma.call.updateMany({
+      // A ticket tool can save a confirmed outcome outside the log queue.
+      // Reconcile only if the row is still abandoned when this write runs.
+      where: { id: callId, outcome: "ABANDONED" },
+      data: { outcome: reconciledOutcome }
+    })] : [])
   ]);
 }
 

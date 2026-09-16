@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 const db = vi.hoisted(() => ({
-  call: { findUnique: vi.fn(), update: vi.fn(), upsert: vi.fn() },
+  call: { findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn(), upsert: vi.fn() },
   agent: { findFirst: vi.fn() },
   turn: { upsert: vi.fn() },
   utterance: { deleteMany: vi.fn(), createMany: vi.fn() },
@@ -39,14 +39,23 @@ describe("honest ended-call outcomes", () => {
   });
 });
 
+function mockSavedCall(row: Record<string, any>) {
+  db.call.findUnique.mockImplementation(async () => row);
+  db.call.update.mockImplementation(async ({ data }) => Object.assign(row, data));
+  db.call.updateMany.mockImplementation(async ({ where, data }) => {
+    if (where.outcome !== row.outcome) return { count: 0 };
+    Object.assign(row, data);
+    return { count: 1 };
+  });
+}
+
 describe("turns arriving after disconnect", () => {
   it.each([
     { source: "fallback", callerText: "Hello", replyText: "Abhi dikkat aa rahi hai", outcome: "in_progress" },
     { source: "asr_error", callerText: null, replyText: "Dobara kahiye" }
   ])("reconciles a late $source turn without extending the call", async turn => {
     const row: Record<string, any> = savedCall({ _count: { turns: 0, tickets: 0 } });
-    db.call.findUnique.mockImplementation(async () => row);
-    db.call.update.mockImplementation(async ({ data }) => Object.assign(row, data));
+    mockSavedCall(row);
     await recordCallEnd("call-1", {});
     expect(row.outcome).toBe("ABANDONED");
     const disconnectedAt = row.endedAt;
@@ -60,8 +69,7 @@ describe("turns arriving after disconnect", () => {
   });
   it("recognizes a saved ticket when the final turn arrives after the end event", async () => {
     const row: Record<string, any> = savedCall({ _count: { turns: 0, tickets: 0 } });
-    db.call.findUnique.mockImplementation(async () => row);
-    db.call.update.mockImplementation(async ({ data }) => Object.assign(row, data));
+    mockSavedCall(row);
     await recordCallEnd("call-1", {});
     const disconnectedAt = row.endedAt;
     row._count.tickets = 1;
@@ -69,10 +77,24 @@ describe("turns arriving after disconnect", () => {
     expect(row.outcome).toBe("TICKET_CREATED");
     expect(row.endedAt).toBe(disconnectedAt);
   });
+  it("does not overwrite a ticket saved concurrently with late-turn reconciliation", async () => {
+    const row: Record<string, any> = savedCall({ endedAt: new Date(), outcome: "ABANDONED", _count: { turns: 0, tickets: 0 } });
+    mockSavedCall(row);
+    db.call.findUnique.mockImplementation(async () => {
+      const snapshot = { ...row, _count: { ...row._count } };
+      // Simulate createTicket committing after the read snapshot was taken.
+      row.outcome = "TICKET_CREATED";
+      row._count.tickets = 1;
+      return snapshot;
+    });
+    await recordTurn("call-1", { index: 1, callerText: "Dahi chahiye", outcome: "in_progress", collected: { product: "dahi" } });
+    expect(row.outcome).toBe("TICKET_CREATED");
+    expect(row.collected).toEqual({ product: "dahi" });
+    expect(db.turn.upsert).toHaveBeenCalledWith(expect.objectContaining({ create: expect.objectContaining({ callerText: "Dahi chahiye" }) }));
+  });
   it("does not downgrade a verified outcome when a late fallback turn arrives", async () => {
     const row: Record<string, any> = savedCall({ outcome: "TICKET_CREATED" });
-    db.call.findUnique.mockImplementation(async () => row);
-    db.call.update.mockImplementation(async ({ data }) => Object.assign(row, data));
+    mockSavedCall(row);
     await recordCallEnd("call-1", {});
     await recordTurn("call-1", { index: 4, callerText: "Thanks", outcome: "in_progress" });
     expect(row.outcome).toBe("TICKET_CREATED");

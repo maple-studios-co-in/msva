@@ -317,7 +317,7 @@ function CallsTable({ page, loading, onOpen, selectedId }: { page: Paged<CallRow
       <table className="co-table">
         <thead>
           <tr>
-            <th>When</th><th>Caller</th><th>Type</th><th>Intent</th><th>Outcome</th><th>Duration</th><th>Turns</th><th>Ticket</th><th></th>
+            <th>When</th><th>Caller</th><th>Channel</th><th>Status</th><th>Type</th><th>Intent</th><th>Outcome</th><th>Duration</th><th>Turns</th><th>Ticket</th><th></th>
           </tr>
         </thead>
         <tbody>
@@ -325,9 +325,11 @@ function CallsTable({ page, loading, onOpen, selectedId }: { page: Paged<CallRow
             <tr key={row.id} className={`row ${selectedId === row.id ? "selected" : ""}`} onClick={() => onOpen(row.id)}>
               <td className="co-num">{fmtTime(row.startedAt)}</td>
               <td>{row.callerName || row.caller?.name || <span className="muted">Unknown</span>}<div className="muted co-num" style={{ fontSize: 12 }}>{row.fromNumber}</div></td>
+              <td>{row.provider === "BROWSER" ? "Browser" : titleCase(row.provider)}</td>
+              <td><Badge>{titleCase(row.status)}</Badge></td>
               <td>{titleCase(row.callerType)}</td>
               <td>{row.intent ? titleCase(row.intent) : <span className="muted">—</span>}</td>
-              <td><Badge tone={outcomeTone[row.outcome]}>{titleCase(row.outcome)}</Badge></td>
+              <td><Badge tone={outcomeTone[row.outcome]}>{row.endedAt && row.outcome === "IN_PROGRESS" ? "No confirmed resolution" : titleCase(row.outcome)}</Badge></td>
               <td className="co-num">{fmtDuration(row.durationMs)}</td>
               <td className="co-num">{row._count.turns}</td>
               <td className="co-num">{row.tickets.length ? row.tickets.map((t) => `#${t.number}`).join(", ") : <span className="muted">—</span>}</td>
@@ -437,7 +439,7 @@ function CallDrawer({ id, user, onClose, onAuthError }: { id: string; user: Sess
       {c && (
         <>
           <div className="co-filters">
-            <Badge tone={outcomeTone[c.outcome]}>{titleCase(c.outcome)}</Badge>
+            <Badge tone={outcomeTone[c.outcome]}>{c.endedAt && c.outcome === "IN_PROGRESS" ? "No confirmed resolution" : titleCase(c.outcome)}</Badge>
             <Badge>{titleCase(c.status)}</Badge>
             {c.isTest ? <Badge tone="test">Test call</Badge> : <Badge tone="live">Live call</Badge>}
             {atLeast(user, "SUPERVISOR") && (

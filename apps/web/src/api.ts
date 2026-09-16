@@ -1,4 +1,4 @@
-import type { AnalyticsResponse, ChatResponse, ConversationState, DemoCall } from "@msva/shared";
+import type { AnalyticsResponse, ChatResponse, ConversationState, DemoCall, LiveCallsResponse } from "@msva/shared";
 
 const apiBase = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:4100";
 
@@ -20,6 +20,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function getAnalytics(): Promise<AnalyticsResponse> {
   return request<AnalyticsResponse>("/api/analytics");
+}
+
+export function getLiveCalls(
+  filters: { from?: string; channel: LiveCallsResponse["channel"]; page: number; pageSize: number },
+  signal?: AbortSignal
+): Promise<LiveCallsResponse> {
+  const params = new URLSearchParams({ channel: filters.channel, page: String(filters.page), pageSize: String(filters.pageSize) });
+  if (filters.from) params.set("from", filters.from);
+  return request<LiveCallsResponse>(`/api/live-calls?${params}`, { signal });
 }
 
 export function getDemoCalls(): Promise<DemoCall[]> {

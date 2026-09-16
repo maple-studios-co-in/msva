@@ -18,36 +18,34 @@ The platform should:
 
 Implemented in this version:
 
-- Call analytics dashboard based on real metadata.
+- [Live call data](live-call-data.md) from recorded phone and browser sessions,
+  with automatic refresh and a demo-session filter.
+- Separate illustrative sample analytics, clearly labelled.
 - Hinglish voice-agent chat simulation.
 - Dummy distributor, retailer, and customer calls.
-- Escalation rules.
+- Honest unavailable responses for unconnected integrations.
 - Handoff summary.
-- Local Ollama LLM integration.
+- Hosted Anthropic or local Ollama agent integration.
+- Exotel/browser audio, speech recognition, speech synthesis and saved call transcripts.
+- Saved support tickets and an authenticated support console.
 - Fallback responses.
 
 Not implemented yet:
 
-- Live phone number.
-- Real audio streaming.
-- Speech-to-text.
-- Text-to-speech.
-- ERP order lookup.
-- CRM ticket creation.
+- Live ERP/inventory integration; order lookup uses seeded snapshots.
+- Provider-backed human transfer.
+- External CRM synchronisation and email delivery of console login codes.
 - WhatsApp/SMS sending.
 
 ## Client Demo Story
 
-1. Show the dashboard.
-2. Explain that only 22.7% of calls were answered in the provided metadata.
-3. Highlight peak demand, repeat callers, and after-hours/Sunday gaps.
-4. Open the VA Demo screen.
-5. Pick a distributor delivery-delay call.
-6. Use the sample caller line.
-7. Show that the AI captures the issue and creates a ticket/callback path.
-8. Pick a customer quality complaint.
-9. Show that the AI escalates to a human because quality complaints are sensitive.
-10. Show the handoff summary.
+1. Open **Live call data** and choose **Start demo session**.
+2. Make an Exotel phone call or browser microphone call.
+3. Show its real status, duration, turns and saved-ticket count updating.
+4. Review its transcript in the signed-in support console when available.
+5. If showing **Sample analytics** or **VA Demo**, explain that these use
+   illustrative historical figures or scripted scenarios, separate from the calls
+   just made. Do not present sample percentages as the client's results.
 
 ## Target Production Workflow
 

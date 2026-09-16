@@ -72,6 +72,44 @@ export type AnalyticsResponse = {
   findings: string[];
 };
 
+// Public demo dashboard: an explicit allow-list of recorded call facts.
+// Names, full numbers, transcripts, collected fields and provider IDs stay in
+// the authenticated support console.
+export type LiveCallRow = {
+  id: string;
+  startedAt: string;
+  endedAt: string | null;
+  channel: "phone" | "browser";
+  caller: string;
+  status: "QUEUED" | "RINGING" | "IN_PROGRESS" | "COMPLETED" | "NO_ANSWER" | "FAILED";
+  durationMs: number | null;
+  turns: number;
+  tickets: number;
+  fallbackTurns: number;
+  recognitionRetries: number;
+  isTest: boolean;
+};
+
+export type LiveCallsResponse = {
+  source: "recorded_calls";
+  updatedAt: string;
+  from: string;
+  channel: "all" | "phone" | "browser";
+  summary: {
+    totalCalls: number;
+    activeCalls: number;
+    completedCalls: number;
+    failedCalls: number;
+    tickets: number;
+    fallbackTurns: number;
+    recognitionRetries: number;
+  };
+  items: LiveCallRow[];
+  page: number;
+  pageSize: number;
+  total: number;
+};
+
 export type VoiceIntent =
   | "order_status"
   | "delivery_delay"

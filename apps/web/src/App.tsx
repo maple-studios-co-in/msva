@@ -54,6 +54,7 @@ import {
   type VoicePreview
 } from "./api";
 import { CallClient, type CallStatus } from "./callClient";
+import { LiveCallsDashboard } from "./LiveCallsDashboard";
 import { BookOpen, PhoneOff, ShieldAlert } from "lucide-react";
 
 const statusColors: Record<string, string> = {
@@ -253,9 +254,9 @@ function FlowPanel() {
   const steps = [
     ["Call lands", "Caller dials Madhusudan support — VA picks up in Hinglish"],
     ["Understand", "Distributor / retailer / consumer, SKU, urgency, repeat history"],
-    ["Resolve", "Delivery ETA, batch lookup, availability, complaint intake"],
-    ["Escalate", "Food-safety, payment dispute, angry caller → warm transfer"],
-    ["Log", "Ticket created, callback scheduled, analytics updated"]
+    ["Support", "Collect details, check sample orders or create a support ticket"],
+    ["Explain limits", "Inventory, WhatsApp and human transfer are not connected yet"],
+    ["Log", "Save call status, conversation turns and linked tickets"]
   ];
 
   return (
@@ -757,10 +758,9 @@ const STATUS_LABEL: Record<CallStatus, string> = {
   ended: "Call ended"
 };
 
-function LiveCall({ calls }: { calls: DemoCall[] }) {
+function LiveCall() {
   const [catalog, setCatalog] = useState<VoiceCatalog | null>(null);
   const [voice, setVoice] = useState<string>("neha");
-  const [personaId, setPersonaId] = useState<string>(calls[0]?.id ?? "call-dist-ghee-delay");
   const [status, setStatus] = useState<CallStatus>("idle");
   const [lines, setLines] = useState<CallLine[]>([]);
   const [micLevel, setMicLevel] = useState(0);
@@ -771,6 +771,7 @@ function LiveCall({ calls }: { calls: DemoCall[] }) {
   const [elapsed, setElapsed] = useState(0);
   const [failsafe, setFailsafe] = useState<DemoFailsafe | null>(null);
   const [failsafeActive, setFailsafeActive] = useState(false);
+  const [samplePlayback, setSamplePlayback] = useState(false);
   const [llmEnabled, setLlmEnabledState] = useState<boolean | null>(null);
   const [llmModel, setLlmModel] = useState<string>("");
 
@@ -839,6 +840,7 @@ function LiveCall({ calls }: { calls: DemoCall[] }) {
       return;
     }
     setError(null);
+    setSamplePlayback(false);
     setLines([]);
     setOutcome(null);
     setMetrics([]);
@@ -859,7 +861,7 @@ function LiveCall({ calls }: { calls: DemoCall[] }) {
     });
     clientRef.current = client;
     try {
-      await client.start({ callId: personaId, voice });
+      await client.start({ callId: "live-demo", from: "", voice });
     } catch (err) {
       setError(
         err instanceof Error
@@ -898,10 +900,8 @@ function LiveCall({ calls }: { calls: DemoCall[] }) {
     }
   }
 
-  // Failsafe: play the pre-recorded clip as a native agent turn. Used when the
-  // live pipeline misbehaves mid-demo. Renders identically to a real reply —
-  // speaking state, a caption that types out in sync with the audio, plus a
-  // believable latency + outcome readout.
+  // Sample playback stays visibly separate from an actual microphone call.
+  // It has no real call outcome or measured response latency.
   async function playFailsafe() {
     if (!failsafe?.available) return;
     await clientRef.current?.stop().catch(() => undefined);
@@ -913,6 +913,7 @@ function LiveCall({ calls }: { calls: DemoCall[] }) {
     setElapsed(0);
     setMuted(false);
     setFailsafeActive(true);
+    setSamplePlayback(true);
     setStatus("speaking");
 
     const text = failsafe.transcript ?? "";
@@ -926,12 +927,6 @@ function LiveCall({ calls }: { calls: DemoCall[] }) {
     };
     audio.onended = () => {
       if (text) setLines([{ role: "assistant", text, final: true }]);
-      if (failsafe.syntheticMetrics) {
-        setMetrics([{ turnIndex: 1, interrupted: false, ...failsafe.syntheticMetrics }]);
-      }
-      if (failsafe.outcome) {
-        setOutcome({ outcome: failsafe.outcome, collected: failsafe.collected ?? {}, reason: null });
-      }
       setFailsafeActive(false);
       setStatus("ended");
     };
@@ -945,7 +940,6 @@ function LiveCall({ calls }: { calls: DemoCall[] }) {
     }
   }
 
-  const persona = calls.find((call) => call.id === personaId) ?? calls[0];
   const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
   const ss = String(elapsed % 60).padStart(2, "0");
 
@@ -969,19 +963,7 @@ function LiveCall({ calls }: { calls: DemoCall[] }) {
           )}
         </div>
 
-        <label className="field-label">Simulated caller profile</label>
-        <select
-          className="voice-select"
-          value={personaId}
-          onChange={(event) => setPersonaId(event.target.value)}
-          disabled={inCall}
-        >
-          {calls.map((call) => (
-            <option key={call.id} value={call.id}>
-              {call.callerName} · {call.intent.replaceAll("_", " ")}
-            </option>
-          ))}
-        </select>
+        <p className="panel-note">Use your microphone for a real browser conversation. The agent learns the caller details from what you say.</p>
 
         <label className="field-label" style={{ marginTop: 16 }}>Agent voice</label>
         <select
@@ -1046,7 +1028,7 @@ function LiveCall({ calls }: { calls: DemoCall[] }) {
               title="Play the pre-recorded agent response"
             >
               <ShieldAlert size={15} />
-              {error ? "Play demo response instead" : "Demo failsafe"}
+              Play prerecorded sample
             </button>
           </div>
         )}
@@ -1058,7 +1040,8 @@ function LiveCall({ calls }: { calls: DemoCall[] }) {
             <PhoneCall size={30} />
             <span className="call-pulse" />
           </div>
-          <h2>{persona?.callerName ?? "Caller"}</h2>
+          <h2>{samplePlayback ? "Prerecorded sample" : "Browser caller"}</h2>
+          {samplePlayback && <p className="panel-note">Sample audio only · no live call outcome or measured latency</p>}
           <p className={`call-status ${status}`}>{STATUS_LABEL[status]}</p>
           {inCall && <p className="call-timer">{mm}:{ss}</p>}
 
@@ -1112,7 +1095,7 @@ function LiveCall({ calls }: { calls: DemoCall[] }) {
           {outcome && <span className={`outcome ${outcome.outcome}`}>{outcome.outcome.replaceAll("_", " ")}</span>}
         </div>
         <div className="summary-box">
-          <p><strong>Status:</strong> {outcome?.outcome.replaceAll("_", " ") ?? "in progress"}</p>
+          <p><strong>Status:</strong> {samplePlayback ? "Sample playback" : outcome?.outcome.replaceAll("_", " ") ?? (inCall ? "In progress" : status === "ended" ? "Call ended" : "No call started")}</p>
           <p><strong>Escalation:</strong> {outcome?.reason ?? "Not required yet"}</p>
           <p><strong>Fields:</strong> {outcome ? JSON.stringify(outcome.collected) : "{}"}</p>
         </div>
@@ -1152,9 +1135,8 @@ function LiveCall({ calls }: { calls: DemoCall[] }) {
         )}
 
         <p className="panel-note" style={{ marginTop: 12 }}>
-          Same pipeline as real phone calls — Sarvam ASR → Hinglish brain (with live tool calls) → Sarvam TTS. The agent
-          calls <code>lookup_order</code> and friends against real backends. Swap the transport to Exotel/Twilio for live
-          PSTN calls — see <code>docs/live-call.md</code>.
+          Browser and Exotel calls use the same voice service. Call activity and saved tickets appear in Live call data.
+          Order examples use sample records; inventory, WhatsApp and human transfer are not connected yet.
         </p>
       </div>
     </section>
@@ -1166,7 +1148,7 @@ function Platform() {
     {
       icon: Bot,
       title: "Hinglish Brain",
-      text: "Streaming Ollama qwen3.5:4b for natural Hinglish replies, with deterministic fallback so the demo never breaks."
+      text: "Short Hindi and Hinglish replies from the configured AI service. If it is unavailable, the caller hears a brief retry message."
     },
     {
       icon: Route,
@@ -1176,12 +1158,12 @@ function Platform() {
     {
       icon: ShieldCheck,
       title: "Food-Safety Guardrails",
-      text: "Quality complaints with batch numbers, payment disputes, and angry callers are warm-transferred with full context."
+      text: "The agent can collect complaint details and save a support ticket. Human transfer is not connected yet."
     },
     {
       icon: Activity,
       title: "Operations Loop",
-      text: "Every call updates KPIs — containment, missed demand, repeat-caller load, and route-level bottlenecks."
+      text: "Recorded phone and browser calls update the live call table, with status, duration, turns, saved tickets and error counts."
     }
   ];
 
@@ -1200,92 +1182,87 @@ function Platform() {
 
 export function App() {
   const [analytics, setAnalytics] = useState<AnalyticsResponse | null>(null);
-  const [calls, setCalls] = useState<DemoCall[]>([]);
-  const [tab, setTab] = useState<"dashboard" | "call" | "demo" | "voices" | "platform">("dashboard");
-  const [error, setError] = useState<string | null>(null);
+  const [calls, setCalls] = useState<DemoCall[] | null>(null);
+  const [tab, setTab] = useState<"dashboard" | "sample" | "call" | "demo" | "voices" | "platform">("dashboard");
+  const [sampleError, setSampleError] = useState<string | null>(null);
+  const [demoError, setDemoError] = useState<string | null>(null);
+  const [retry, setRetry] = useState(0);
+
+  // Sample data is optional; its availability never gates live call data.
+  useEffect(() => {
+    if (tab !== "sample" || analytics) return;
+    let disposed = false;
+    setSampleError(null);
+    getAnalytics().then((data) => { if (!disposed) setAnalytics(data); })
+      .catch(() => { if (!disposed) setSampleError("Sample analytics could not be loaded."); });
+    return () => { disposed = true; };
+  }, [tab, analytics, retry]);
 
   useEffect(() => {
-    Promise.all([getAnalytics(), getDemoCalls()])
-      .then(([analyticsData, callData]) => {
-        setAnalytics(analyticsData);
-        setCalls(callData);
-      })
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : "Unable to load app data"));
-  }, []);
+    if (tab !== "demo" || calls) return;
+    let disposed = false;
+    setDemoError(null);
+    getDemoCalls().then((data) => { if (!disposed) setCalls(data); })
+      .catch(() => { if (!disposed) setDemoError("Sample scenarios could not be loaded."); });
+    return () => { disposed = true; };
+  }, [tab, calls, retry]);
 
   return (
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark" aria-label="Madhusudan">MS</div>
-          <div>
-            <strong>Madhusudan VA</strong>
-            <span>Inbound voice support</span>
-          </div>
+          <div><strong>Madhusudan VA</strong><span>Inbound voice support</span></div>
         </div>
         <nav>
           <button className={tab === "dashboard" ? "active" : ""} onClick={() => setTab("dashboard")}>
-            <BarChart3 size={18} />
-            Call Analytics
-            <em className="nav-tag">sample</em>
+            <Activity size={18} /> Live call data
           </button>
           <button className={tab === "call" ? "active" : ""} onClick={() => setTab("call")}>
-            <PhoneCall size={18} />
-            Live Call
+            <PhoneCall size={18} /> Browser call
+          </button>
+          <button className={tab === "sample" ? "active" : ""} onClick={() => setTab("sample")}>
+            <BarChart3 size={18} /> Sample analytics <em className="nav-tag">sample</em>
           </button>
           <button className={tab === "demo" ? "active" : ""} onClick={() => setTab("demo")}>
-            <Bot size={18} />
-            VA Demo
+            <Bot size={18} /> Text demo <em className="nav-tag">sample</em>
           </button>
           <button className={tab === "voices" ? "active" : ""} onClick={() => setTab("voices")}>
-            <Mic size={18} />
-            Voice Playground
+            <Mic size={18} /> Voice Playground
           </button>
           <button className={tab === "platform" ? "active" : ""} onClick={() => setTab("platform")}>
-            <Route size={18} />
-            Platform Flow
+            <Route size={18} /> Platform Flow
           </button>
           <button onClick={() => window.open("/guide.html", "_blank")}>
-            <BookOpen size={18} />
-            Guide &amp; Docs
+            <BookOpen size={18} /> Guide &amp; Docs
           </button>
         </nav>
-        <div className="sidebar-note">
-          <Clock size={18} />
-          <span>Sealed with care. Delivered with love. Always Madhusudan.</span>
-        </div>
+        <div className="sidebar-note"><Clock size={18} /><span>Recorded call activity, updated automatically during your demo.</span></div>
       </aside>
 
       <main>
         <header className="hero">
           <div>
             <p className="eyebrow">Madhusudan Voice Agent</p>
-            <h1>
-              <span className="accent">100% pure</span> Hinglish support, around the clock
-            </h1>
-            <p>
-              Inbound calls for milk, ghee, paneer, dahi and every other Madhusudan SKU — answered instantly in Hinglish,
-              with human handoff only when the case actually needs it.
-            </p>
+            <h1>Hinglish support. <span className="accent">Live call visibility.</span></h1>
+            <p>Follow phone and browser conversations as they happen, with recorded call details and saved support tickets.</p>
           </div>
           <div className="hero-actions">
-            <span><CheckCircle2 size={16} /> Sarvam voice live</span>
-            <span><Bot size={16} /> Ollama agent ready</span>
+            <span><PhoneCall size={16} /> Exotel phone calls</span>
+            <span><Mic size={16} /> Browser conversations</span>
           </div>
         </header>
 
-        {error && <div className="error-box">{error}</div>}
-        {!analytics && !error && <div className="loading">Loading MSVA platform...</div>}
-        {analytics && tab === "dashboard" && <Dashboard analytics={analytics} />}
-        {analytics && tab === "call" && <LiveCall calls={calls} />}
-        {analytics && tab === "demo" && <VoiceDemo calls={calls} />}
-        {analytics && tab === "voices" && <VoicePlayground />}
-        {analytics && tab === "platform" && (
-          <>
-            <FlowPanel />
-            <Platform />
-          </>
-        )}
+        {tab === "dashboard" && <LiveCallsDashboard />}
+        {tab === "sample" && (analytics ? <Dashboard analytics={analytics} /> : sampleError ? (
+          <div className="error-box" role="alert">{sampleError} <button type="button" onClick={() => setRetry((value) => value + 1)}>Retry</button></div>
+        ) : <div className="loading">Loading sample analytics…</div>)}
+        {tab === "call" && <LiveCall />}
+        {tab === "demo" && (calls ? <VoiceDemo calls={calls} /> : demoError ? (
+          <div className="error-box" role="alert">{demoError} <button type="button" onClick={() => setRetry((value) => value + 1)}>Retry</button></div>
+        ) : <div className="loading">Loading sample scenarios…</div>)}
+        {tab === "voices" && <VoicePlayground />}
+        {tab === "platform" && <><FlowPanel /><Platform /></>}
       </main>
     </div>
   );

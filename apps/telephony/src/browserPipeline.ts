@@ -75,7 +75,14 @@ export function createBrowserPipeline(
 ): BrowserCallPipeline {
   let voice = DEFAULT_VOICE;
   let language = LANGUAGE;
-  let conversation: ConversationState | undefined;
+  // The first agent request must carry this actual session profile. Leaving
+  // state undefined makes the API fall back to a fictional demo persona.
+  let conversation: ConversationState = {
+    call: { ...profile },
+    collected: {},
+    outcome: "in_progress",
+    messages: [{ role: "assistant", text: CALL_GREETING, timestamp: new Date().toISOString() }]
+  };
   let asr: StreamingAsr | null = null;
   let endpointer: Endpointer | null = null;
   let tts: StreamingTts | null = null;
@@ -206,6 +213,9 @@ export function createBrowserPipeline(
     turnInFlight = true;
     turnInterrupted = false;
     const index = ++turnIndex;
+    // Save received speech before waiting for the model. The final report
+    // upserts this same index, so hangup cannot erase an unfinished turn.
+    void callLog.turn(sessionId, { index, callerText: utterance });
     const turnStart = Date.now();
     let firstTokenAt: number | null = null;
     let firstAudioAt: number | null = null;
@@ -370,6 +380,7 @@ export function createBrowserPipeline(
     },
     async close() {
       if (closed) return;
+      const endedAt = new Date().toISOString();
       closed = true;
       pendingUtterances.length = 0;
       bargeInAudio = Buffer.alloc(0);
@@ -381,7 +392,7 @@ export function createBrowserPipeline(
       tts = null;
       if (started && !ended) {
         ended = true;
-        void callLog.end(sessionId, { outcome: conversation?.outcome });
+        void callLog.end(sessionId, { outcome: conversation?.outcome, endedAt });
       }
     }
   };

@@ -39,6 +39,7 @@ model User {
   tickets     Ticket[]    @relation("TicketAssignee")
   notes       TicketNote[]
   audits      AuditLog[]
+  requestedAssessments CallAssessment[] @relation("CallAssessmentRequester")
 }
 
 model LoginCode {
@@ -168,6 +169,7 @@ model Call {
   turns            Turn[]
   utterances       Utterance[]
   tickets          Ticket[]
+  assessments      CallAssessment[]
 
   @@index([startedAt])
   @@index([callerId])
@@ -289,4 +291,43 @@ model AuditLog {
 
   @@index([createdAt])
   @@index([entity, entityId])
+}
+
+enum CallAssessmentStatus {
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+model CallAssessment {
+  id                   String               @id @default(cuid())
+  callId               String
+  call                 Call                 @relation(fields: [callId], references: [id], onDelete: Cascade)
+  inputHash            String
+  requestedModel       String
+  returnedModel        String?
+  rubricVersion        String
+  preprocessingVersion String
+  status               CallAssessmentStatus
+  requestedById        String?
+  requestedBy          User?                @relation("CallAssessmentRequester", fields: [requestedById], references: [id], onDelete: SetNull)
+  attemptToken         String
+  attemptCount         Int                  @default(1)
+  leaseExpiresAt       DateTime?
+  errorCode            String?
+  result               Json?
+  inputCharCount       Int
+  utteranceCount       Int
+  linkedTicketRecorded Boolean              @default(false)
+  inputLanguage        String?
+  promptTokens         Int?
+  completionTokens     Int?
+  requestedAt          DateTime             @default(now())
+  completedAt          DateTime?
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+
+  @@unique([callId, inputHash, requestedModel, rubricVersion])
+  @@index([callId, requestedAt])
+  @@index([status, leaseExpiresAt])
 }

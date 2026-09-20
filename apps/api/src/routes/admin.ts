@@ -1,6 +1,7 @@
 import express from "express";
 import { z } from "zod";
 import { prisma, type Prisma, type TicketStatus } from "@msva/db";
+import { getCallAssessment, isAllowedJevOrigin, requestCallAssessment } from "../callAssessment.js";
 import {
   audit,
   authenticate,
@@ -228,6 +229,34 @@ adminRouter.get("/calls/:id", async (request, response, next) => {
       return;
     }
     response.json(call);
+  } catch (error) {
+    next(error);
+  }
+});
+
+const strictEmptyBodySchema = z.object({}).strict();
+
+adminRouter.get("/calls/:id/assessment", async (request, response, next) => {
+  try {
+    const result = await getCallAssessment(String(request.params.id));
+    if (!result.found) return void response.status(404).json({ error: "Call not found" });
+    response.json(result.response);
+  } catch (error) {
+    next(error);
+  }
+});
+
+adminRouter.post("/calls/:id/assessment", requireRole("SUPERVISOR"), async (request, response, next) => {
+  if (!request.is("application/json")) return void response.status(415).json({ error: "JSON body required" });
+  const parsed = strictEmptyBodySchema.safeParse(request.body);
+  if (!parsed.success) return void bad(response, parsed.error);
+  if (!isAllowedJevOrigin(request.get("origin"))) return void response.status(403).json({ error: "Origin not allowed" });
+  try {
+    const result = await requestCallAssessment(String(request.params.id), request.user!.id);
+    if (!result.found) return void response.status(404).json({ error: "Call not found" });
+    if (result.unavailable) return void response.status(503).json({ error: "Assessment is unavailable" });
+    if (result.response?.eligibility.eligible === false) return void response.status(409).json(result.response);
+    response.status(result.pending ? 202 : 200).json(result.response);
   } catch (error) {
     next(error);
   }

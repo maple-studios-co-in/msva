@@ -2,19 +2,27 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:17-alpine
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: msva
+          POSTGRES_DB: msva_jev_test
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U postgres"
@@ -22,7 +30,8 @@ jobs:
           --health-timeout 3s
           --health-retries 10
     env:
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/msva?schema=public
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/msva_jev_test?schema=public
+      JEV_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/msva_jev_test?schema=public
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -41,5 +50,7 @@ jobs:
         run: pnpm -r typecheck
       - name: Test
         run: pnpm test
+      - name: Jev database integration test
+        run: pnpm test:jev-db
       - name: Build
         run: pnpm -r build

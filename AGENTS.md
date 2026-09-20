@@ -8,9 +8,9 @@ Build the Madhusudan demo in this repository. Keep the existing React/TypeScript
 
 - Aditya is the product owner and decides business policy, demo acceptance and environment promotion.
 - Use `gpt-5.6-terra` for product planning and frontend, backend and voice implementation.
-- Use `gpt-5.6-sol` for complex architecture and independent review when available. Terra may cross-review a bounded change it did not implement.
+- Use `gpt-6-astra` for architecture design and independent review.
 - Use `gpt-5.6-luna` for mechanical documentation, task updates and release administration when available.
-- Do not assign development to Astra unless Aditya explicitly changes this instruction. Coordination does not change a worker's model.
+- Do not assign implementation to Astra or substitute models across these roles. Existing Sol architecture or review work remains historical record and must not be relabeled as Astra.
 - Record the actual active agent and model, not only a planned role. Queued assignments are not running agents.
 
 ## Task ownership

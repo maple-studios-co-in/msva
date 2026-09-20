@@ -11,11 +11,11 @@ This is the working delivery structure for Maple's Madhusudan voice-agent demo. 
 | Voice engineer | Terra | LiveKit worker, speech providers, interruptions and call lifecycle |
 | Backend engineer | Terra | Contracts, durable records, tools, caller context and callback jobs |
 | Frontend engineer | Terra | Caller experience, staff desk, transcript, handoff and demo presentation |
-| Architecture and QA reviewer | Sol; independent Terra for bounded reviews | Contract consistency, failure cases, implementation review and evidence |
+| Architecture and QA reviewer | Astra | Architecture design, contract consistency, failure cases, implementation review and evidence |
 | Operations and documentation | Luna when available | Task status, runbooks, release records and documentation |
 | Release coordinator | Session coordinator with Aditya's release decisions | Feature integration and recorded promotion/deployment steps |
 
-Use models below Astra for development. Start with a small active team: product planning and tooling can run independently; backend contracts precede dependent voice/frontend changes. Additional roles are activated when their tasks are ready, not all at once. Runtime concurrency limits determine how many agents can work simultaneously.
+Use Terra for product planning and implementation, Astra for architecture design and review, and Luna for mechanical operations and documentation. Historical Sol architecture or review work remains part of the record and is not relabeled. Start with a small active team: product planning and tooling can run independently; backend contracts precede dependent voice/frontend changes. Additional roles are activated when their tasks are ready, not all at once. Runtime concurrency limits determine how many agents can work simultaneously.
 
 ## Development cycle
 
@@ -72,6 +72,6 @@ Maintain short commits under Aditya's verified Git identity. Push completed feat
 
 ## Initial role assignments
 
-The first setup workstreams are product/demo planning and development tooling, both assigned to Terra. The delivery register records their actual agent names and current status. Sol/Luna roles are used when an execution slot is available; they are not represented as active merely because this document names them.
+The first setup workstreams are product/demo planning and development tooling, both assigned to Terra. The delivery register records their actual agent names and current status. Astra/Luna roles are used when an execution slot is available; they are not represented as active merely because this document names them. Earlier Sol architecture or review assignments remain historical facts.
 
 Demo date, board location/visibility and the final Git email are user preferences to confirm when supplied. Until then, use the existing verified repository email, keep the operational board private, and avoid invented delivery dates.

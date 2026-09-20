@@ -29,6 +29,8 @@ export type TrustedDemoRequestConfig = {
   isDemoFixtureAllowed?: (callerId: string, fixtureKey: string) => boolean;
   /** Test-only transaction fault injection; never derived from a caller request. */
   afterTicketOrNotePersistedForTest?: () => void | Promise<void>;
+  /** Test-only evidence that recovery happened after PostgreSQL rejected a duplicate key. */
+  onUniqueRequestIdRaceRecoveredForTest?: () => void | Promise<void>;
 };
 
 type ReplayRecord = {
@@ -116,7 +118,6 @@ export async function createBusinessRequest(
   const input = parsed.data;
   const payloadCanonical = stableJson(input);
   const payloadHash = createHash("sha256").update(payloadCanonical).digest("hex");
-  const transactionStartedAt = new Date();
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
@@ -145,7 +146,7 @@ export async function createBusinessRequest(
           where: { callId: call.id },
           select: { callerId: true, assurance: true, verifiedAt: true, verificationRef: true, fixtureKey: true }
         });
-        if (identity?.callerId !== undefined && identity.callerId !== call.callerId) {
+        if (identity && identity.callerId !== call.callerId) {
           throw new DemoRequestError("IDENTITY_REQUIRED", "The caller identity could not be confirmed.");
         }
 
@@ -165,6 +166,11 @@ export async function createBusinessRequest(
           identity.fixtureKey !== null &&
           trustedConfig.isDemoFixtureAllowed?.(identity.callerId, identity.fixtureKey) === true;
         const trustedCallerId = verified || demoTrusted ? identity!.callerId : null;
+        const effectiveVerificationState = verified
+          ? "VERIFIED"
+          : demoTrusted
+            ? "DEMO_TRUSTED"
+            : "UNVERIFIED";
 
         let ticketId: string;
         let ticketNumber: number;
@@ -179,7 +185,6 @@ export async function createBusinessRequest(
           });
           if (
             !parent ||
-            parent.createdAt >= transactionStartedAt ||
             parent.callerId !== trustedCallerId ||
             parent.ticket.callerId !== trustedCallerId ||
             parent.journey !== input.journey ||
@@ -220,7 +225,7 @@ export async function createBusinessRequest(
             parentRequestId,
             language: input.queue.language,
             territory: input.queue.territory,
-            verificationState: identity?.assurance ?? "UNVERIFIED",
+            verificationState: effectiveVerificationState,
             fields: input.fields as Prisma.InputJsonValue,
             payloadCanonical,
             payloadHash,
@@ -262,7 +267,10 @@ export async function createBusinessRequest(
     } catch (error) {
       if (!isRequestIdUniqueViolation(error)) throw error;
       const replay = await recoverRace(db, input, payloadCanonical);
-      if (replay) return replay;
+      if (replay) {
+        await trustedConfig.onUniqueRequestIdRaceRecoveredForTest?.();
+        return replay;
+      }
     }
   }
 

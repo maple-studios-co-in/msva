@@ -6,10 +6,13 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createBusinessRequest, DemoRequestError } from "./demoRequests.js";
 
 const execFileAsync = promisify(execFile);
-const psql = "/opt/homebrew/opt/postgresql@17/bin/psql";
+const psql = process.env.PSQL_BIN ?? "psql";
 const databaseUrl = process.env.MSVA_TEST_DATABASE_URL;
 if (!databaseUrl) {
   throw new Error("MSVA_TEST_DATABASE_URL is required for PostgreSQL integration tests.");
+}
+if (new URL(databaseUrl).searchParams.get("application_name") !== "msva-foundation-integration") {
+  throw new Error("MSVA_TEST_DATABASE_URL must use application_name=msva-foundation-integration.");
 }
 
 const initMigration = new URL("../prisma/migrations/20260905140843_init/migration.sql", import.meta.url);
@@ -75,6 +78,21 @@ async function attest(callId: string, callerId = "caller-a"): Promise<void> {
   });
 }
 
+async function demoAttest(
+  callId: string,
+  options: { callerId?: string; fixtureKey?: string } = {}
+): Promise<void> {
+  await db.demoCallIdentity.create({
+    data: {
+      callId,
+      callerId: options.callerId ?? "caller-a",
+      assurance: "DEMO_TRUSTED",
+      verifiedAt: new Date("2026-09-21T00:00:00.000Z"),
+      fixtureKey: options.fixtureKey ?? "fixture-allowed"
+    }
+  });
+}
+
 beforeEach(async () => {
   schema = `msva_foundation_request_${randomUUID().replaceAll("-", "")}`;
   await psqlRun(["-c", `CREATE SCHEMA ${schema}`], false);
@@ -107,12 +125,32 @@ describe("createBusinessRequest", () => {
 
   it("recovers an equal concurrent retry after the unique-key race", async () => {
     const command = input();
-    const [one, two] = await Promise.all([
-      createBusinessRequest(db, command),
-      createBusinessRequest(db, command)
-    ]);
+    let releaseFirst: (() => void) | undefined;
+    let firstTicketWritten: (() => void) | undefined;
+    const firstTicket = new Promise<void>((resolve) => {
+      firstTicketWritten = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let recovered = 0;
+    const first = createBusinessRequest(db, command, {
+      afterTicketOrNotePersistedForTest: async () => {
+        firstTicketWritten?.();
+        await release;
+      },
+      onUniqueRequestIdRaceRecoveredForTest: () => {
+        recovered += 1;
+      }
+    });
+    await firstTicket;
+    const second = createBusinessRequest(db, command);
+    const two = await second;
+    releaseFirst?.();
+    const one = await first;
 
     expect(one).toEqual(two);
+    expect(recovered).toBe(1);
     expect(await db.businessRequest.count()).toBe(1);
     expect(await db.ticket.count()).toBe(1);
     expect(await db.queueAssignment.count()).toBe(1);
@@ -158,6 +196,31 @@ describe("createBusinessRequest", () => {
     expect(await db.auditLog.count()).toBe(0);
   });
 
+  it("treats every accepted command field as part of the idempotency receipt", async () => {
+    const requestId = `request-${randomUUID()}`;
+    await createBusinessRequest(db, input({ requestId }));
+    await createCall("call-b");
+    const variants = [
+      input({ requestId, callId: "call-b" }),
+      input({ requestId, queue: { territory: "RJ", language: "hi" } }),
+      input({ requestId, callerConfirmation: "FOLLOW_UP", parentRequestId: "other-request" }),
+      input({
+        requestId,
+        fields: {
+          product: "Oil",
+          purchaseArea: "Indore",
+          issueCategory: "quality",
+          description: "Changed",
+          productAvailable: true
+        }
+      })
+    ];
+    for (const variant of variants) {
+      await expect(createBusinessRequest(db, variant)).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+    }
+    expect(await db.businessRequest.count()).toBe(1);
+  });
+
   it("rejects a missing call without recording a request", async () => {
     await expect(createBusinessRequest(db, input({ callId: "missing-call" }))).rejects.toMatchObject({
       code: "CALL_NOT_FOUND"
@@ -200,6 +263,92 @@ describe("createBusinessRequest", () => {
     expect(await db.ticket.count()).toBe(1);
     expect(await db.ticketNote.count()).toBe(1);
     expect((await db.businessRequest.count())).toBe(2);
+  });
+
+  it("accepts an immediately created parent even when its database timestamp is in the future", async () => {
+    await createBusinessRequest(db, input());
+    const parent = await db.businessRequest.findFirstOrThrow();
+    await db.businessRequest.update({
+      where: { id: parent.id },
+      data: { createdAt: new Date("2099-01-01T00:00:00.000Z") }
+    });
+    await createCall("call-follow-up");
+    await attest("call-follow-up");
+    const followUp = await createBusinessRequest(
+      db,
+      input({ callId: "call-follow-up", callerConfirmation: "FOLLOW_UP", parentRequestId: parent.id })
+    );
+    expect(followUp.caseId).toBe(parent.ticketId);
+    expect(await db.ticketNote.count()).toBe(1);
+  });
+
+  it("rolls back a follow-up note if the transaction fails after it is written", async () => {
+    await createBusinessRequest(db, input());
+    const parent = await db.businessRequest.findFirstOrThrow();
+    await createCall("call-follow-up");
+    await attest("call-follow-up");
+    await expect(
+      createBusinessRequest(
+        db,
+        input({ callId: "call-follow-up", callerConfirmation: "FOLLOW_UP", parentRequestId: parent.id }),
+        { afterTicketOrNotePersistedForTest: () => { throw new Error("forced note rollback"); } }
+      )
+    ).rejects.toThrow("forced note rollback");
+    expect(await db.ticketNote.count()).toBe(0);
+    expect(await db.businessRequest.count()).toBe(1);
+  });
+
+  it("denies cross-caller, cross-journey, and demo-to-real follow-up links", async () => {
+    await createBusinessRequest(db, input());
+    const parent = await db.businessRequest.findFirstOrThrow();
+    await attest("call-a");
+    await createCall("call-other-caller", { callerId: "caller-b" });
+    await attest("call-other-caller", "caller-b");
+    await createCall("call-real", { isTest: false });
+    await attest("call-real");
+    const attempts = [
+      input({ callId: "call-other-caller", callerConfirmation: "FOLLOW_UP", parentRequestId: parent.id }),
+      input({ callId: "call-real", callerConfirmation: "FOLLOW_UP", parentRequestId: parent.id }),
+      input({
+        callId: "call-a",
+        journey: "SALES_LEAD",
+        callerConfirmation: "FOLLOW_UP",
+        parentRequestId: parent.id,
+        fields: { name: "A", contactPreference: "phone", interest: "oil" }
+      })
+    ];
+    for (const attempt of attempts) {
+      await expect(createBusinessRequest(db, attempt)).rejects.toMatchObject({ code: "PARENT_NOT_ACCESSIBLE" });
+    }
+    expect(await db.ticketNote.count()).toBe(0);
+  });
+
+  it("stores only an effective validated assurance snapshot", async () => {
+    await createCall("call-missing-allowlist");
+    await demoAttest("call-missing-allowlist");
+    await createBusinessRequest(db, input({ callId: "call-missing-allowlist" }));
+    expect((await db.businessRequest.findFirstOrThrow({ where: { callId: "call-missing-allowlist" } })).verificationState).toBe("UNVERIFIED");
+
+    await createCall("call-carrier", { provider: "EXOTEL" });
+    await demoAttest("call-carrier");
+    await createBusinessRequest(db, input({ callId: "call-carrier" }), { isDemoFixtureAllowed: () => true });
+    expect((await db.businessRequest.findFirstOrThrow({ where: { callId: "call-carrier" } })).verificationState).toBe("UNVERIFIED");
+
+    await createCall("call-allowed");
+    await demoAttest("call-allowed");
+    await createBusinessRequest(db, input({ callId: "call-allowed" }), {
+      isDemoFixtureAllowed: (callerId, fixtureKey) => callerId === "caller-a" && fixtureKey === "fixture-allowed"
+    });
+    expect((await db.businessRequest.findFirstOrThrow({ where: { callId: "call-allowed" } })).verificationState).toBe("DEMO_TRUSTED");
+  });
+
+  it("rejects an identity attestation that does not match the Call caller", async () => {
+    await createCall("call-mismatch");
+    await demoAttest("call-mismatch", { callerId: "caller-b" });
+    await expect(createBusinessRequest(db, input({ callId: "call-mismatch" }))).rejects.toMatchObject({
+      code: "IDENTITY_REQUIRED"
+    });
+    expect(await db.businessRequest.count()).toBe(0);
   });
 
   it("creates a new ticket for a separate case and does not append a note", async () => {

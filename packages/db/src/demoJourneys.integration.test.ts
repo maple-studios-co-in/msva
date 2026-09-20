@@ -5,10 +5,14 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 
 const execFileAsync = promisify(execFile);
-const psql = "/opt/homebrew/opt/postgresql@17/bin/psql";
-const databaseUrl =
-  process.env.MSVA_TEST_DATABASE_URL ??
-  "postgresql://adityaagrawal@127.0.0.1:59421/msva_foundation_test";
+const psql = process.env.PSQL_BIN ?? "psql";
+const databaseUrl = process.env.MSVA_TEST_DATABASE_URL;
+if (!databaseUrl) {
+  throw new Error("MSVA_TEST_DATABASE_URL is required for PostgreSQL integration tests.");
+}
+if (new URL(databaseUrl).searchParams.get("application_name") !== "msva-foundation-integration") {
+  throw new Error("MSVA_TEST_DATABASE_URL must use application_name=msva-foundation-integration.");
+}
 const repoRoot = new URL("../../..", import.meta.url);
 const initMigration = new URL("../prisma/migrations/20260905140843_init/migration.sql", import.meta.url);
 const demoMigration = new URL("../prisma/migrations/20260921000000_demo_journeys/migration.sql", import.meta.url);
@@ -20,7 +24,7 @@ function schemaName(): string {
 }
 
 async function psqlRun(schema: string, args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync(psql, ["-X", "-q", "-v", "ON_ERROR_STOP=1", "-d", databaseUrl, ...args], {
+  const { stdout } = await execFileAsync(psql, ["-X", "-q", "-v", "ON_ERROR_STOP=1", "-d", databaseUrl!, ...args], {
     cwd: repoRoot.pathname,
     env: { ...process.env, PGOPTIONS: `-c search_path=${schema},public` }
   });
@@ -38,7 +42,7 @@ async function scalar(schema: string, sql: string): Promise<string> {
 afterEach(async () => {
   await Promise.all(
     schemas.splice(0).map((schema) =>
-      execFileAsync(psql, ["-X", "-q", "-v", "ON_ERROR_STOP=1", "-d", databaseUrl, "-c", `DROP SCHEMA IF EXISTS ${schema} CASCADE`])
+      execFileAsync(psql, ["-X", "-q", "-v", "ON_ERROR_STOP=1", "-d", databaseUrl!, "-c", `DROP SCHEMA IF EXISTS ${schema} CASCADE`])
     )
   );
 });
@@ -47,7 +51,7 @@ describe("demo journeys migration", () => {
   it("preserves representative legacy rows, timestamps, outcomes, and ticket sequence", async () => {
     const schema = schemaName();
     schemas.push(schema);
-    await execFileAsync(psql, ["-X", "-q", "-v", "ON_ERROR_STOP=1", "-d", databaseUrl, "-c", `CREATE SCHEMA ${schema}`]);
+    await execFileAsync(psql, ["-X", "-q", "-v", "ON_ERROR_STOP=1", "-d", databaseUrl!, "-c", `CREATE SCHEMA ${schema}`]);
 
     await applyFile(schema, initMigration);
     await psqlRun(schema, [

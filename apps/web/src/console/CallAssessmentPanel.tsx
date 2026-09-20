@@ -1,77 +1,86 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { CallAssessmentDto, CallAssessmentResponse, CallAssessmentResult } from "@msva/shared";
 import { api } from "./api";
-import { assessmentView, assessmentWakeDelay, responseBelongsToCall, type AssessmentView } from "./assessmentView.js";
+import { AssessmentPollController } from "./assessmentPolling.js";
+import { assessmentView, responseBelongsToCall, type AssessmentView } from "./assessmentView.js";
 
 type Props = {
   callId: string;
   canAssess: boolean;
+  savedCallRevision: string;
+  refreshToken: number;
   onAuthError: (error: unknown) => void;
   onChanged: () => void;
 };
 
-export function CallAssessmentPanel({ callId, canAssess, onAuthError, onChanged }: Props) {
+export function CallAssessmentPanel({ callId, canAssess, savedCallRevision, refreshToken, onAuthError, onChanged }: Props) {
   const [response, setResponse] = useState<CallAssessmentResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const requestNumber = useRef(0);
-
-  const load = useCallback(async (requestCallId: string, signal?: AbortSignal) => {
-    const request = ++requestNumber.current;
-    try {
-      const next = await api.callAssessment(requestCallId, signal);
-      if (request !== requestNumber.current || !responseBelongsToCall(callId, requestCallId, next)) return;
-      setResponse(next);
-      setError(null);
-    } catch (caught) {
-      if (signal?.aborted || request !== requestNumber.current) return;
-      onAuthError(caught);
-      setError("Assessment updates are temporarily unavailable.");
-    } finally {
-      if (request === requestNumber.current) setLoading(false);
-    }
-  }, [callId, onAuthError]);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const poller = useRef<AssessmentPollController | null>(null);
+  const postNumber = useRef(0);
+  const lastRefreshTrigger = useRef<string | undefined>(undefined);
+  const authError = useRef(onAuthError);
+  authError.current = onAuthError;
 
   useEffect(() => {
-    const controller = new AbortController();
     setLoading(true);
     setResponse(null);
     setError(null);
-    void load(callId, controller.signal);
+    lastRefreshTrigger.current = undefined;
+    const controller = new AssessmentPollController({
+      load: (signal) => api.callAssessment(callId, signal),
+      onResponse: (next) => {
+        if (!responseBelongsToCall(callId, callId, next)) return;
+        setResponse(next);
+        setError(null);
+        setLoading(false);
+        setNowMs(Date.now());
+      },
+      onReadError: (caught) => {
+        authError.current(caught);
+        setError("Assessment updates are temporarily unavailable.");
+        setLoading(false);
+      },
+      onLeaseExpiry: () => {
+        setNowMs(Date.now());
+        setLoading(false);
+      }
+    });
+    poller.current = controller;
+    controller.start();
     return () => {
-      controller.abort();
-      requestNumber.current += 1;
+      controller.stop();
+      if (poller.current === controller) poller.current = null;
+      postNumber.current += 1;
     };
-  }, [callId, load]);
+  }, [callId]);
 
-  const view = useMemo(() => response ? assessmentView(response, canAssess, new Date()) : null, [response, canAssess]);
-  const wakeDelay = response ? assessmentWakeDelay(response, new Date()) : null;
+  const refreshTrigger = `${savedCallRevision}:${refreshToken}`;
   useEffect(() => {
-    if (wakeDelay === null) return;
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => { void load(callId, controller.signal); }, wakeDelay);
-    return () => {
-      window.clearTimeout(timer);
-      controller.abort();
-    };
-  }, [callId, load, response, wakeDelay]);
+    if (lastRefreshTrigger.current !== undefined && lastRefreshTrigger.current !== refreshTrigger) poller.current?.refresh();
+    lastRefreshTrigger.current = refreshTrigger;
+  }, [refreshTrigger]);
+
+  const view = response ? assessmentView(response, canAssess, new Date(nowMs)) : null;
 
   const assess = useCallback(async () => {
-    const request = ++requestNumber.current;
+    const request = ++postNumber.current;
     setBusy(true);
     setError(null);
     try {
       const next = await api.assessCall(callId);
-      if (request !== requestNumber.current || !responseBelongsToCall(callId, callId, next)) return;
-      setResponse(next);
+      if (request !== postNumber.current || !responseBelongsToCall(callId, callId, next)) return;
+      poller.current?.accept(next);
       onChanged();
     } catch (caught) {
-      if (request !== requestNumber.current) return;
+      if (request !== postNumber.current) return;
       onAuthError(caught);
       setError("The assessment request could not be completed. Try again after reviewing the transcript.");
     } finally {
-      if (request === requestNumber.current) setBusy(false);
+      if (request === postNumber.current) setBusy(false);
     }
   }, [callId, onAuthError, onChanged]);
 

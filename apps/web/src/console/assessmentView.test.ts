@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CallAssessmentResponse } from "@msva/shared";
-import { assessmentView, assessmentWakeDelay, responseBelongsToCall } from "./assessmentView.js";
+import { assessmentView, assessmentWakeDelay, responseBelongsToCall, savedCallAssessmentRevision } from "./assessmentView.js";
 
 const base: CallAssessmentResponse = {
   capability: { enabled: true, available: true, reason: null },
@@ -99,5 +99,19 @@ describe("assessmentView", () => {
     expect(assessmentWakeDelay({ ...base, assessment: { ...succeeded, status: "RUNNING", completedAt: null, leaseExpiresAt: "2026-09-21T10:01:00.000Z" } }, now)).toBe(2500);
     expect(assessmentWakeDelay({ ...base, assessment: { ...succeeded, status: "RUNNING", completedAt: null, leaseExpiresAt: "2026-09-21T10:00:00.000Z" } }, now)).toBeNull();
     expect(assessmentWakeDelay({ ...base, assessment: { ...succeeded, status: "FAILED", completedAt: "2026-09-21T10:00:10.000Z", retryable: false } }, now)).toBe(10000);
+  });
+
+  it("changes the saved-call revision for completion, transcript, language, and linked-ticket evidence", () => {
+    const call = {
+      status: "IN_PROGRESS", endedAt: null, language: "hi-IN",
+      utterances: [{ id: "utterance-1", seq: 1, text: "Hello" }],
+      tickets: []
+    };
+    const revision = savedCallAssessmentRevision(call);
+
+    expect(savedCallAssessmentRevision({ ...call, status: "COMPLETED", endedAt: "2026-09-21T10:00:00.000Z" })).not.toBe(revision);
+    expect(savedCallAssessmentRevision({ ...call, utterances: [{ id: "utterance-1", seq: 1, text: "Changed" }] })).not.toBe(revision);
+    expect(savedCallAssessmentRevision({ ...call, language: "en-IN" })).not.toBe(revision);
+    expect(savedCallAssessmentRevision({ ...call, tickets: [{ id: "ticket-1" }] })).not.toBe(revision);
   });
 });

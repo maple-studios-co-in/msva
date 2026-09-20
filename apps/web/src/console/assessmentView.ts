@@ -95,3 +95,19 @@ export function assessmentWakeDelay(response: CallAssessmentResponse, now: Date)
 export function responseBelongsToCall(openCallId: string, requestCallId: string, response: CallAssessmentResponse): boolean {
   return openCallId === requestCallId && (response.assessment === null || response.assessment.callId === requestCallId);
 }
+
+export function savedCallAssessmentRevision(call: {
+  status: string;
+  endedAt: string | null;
+  language: string | null;
+  utterances: Array<{ id: string; seq: number; text: string }>;
+  tickets: Array<{ id: string }>;
+}): string {
+  return JSON.stringify({
+    status: call.status,
+    endedAt: call.endedAt,
+    language: call.language,
+    utterances: call.utterances.map(({ id, seq, text }) => [id, seq, text]),
+    ticketIds: call.tickets.map(({ id }) => id).sort()
+  });
+}

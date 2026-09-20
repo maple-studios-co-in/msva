@@ -25,7 +25,8 @@
     "contracts:export": "pnpm --filter @msva/contracts export",
     "contracts:check": "pnpm --filter @msva/contracts check",
     "test:contracts": "pnpm --filter @msva/contracts test",
-    "test:voice-contracts": "cd apps/voice-agent && PYTHONDONTWRITEBYTECODE=1 uv run --frozen --python 3.12 pytest"
+    "test:voice-contracts": "cd apps/voice-agent && PYTHONDONTWRITEBYTECODE=1 uv run --frozen --python 3.12 pytest",
+    "test:db": "node -e \"if (!process.env.MSVA_TEST_DATABASE_URL) { throw new Error('MSVA_TEST_DATABASE_URL is required for pnpm test:db'); }\" && vitest run --config vitest.integration.config.ts"
   },
   "devDependencies": {
     "@types/node": "^22.15.21",

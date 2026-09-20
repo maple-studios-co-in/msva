@@ -6,6 +6,14 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     include: ["apps/**/src/**/*.test.ts", "packages/**/src/**/*.test.ts"],
+    exclude: [
+      "**/node_modules/**",
+      "**/dist/**",
+      "**/cypress/**",
+      "**/.{idea,git,cache,output,temp}/**",
+      "**/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress}.config.*",
+      "**/*.integration.test.ts"
+    ],
     environment: "node",
     passWithNoTests: false,
     reporters: ["default"]

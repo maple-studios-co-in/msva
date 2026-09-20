@@ -1,0 +1,14 @@
+{
+  "requestId": "sales-request-001",
+  "callId": "browser-call-sales-001",
+  "journey": "SALES_LEAD",
+  "callerConfirmation": "NEW",
+  "fields": {
+    "name": "Meera Patel",
+    "contactPreference": "Please contact by email after confirmation.",
+    "interest": "Interested in discussing a wholesale product range.",
+    "organisation": "Patel Foods",
+    "location": "Surat"
+  },
+  "queue": { "territory": "Gujarat", "language": "en" }
+}

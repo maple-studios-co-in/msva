@@ -21,7 +21,11 @@
     "db:seed": "pnpm --filter @msva/db seed",
     "db:studio": "pnpm --filter @msva/db studio",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "contracts:export": "pnpm --filter @msva/contracts export",
+    "contracts:check": "pnpm --filter @msva/contracts check",
+    "test:contracts": "pnpm --filter @msva/contracts test",
+    "test:voice-contracts": "cd apps/voice-agent && PYTHONDONTWRITEBYTECODE=1 uv run --frozen --python 3.12 pytest"
   },
   "devDependencies": {
     "@types/node": "^22.15.21",

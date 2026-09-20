@@ -233,7 +233,10 @@ export const SourceResultSchema = z.union([
 ]);
 export type SourceResult = z.infer<typeof SourceResultSchema>;
 
-const DateTimeSchema = z.iso.datetime().regex(/^(?!0000-)/);
+const DateTimeSchema = z.intersection(
+  z.iso.datetime(),
+  z.string().regex(/^(?!0000-)/)
+);
 
 export const EvidenceSchema = z.union([
   z.strictObject({ state: z.literal("NOT_REQUESTED"), truthState: z.literal("RECORDED") }),

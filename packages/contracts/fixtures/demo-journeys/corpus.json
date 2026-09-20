@@ -145,6 +145,16 @@
       "payload": { "state": "RECEIVED", "truthState": "RECORDED", "storageKey": "evidence-001", "receivedAt": "0000-01-01T00:00:00Z" }
     },
     {
+      "name": "evidence datetime rejects Devanagari year digits",
+      "schema": "Evidence",
+      "payload": { "state": "RECEIVED", "truthState": "RECORDED", "storageKey": "evidence-001", "receivedAt": "२०२६-09-21T10:00:00Z" }
+    },
+    {
+      "name": "evidence datetime rejects non-ASCII fractional digits",
+      "schema": "Evidence",
+      "payload": { "state": "RECEIVED", "truthState": "RECORDED", "storageKey": "evidence-001", "receivedAt": "2026-09-21T10:00:00.१२Z" }
+    },
+    {
       "name": "assigned handoff requires owner",
       "schema": "Handoff",
       "payload": { "id": "handoff-004", "callId": "call-007", "version": 1, "state": "ASSIGNED" }

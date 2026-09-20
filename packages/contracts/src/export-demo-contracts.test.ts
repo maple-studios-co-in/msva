@@ -65,4 +65,21 @@ describe("demo contract artifact export", () => {
     expect(contextOperation.security).toEqual([{ serviceBearer: [] }]);
     expect(Object.keys(contextOperation.responses).sort()).toEqual(["200", "400", "401", "403", "404"]);
   });
+
+  it("preserves native date-time format with the year-zero constraint", async () => {
+    const root = await mkdtemp(join(tmpdir(), "msva-contracts-"));
+    await writeDemoContractArtifacts(root);
+    const evidence = JSON.parse(
+      await readFile(join(root, "packages/contracts/json-schema/demo-v1/evidence.json"), "utf8")
+    ) as {
+      anyOf: Array<{ properties?: { receivedAt?: { allOf?: Array<Record<string, unknown>> } } }>;
+    };
+    const receivedAt = evidence.anyOf
+      .map((branch) => branch.properties?.receivedAt)
+      .find((property) => property !== undefined);
+    expect(receivedAt?.allOf).toEqual(expect.arrayContaining([
+      expect.objectContaining({ format: "date-time" }),
+      expect.objectContaining({ pattern: "^(?!0000-)" })
+    ]));
+  });
 });

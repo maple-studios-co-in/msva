@@ -1,0 +1,596 @@
+# Madhusudan Call-journey Demo Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use
+> superpowers:subagent-driven-development (recommended) or
+> superpowers:executing-plans to implement this plan task-by-task. Steps use
+> checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Deliver a credible Madhusudan demo that handles consumer, retailer,
+distributor, and prospect conversations while accurately separating durable
+MSVA actions from fixture data and unconnected business systems.
+
+**Architecture:** Retain React/TypeScript in `apps/web`, Node/Express in
+`apps/api`, and PostgreSQL/Prisma in `packages/db`. Add a Python 3.12
+LiveKit-Agents service for streaming conversations, self-hosted LiveKit media
+and SIP for the telephone path, and versioned authenticated Node API contracts
+for the worker. The first executable slice is a browser call; Exotel/SIP is a
+separate gate. Human takeover remains in the same LiveKit room. Voice cloning
+is a later, separately authorised evaluation.
+
+**Tech Stack:** React 19, Vite, TypeScript, Node/Express, Zod, PostgreSQL,
+Prisma, Python 3.12, LiveKit Agents, self-hosted LiveKit/SIP/Redis, Sarvam STT
+and TTS, the approved LLM provider.
+
+**Spec:** `docs/demo/demo-scope.md`
+
+## Global constraints
+
+- Retain the React, Node, and Prisma application; do not run the old raw-PCM
+  and LiveKit conversation controllers for the same call.
+- Use Python LiveKit Agents with self-hosted media and SIP; validate Exotel and
+  Sarvam account prerequisites before representing telephone calling as live.
+- Browser and telephone callers use the same business contracts; browser calls
+  have `isTest=true` and remain distinguishable in all reporting.
+- LiveKit room names, carrier SIDs, and provider webhooks are transport
+  metadata; the application `callId` is the durable business identity.
+- The worker does not get direct database access or unrestricted CRM queries.
+  It uses versioned, authenticated, call-scoped Node APIs.
+- A recorded ticket, callback request, handoff request, lead, or photo request
+  is not a completed callback, human connection, order, refund, message, or
+  received attachment.
+- Unknown integrations return `UNAVAILABLE`; fixture sources return `FIXTURE`.
+  The UI and speech must not turn either result into a business promise.
+- An authenticated attachment is `RECEIVED` only after object storage and
+  metadata both succeed. No connected attachment service means `REQUESTED` or
+  `UNAVAILABLE`, never a received photo.
+- Handoff uses the same room. AI output and mutating tools stop before the
+  assigned human may publish audio; no two humans may own the same call.
+- Separate sentiment from urgency. Start urgency/SOS detection in shadow mode
+  with a staffed fallback; do not claim diagnosis or automatic emergency
+  assistance.
+- Do not add voice cloning to this demo phase. Evaluate it later using only
+  approved reference material, with standard voice as fallback.
+- Do not place real inbound/outbound test calls, use private account data, or
+  enable phone routing without the named owner’s approval and the relevant
+  acceptance gate.
+
+## Review focus
+
+1. A returning caller with the same phone but a different issue sees no prior
+   complaint details before confirming the context; covered in DEMO-DATA.
+2. A tool timeout after writing a ticket does not create a second ticket on
+   retry; covered in DEMO-DATA.
+3. A photo-request screen never marks a `FIXTURE`, failed upload, or pending
+   external request as `RECEIVED`; covered in DEMO-EVIDENCE.
+4. Two staff users trying to take the same call leave one owner, one active
+   microphone, and an accurate pending/failure record; covered in
+   DEMO-HANDOFF.
+5. A neutral-sounding possible product-safety report gets an urgency alert,
+   while an angry delivery complaint remains ordinary priority support;
+   covered in DEMO-RISK.
+
+---
+
+## Proposed file map
+
+| Path | Responsibility |
+| --- | --- |
+| `packages/contracts/src/demo.ts` | Versioned shared schemas for call context, request actions, evidence, handoff, risk, and API fixtures. |
+| `packages/contracts/fixtures/demo-journeys/*.json` | Contract fixtures for each caller journey and expected truth labels. |
+| `packages/db/prisma/schema.prisma` | Additive durable entities and fields for requests, callback state, evidence, queues, handoff, and risk. |
+| `packages/db/prisma/migrations/*_demo_journeys/migration.sql` | Additive migration preserving existing calls and tickets. |
+| `apps/api/src/demo/{context,requests,evidence,queues,risk}.ts` | Business policy and persistence for the demo. |
+| `apps/api/src/demo/routes.ts` | Authenticated staff and worker routes mounted by `apps/api/src/server.ts`. |
+| `apps/api/src/voice/{sessions,tokens,handoff,admission}.ts` | Browser LiveKit session creation, staff admission, and ownership control. |
+| `apps/api/src/call-events/routes.ts` | Authenticated, idempotent event ingestion from the worker and LiveKit. |
+| `apps/voice-agent/` | Python 3.12 worker, prompt/policy, tool client, event spool, and tests. |
+| `apps/web/src/demo/` | Caller simulator, truth-labelled result cards, complaint form, and journey controls. |
+| `apps/web/src/console/call-desk/` | Staff queue, private context, evidence state, risk alert, and same-room handoff UI. |
+| `deploy/livekit/` | Pinned self-hosted LiveKit, SIP, Redis, health checks, and environment templates. |
+| `docs/demo/run-sheet.md` | Operator checklist, dialogue, truth labels, fallback, and evidence capture. |
+
+Existing `apps/api/src/calls.ts`, `apps/api/src/tools/crm.ts`,
+`apps/api/src/tools/transfer.ts`, `apps/api/src/voiceAgent.ts`,
+`apps/web/src/App.tsx`, and `apps/web/src/callClient.ts` remain migration
+inputs. Preserve the legacy route until browser LiveKit acceptance is met.
+
+## Interfaces
+
+All public shapes are implemented as Zod schemas in
+`packages/contracts/src/demo.ts`, then exported as TypeScript types and JSON
+fixtures for Python contract tests.
+
+```ts
+type TruthState = "RECORDED" | "CONNECTED" | "FIXTURE" | "UNAVAILABLE" | "PENDING_STAFF";
+type JourneyKind = "CONSUMER_COMPLAINT" | "RETAILER_ENQUIRY" | "DISTRIBUTOR_CASE" | "SALES_LEAD";
+type EvidenceState = "NOT_REQUESTED" | "REQUESTED" | "RECEIVED" | "UNAVAILABLE";
+type HandoffState = "REQUESTED" | "ASSIGNED" | "JOINING" | "HUMAN_ACTIVE" | "FAILED" | "TIMED_OUT";
+
+type CallerContext = {
+  callId: string;
+  callerId?: string;
+  match: "NEW" | "RETURNING_CONFIRMED" | "RETURNING_UNCONFIRMED" | "UNCERTAIN";
+  language: "hi" | "en" | "hinglish";
+  territory?: string;
+  priorRequests: Array<{ id: string; kind: JourneyKind; state: TruthState; summary: string }>;
+};
+
+type CreateRequestInput = {
+  requestId: string;
+  callId: string;
+  journey: JourneyKind;
+  callerConfirmation: "NEW" | "FOLLOW_UP" | "SEPARATE";
+  fields: Record<string, string | boolean | null>;
+  queue: { territory: string; language: "hi" | "en" | "hinglish" };
+};
+
+type CreateRequestResult = {
+  requestId: string;
+  truthState: "RECORDED" | "PENDING_STAFF" | "UNAVAILABLE";
+  caseId: string;
+  evidenceState?: EvidenceState;
+  nextOwner?: string;
+};
+```
+
+The worker calls `POST /api/internal/v1/demo/calls/:callId/context` and
+`POST /api/internal/v1/demo/requests` with a signed service credential and a
+fenced call lease. Staff calls use authenticated admin routes:
+
+```text
+POST /api/admin/demo/calls/:callId/handoff
+  -> { handoffId, state: "REQUESTED", version }
+POST /api/admin/demo/calls/:callId/takeover
+  body: { handoffId, expectedVersion }
+  -> { state, version, participantIdentity }
+POST /api/admin/demo/tickets/:ticketId/evidence-request
+  -> { ticketId, evidenceState: "REQUESTED", truthState: "RECORDED" }
+POST /api/admin/demo/tickets/:ticketId/evidence
+  multipart file + metadata
+  -> { evidenceId, evidenceState: "RECEIVED" }
+```
+
+The last route is disabled with a clear `UNAVAILABLE` result until attachment
+storage and access policy exist. No browser receives a LiveKit service secret.
+
+## Delivery roles
+
+| Role | Owns | Review boundary |
+| --- | --- | --- |
+| Product/integration lead | truth labels, journey scripts, business decisions, acceptance evidence | confirms no demo statement exceeds a connected capability |
+| Data and API engineer | Prisma migration, contracts, idempotency, queues, ticket/lead/callback persistence | reviews retry and caller-verification cases |
+| Voice engineer | LiveKit deployment, Python worker, Sarvam/model integration, worker events | reviews audio failure and recovery evidence |
+| Web/call-desk engineer | browser caller experience, staff queue, private summary, evidence states, takeover controls | reviews accessibility and operator failure states |
+| QA/operator | fixtures, journey execution, carrier validation, fault tests, run sheet | signs off each acceptance gate with retained test evidence |
+
+## Phase checkpoints
+
+| Code | Deliverable | Gate before proceeding |
+| --- | --- | --- |
+| DEMO-FOUNDATION | Contract and database truth model | fixtures validate in TypeScript and Python; existing ticket tests still pass |
+| DEMO-COMPLAINT | New/returning consumer complaint vertical slice | ticket and follow-up are durable; attachment state cannot be misrepresented |
+| DEMO-VOICE | Browser LiveKit conversation | two-way audio, final transcript, and worker events persist across a controlled restart |
+| DEMO-HANDOFF | Territory/language queue and same-room takeover | operator ownership race, denied microphone, and no-operator timeout are accurate |
+| DEMO-JOURNEYS | Retailer, distributor, and prospect cards | each shows a correct truth label and no unconnected action is claimed |
+| DEMO-RISK | Shadow urgency and staffed fallback | labelled fixtures cover Hindi/English/Hinglish and review results are recorded |
+| DEMO-PHONE | Exotel/SIP phone demonstration | real controlled calls meet carrier, media, transcript, and handoff acceptance |
+
+## Board mapping
+
+The parent delivery board can map these stable phase codes to its own tracker
+identifiers without rewriting the implementation plan.
+
+```csv
+phase,summary,depends_on,completion_gate
+DEMO-FOUNDATION,Truth-labelled contracts and additive persistence,,TypeScript and Python fixtures validate; legacy ticket tests pass
+DEMO-COMPLAINT,New and returning consumer complaint,DEMO-FOUNDATION,Confirmed-context ticket follow-up is durable
+DEMO-EVIDENCE,Photo-request and attachment truth states,DEMO-COMPLAINT,Fixture or failed upload cannot appear received
+DEMO-VOICE,Browser LiveKit complaint conversation,DEMO-COMPLAINT,Final transcript and one idempotent request persist
+DEMO-HANDOFF,Territory-language queue and same-room takeover,DEMO-VOICE,One operator owns a usable microphone after AI silence
+DEMO-JOURNEYS,Retailer distributor and prospect cards,DEMO-FOUNDATION;DEMO-HANDOFF,All result labels and next actions are truthful
+DEMO-RISK,Shadow urgency and staffed fallback,DEMO-HANDOFF,Reviewed language fixtures and fallback outcomes exist
+DEMO-PHONE,Exotel SIP controlled phone evidence,DEMO-VOICE;DEMO-HANDOFF,Carrier room transcript action and fallback records reconcile
+```
+
+## Tasks
+
+### DEMO-FOUNDATION: Define truth-labelled durable contracts
+
+**Files:**
+
+- Create: `packages/contracts/src/demo.ts`
+- Create: `packages/contracts/fixtures/demo-journeys/consumer-returning.json`
+- Create: `packages/contracts/fixtures/demo-journeys/retailer-enquiry.json`
+- Create: `packages/contracts/fixtures/demo-journeys/distributor-account.json`
+- Create: `packages/contracts/fixtures/demo-journeys/sales-prospect.json`
+- Modify: `packages/db/prisma/schema.prisma`
+- Create: `packages/db/prisma/migrations/*_demo_journeys/migration.sql`
+- Create: `packages/contracts/src/demo.test.ts`
+- Create: `packages/db/prisma/demoJourneys.test.ts`
+
+**Consumes:** Existing `Caller`, `Call`, `Ticket`, `TicketNote`, `User`, and
+`AuditLog` models.
+
+**Produces:** Validated contracts and additive records: `BusinessRequest`,
+`EvidenceAttachment`, `QueueAssignment`, `CallbackRequest`, `Handoff`,
+`RiskAssessment`, and `RiskAlert`. `BusinessRequest` includes `journey`,
+`truthState`, `parentRequestId`, `language`, `territory`, `verificationState`,
+and idempotent `requestId`. `CallbackRequest` has a request state separate
+from carrier attempts.
+
+- [ ] Write contract tests that reject an unknown truth state, `RECEIVED`
+  evidence without `storageKey`, a distributor account case without a
+  verification state, and a `CONNECTED` result without `sourceRef`.
+- [ ] Run the contract tests and verify each invalid fixture fails at schema
+  parsing.
+- [ ] Add the Zod schemas, derived types, and four valid JSON fixtures. Make
+  the seeded-order fixture carry `truthState: "FIXTURE"`.
+- [ ] Add only backward-compatible Prisma tables/columns and foreign keys;
+  preserve `Call`, `Ticket`, and historical ticket numbers. Use a unique
+  `BusinessRequest.requestId` for idempotency and store a caller-confirmation
+  value before linking a prior request.
+- [ ] Write database tests for a retry with the same request ID, a retry with
+  different arguments, separate follow-up versus separate-case creation, and
+  a callback request that is not an outbound attempt.
+- [ ] Run the focused contract/database tests and the existing call/ticket
+  tests. Expected result: no duplicate business request and no changed legacy
+  call outcome.
+- [ ] Commit this independently reviewable slice with a focused message.
+
+**Acceptance:** The system can represent all four journeys without treating a
+fixture or pending staff action as a connected business outcome.
+
+### DEMO-COMPLAINT: Build the new and returning consumer complaint slice
+
+**Files:**
+
+- Create: `apps/api/src/demo/context.ts`
+- Create: `apps/api/src/demo/requests.ts`
+- Create: `apps/api/src/demo/routes.ts`
+- Create: `apps/api/src/demo/context.test.ts`
+- Create: `apps/api/src/demo/requests.test.ts`
+- Modify: `apps/api/src/server.ts`
+- Modify: `apps/api/src/tools/crm.ts`
+- Create: `apps/web/src/demo/ConsumerComplaintJourney.tsx`
+- Create: `apps/web/src/demo/ConsumerComplaintJourney.test.tsx`
+- Modify: `apps/web/src/App.tsx`
+
+**Consumes:** `CallerContext`, `CreateRequestInput`, the additive data model,
+and existing ticket persistence.
+
+**Produces:** An authenticated worker route for caller context and request
+creation, plus a controlled browser journey that shows new, returning,
+confirmed-follow-up, and separate-complaint paths.
+
+- [ ] Write API tests for a new caller, a returning caller before confirmation,
+  a confirmed follow-up, a different complaint, an uncertain match, and a
+  request retry after a simulated response loss.
+- [ ] Run the tests and verify prior ticket summaries are absent before caller
+  confirmation and duplicate retries return the original request result.
+- [ ] Implement `getCallerContext(callId, confirmation)` so it returns only
+  a minimal prior-request indicator before confirmation, then a bounded
+  staff-safe summary after confirmation. Implement `createBusinessRequest`
+  as an idempotent transaction that creates/links the ticket and queue
+  assignment.
+- [ ] Extend the existing ticket tool only to call the new request service;
+  remove wording that implies an unconnected transfer, message, refund, or
+  attachment was completed.
+- [ ] Build the journey component with required complaint fields: product,
+  batch/expiry when available, purchase area, issue category, description,
+  product availability, language, and territory. Render the returned truth
+  state beside the spoken confirmation.
+- [ ] Run API and browser-component tests. Add an accessibility assertion for
+  visible status text rather than colour-only state.
+- [ ] Commit this independently reviewable slice with a focused message.
+
+**Acceptance:** A browser caller can record a consumer complaint, return with
+the same controlled identity, confirm the correct prior context, and create a
+follow-up without exposing unrelated prior details.
+
+### DEMO-EVIDENCE: Add honest product-photo request and attachment handling
+
+**Files:**
+
+- Create: `apps/api/src/demo/evidence.ts`
+- Create: `apps/api/src/demo/evidence.test.ts`
+- Modify: `apps/api/src/demo/routes.ts`
+- Create: `apps/web/src/console/call-desk/EvidencePanel.tsx`
+- Create: `apps/web/src/console/call-desk/EvidencePanel.test.tsx`
+- Create: `apps/api/src/storage/attachments.ts`
+- Create: `apps/api/src/storage/attachments.test.ts`
+
+**Consumes:** Consumer complaint ticket/request and `EvidenceState` contract.
+
+**Produces:** `requestEvidence(ticketId)` and, only when a configured private
+attachment adapter is enabled, `storeEvidence(ticketId, file, metadata)`.
+
+- [ ] Write tests for each transition: `NOT_REQUESTED → REQUESTED`, configured
+  upload → `RECEIVED`, missing adapter → `UNAVAILABLE`, rejected MIME/size,
+  failed object write, failed metadata write, retry, and fixture image.
+- [ ] Run the tests and verify no failed or fixture path produces
+  `EvidenceState.RECEIVED`.
+- [ ] Implement an attachment adapter interface:
+
+  ```ts
+  type AttachmentStore = {
+    put(input: { ticketId: string; bytes: Uint8Array; contentType: string }): Promise<{ storageKey: string }>;
+    remove(storageKey: string): Promise<void>;
+  };
+  ```
+
+  Keep its implementation disabled until approved private storage, retention,
+  and staff-access configuration are present. On a metadata-write failure,
+  remove the object when supported and return `UNAVAILABLE` rather than
+  inventing a received state.
+- [ ] Implement the evidence-request route and call-desk panel. The panel
+  displays `FIXTURE`, `REQUESTED`, `RECEIVED`, or `UNAVAILABLE` as text and
+  states the next staff action. It contains no WhatsApp-sent language.
+- [ ] Run API and component tests; manually verify the staff view can
+  distinguish a sample image from a stored attachment.
+- [ ] Commit this independently reviewable slice with a focused message.
+
+**Acceptance:** The demo can show structured photo evidence without claiming
+an external channel or a received file that has not been verified.
+
+### DEMO-VOICE: Establish the browser LiveKit vertical slice
+
+**Files:**
+
+- Create: `deploy/livekit/`
+- Create: `apps/voice-agent/pyproject.toml`
+- Create: `apps/voice-agent/uv.lock`
+- Create: `apps/voice-agent/src/madhusudan_voice/{agent,policy,tools,events}.py`
+- Create: `apps/voice-agent/tests/{test_policy,test_tools,test_events}.py`
+- Create: `apps/api/src/voice/{sessions,tokens,admission}.ts`
+- Create: `apps/api/src/voice/sessions.test.ts`
+- Create: `apps/api/src/call-events/routes.ts`
+- Create: `apps/api/src/call-events/routes.test.ts`
+- Create: `apps/web/src/livekit/BrowserCall.tsx`
+- Modify: `apps/api/src/server.ts`
+- Modify: `apps/web/src/callClient.ts`
+
+**Consumes:** Demo contracts, worker context/request routes, and a configured
+standard voice.
+
+**Produces:** A test-marked browser session in one room, final transcript and
+request events, and a worker that uses Node tool APIs rather than direct DB
+access.
+
+- [ ] Confirm the selected self-hosted LiveKit, SIP, Redis, Sarvam, and LLM
+  versions are mutually compatible. Record only public configuration names in
+  templates; keep credentials server-side.
+- [ ] Write tests for a denied session, wrong-room token, expired/used
+  admission, `isTest=true` browser session, tool request schema rejection,
+  duplicate worker event, and worker event replay after API recovery.
+- [ ] Run the tests and confirm browsers cannot receive a service credential
+  or join an unauthorised room.
+- [ ] Implement a short-lived session/token route. The server chooses
+  `callId`, room, participant identity, and grants. Authenticate the worker
+  to the internal context/request/event routes; include the current call lease
+  in every mutating request.
+- [ ] Implement the Python worker with one turn-ending authority, explicit
+  Hindi/English/Hinglish configuration, final/interim transcript separation,
+  an authenticated tool client, and a bounded disk-backed event spool. The
+  policy converts every tool result into truthful wording from `TruthState`.
+- [ ] Implement browser audio tracks for the new route while preserving the
+  legacy raw-PCM route until migration acceptance. Handle microphone denial,
+  reconnect, caller hangup, and provider failure as visible states.
+- [ ] Run Python unit tests, Node tests, web tests, and a controlled manual
+  browser conversation. Restart the worker during a temporary API outage and
+  verify replay does not create a duplicate request.
+- [ ] Commit this independently reviewable slice with a focused message.
+
+**Acceptance:** A real browser conversation creates the complaint record and
+final transcript through the Python worker; a browser or test fixture alone
+is never presented as a telephone call.
+
+### DEMO-HANDOFF: Route by territory/language and take over in the same room
+
+**Files:**
+
+- Create: `apps/api/src/demo/queues.ts`
+- Create: `apps/api/src/demo/queues.test.ts`
+- Create: `apps/api/src/voice/handoff.ts`
+- Create: `apps/api/src/voice/handoff.test.ts`
+- Modify: `apps/api/src/tools/transfer.ts`
+- Modify: `apps/api/src/demo/routes.ts`
+- Create: `apps/web/src/console/call-desk/QueuePanel.tsx`
+- Create: `apps/web/src/console/call-desk/HandoffPanel.tsx`
+- Create: `apps/web/src/console/call-desk/HandoffPanel.test.tsx`
+- Modify: `apps/voice-agent/src/madhusudan_voice/policy.py`
+
+**Consumes:** Browser voice session, authenticated staff admission, `QueueAssignment`,
+and `Handoff` records.
+
+**Produces:** `requestHandoff(callId, reason)` and
+`takeover(handoffId, expectedVersion)` with compare-and-set ownership and
+truthful `PENDING_STAFF`, `HUMAN_ACTIVE`, `FAILED`, or `TIMED_OUT` state.
+
+- [ ] Write queue tests for known territory/language, unsupported language,
+  missing territory, and no eligible operator. Write handoff tests for two
+  simultaneous accept attempts, microphone denial, AI stop timeout, operator
+  disconnect, caller departure, and stale version.
+- [ ] Run the tests and verify only one handoff request becomes assigned; the
+  other is a conflict rather than a second active owner.
+- [ ] Implement queue selection from an approved configuration map with a
+  visible default support queue. Do not infer territory from accent or model
+  output.
+- [ ] Implement handoff state changes: `REQUESTED → ASSIGNED → JOINING →
+  HUMAN_ACTIVE`. Before `HUMAN_ACTIVE`, cancel AI speech, block new mutating
+  tool requests, wait for acknowledgement, grant only the assigned operator
+  audio publication, and verify a live track. Persist `FAILED` or `TIMED_OUT`
+  with its reason when this cannot happen.
+- [ ] Show a private, authorised staff summary; do not put account context in
+  room-wide metadata. Keep caller-only transcription/risk observation active
+  without treating human speech as caller evidence.
+- [ ] Run focused tests and a two-browser manual exercise. Capture an operator
+  acceptance, a simultaneous conflict, and an unavailable-operator fallback.
+- [ ] Commit this independently reviewable slice with a focused message.
+
+**Acceptance:** A qualified staff user can speak to the caller in the original
+room only after the AI is silent and the participant track is usable; a saved
+ticket alone never displays as a completed handoff.
+
+### DEMO-JOURNEYS: Add retailer, distributor, and sales-prospect cards
+
+**Files:**
+
+- Create: `apps/api/src/demo/journeys.ts`
+- Create: `apps/api/src/demo/journeys.test.ts`
+- Create: `apps/web/src/demo/RetailerJourney.tsx`
+- Create: `apps/web/src/demo/DistributorJourney.tsx`
+- Create: `apps/web/src/demo/SalesProspectJourney.tsx`
+- Create: `apps/web/src/demo/JourneyTruthCard.tsx`
+- Create: `apps/web/src/demo/JourneyTruthCard.test.tsx`
+- Modify: `apps/api/src/tools/crm.ts`
+- Modify: `apps/web/src/App.tsx`
+- Create: `docs/demo/run-sheet.md`
+
+**Consumes:** Foundation contracts, caller context, request persistence, queue
+selection, and handoff state.
+
+**Produces:** Four journey controls and scripts that share a truthful request
+contract; retailer enquiries, distributor cases, and sales leads preserve
+their distinct fields and permissions.
+
+- [ ] Write API tests for retailer follow-up versus new request, distributor
+  account request with and without verification, fixture order result,
+  unavailable inventory, new prospect lead, and duplicate callback request.
+- [ ] Run the tests and verify `FIXTURE` and `UNAVAILABLE` appear in both
+  structured results and agent text.
+- [ ] Implement per-journey field validation. Retailer requires shop/contact,
+  product/quantity, territory, and callback preference. Distributor requires
+  enquiry type and verification state before an account result. Prospect
+  requires organisation, buyer role, territory, product interest, and contact
+  preference.
+- [ ] Keep the current seeded-order reader behind a `FIXTURE` adapter. Return
+  `UNAVAILABLE` for inventory and live account data until an authorised source
+  adapter is completed. Never make `createBusinessRequest` place an order.
+- [ ] Build the three journey components and shared truth card. Each shows the
+  request ID, assigned queue, source state, and exact next action. Use
+  `PENDING_STAFF` for a recorded callback preference until an outbound attempt
+  has a reconciled outcome.
+- [ ] Write the operator run sheet with preflight, dialogue, expected UI
+  labels, a fallback when voice/media is unavailable, and what evidence to
+  retain after each journey.
+- [ ] Run all journey tests and perform one controlled browser script per
+  journey. Verify no script says an order was placed, stock was confirmed,
+  money was refunded, WhatsApp was sent, or a callback happened without
+  evidence.
+- [ ] Commit this independently reviewable slice with a focused message.
+
+**Acceptance:** All four journeys are visibly distinct, repeat-caller aware,
+and factually bounded by their real integration state.
+
+### DEMO-RISK: Observe urgency separately from sentiment with a staffed fallback
+
+**Files:**
+
+- Create: `apps/voice-agent/src/madhusudan_voice/risk.py`
+- Create: `apps/voice-agent/tests/test_risk.py`
+- Create: `apps/api/src/demo/risk.ts`
+- Create: `apps/api/src/demo/risk.test.ts`
+- Create: `apps/web/src/console/call-desk/RiskAlert.tsx`
+- Create: `apps/web/src/console/call-desk/RiskAlert.test.tsx`
+- Create: `packages/contracts/fixtures/risk/*.json`
+- Create: `docs/demo/risk-evaluation.md`
+
+**Consumes:** Final caller transcript segments, handoff workflow, queue rules,
+and staffed-owner decisions.
+
+**Produces:** Independent sentiment and urgency assessments, durable alerts,
+and a reviewed shadow-mode scorecard.
+
+- [ ] Obtain the business decision recorded in the scope document: SOS
+  definition, staffed hours, primary/fallback owner, and approved copy. Do
+  not enable live routing while any is absent.
+- [ ] Write labelled fixtures for Hindi, English, and Hinglish: calm possible
+  adverse-product event, angry routine delivery complaint, direct human
+  request, negation, quoted history, third-party report, background speech,
+  and low-quality transcript.
+- [ ] Write tests that require a neutral possible-safety report to create an
+  alert, require an angry routine complaint not to create a safety alert, and
+  reject an assessment that names a nonexistent transcript segment.
+- [ ] Implement a deterministic unambiguous-request rule plus a structured
+  contextual classifier. Record `sentiment`, `urgency`, evidence segment IDs,
+  detector version, and `provisional` state separately. A human request bypasses
+  sentiment scoring.
+- [ ] Deduplicate repeated evidence into the active alert. Preserve no-staff,
+  timeout, disconnect, acknowledgement, and resolution outcomes. A later
+  cheerful sentence cannot clear an active safety alert automatically.
+- [ ] Run in shadow mode with normal staffed support. Record misses, false
+  alerts per 100 routine calls, alert delay, and handoff success separately by
+  language/audio condition in `docs/demo/risk-evaluation.md`.
+- [ ] Commit this independently reviewable slice with a focused message.
+
+**Acceptance:** The demo presents urgency as a staff-assistance workflow with
+real fallback states, never as a clinical or emergency-service promise.
+
+### DEMO-PHONE: Validate Exotel/SIP only after the browser demo is stable
+
+**Files:**
+
+- Modify: `deploy/livekit/`
+- Modify: `apps/api/src/call-events/routes.ts`
+- Create: `apps/api/src/call-events/reconcile.ts`
+- Create: `apps/api/src/call-events/reconcile.test.ts`
+- Modify: `docs/exotel-inbound.md`
+- Create: `docs/demo/phone-validation.md`
+
+**Consumes:** Proven browser worker, handoff, queues, and account approval for
+carrier/Sarvam testing.
+
+**Produces:** Linked carrier/SIP/room/application call records and an evidence
+based acceptance report.
+
+- [ ] Verify current Exotel account capability, inbound trunk parameters,
+  callback authentication, Sarvam realtime access, and the staffed carrier
+  fallback. Record missing prerequisites as blockers rather than guessed
+  configuration.
+- [ ] Write reconciliation tests for duplicate carrier events, carrier attempt
+  with no room, room with missing carrier completion, caller disconnect before
+  worker dispatch, no-worker capacity, and late end event after a recorded
+  ticket.
+- [ ] Configure the approved test route with trust boundaries and an explicit
+  worker dispatch rule. Preserve carrier raw reason codes alongside normalized
+  application state.
+- [ ] Conduct authorised controlled test calls from two independent mobile
+  networks. Exercise answer, two-way audio, interruption, transcript, ticket
+  creation, human takeover, no-worker, and fallback behaviour.
+- [ ] Reconcile carrier events with LiveKit and API records. Do not infer a
+  successful answer or transfer from a single dashboard record.
+- [ ] Record every observed result, defect, fallback outcome, and unresolved
+  prerequisite in `docs/demo/phone-validation.md`. Keep browser test records
+  separate from phone evidence.
+- [ ] Commit this independently reviewable slice with a focused message.
+
+**Acceptance:** The telephone demo is enabled only after a controlled call
+shows a carrier record, room/participant record, final transcript, durable
+business action, and accurate handoff/fallback outcome.
+
+## Completion checklist
+
+- [ ] DEMO-FOUNDATION through DEMO-JOURNEYS pass their focused tests and
+  manual browser scripts.
+- [ ] The run sheet labels every current integration as `RECORDED`,
+  `CONNECTED`, `FIXTURE`, `UNAVAILABLE`, or `PENDING_STAFF`.
+- [ ] Each returning-caller script requires confirmation before prior context
+  is disclosed.
+- [ ] Product-photo handling shows its true attachment state and never claims
+  a WhatsApp flow without an approved integration.
+- [ ] Same-room handoff has evidence for success, staff race, microphone
+  denial, and no-operator timeout.
+- [ ] Risk evaluation remains shadow-first until the business staffing and
+  review gate is complete.
+- [ ] Exotel/SIP is shown only with controlled carrier evidence; otherwise the
+  run sheet uses the browser live demo or deterministic transcript fallback.
+- [ ] Voice cloning remains outside this demo phase.
+
+## Unresolved dependencies
+
+The plan intentionally does not select a carrier configuration, storage
+provider, business-system source, queue roster, or SOS policy. Those are
+business and account decisions whose absence must remain visible in the demo.
+They do not block the browser complaint vertical slice, except where the slice
+would otherwise claim a phone call, received photo, account answer, or staffed
+handoff.

@@ -21,7 +21,7 @@ that it is automated and lets the caller request a person at any point.
 | Ticket, callback-request, lead, handoff, transcript, and call-event records | A completed callback, completed order, refund, payment resolution, or stock allocation unless an approved integration returns that result |
 | Structured product-complaint intake and an attachment workflow with an honest attachment state | WhatsApp delivery, photo collection through WhatsApp, or a received photo when no attachment service is connected |
 | Territory and language-based queue selection, then same-room browser handoff when a staffed operator accepts | An announced transfer before a human has joined with a usable microphone |
-| Sentiment observed in shadow mode and separate urgency/SOS routing with staffed fallback | An emergency diagnosis, automatic emergency-service contact, or using sentiment as the sole safety decision |
+| Scripted demo alerts and a separate urgency/SOS workflow with staffed fallback; production evaluation starts in shadow mode | An emergency diagnosis, automatic emergency-service contact, a validated live detector, or using sentiment as the sole safety decision |
 | Later voice-cloning evaluation after stable standard-voice calls | Voice cloning in the first demo or use of customer-call audio for voice training |
 
 ## Truth labels used in the demo
@@ -45,12 +45,19 @@ order was completed unless that exact action is confirmed.
 ## Caller recognition and privacy rule
 
 The first call creates or matches a `Caller` by normalized phone number and
-records only the information needed for the selected journey. A returning
-caller receives a short confirmation such as “I can see a previous open
-request about a product concern; is this the same matter?” The assistant must
-not read account, invoice, order, or complaint details aloud until the caller
-confirms the relevant context. A carrier-supplied number alone is not proof
-that the caller may receive account-specific information.
+records only the information needed for the selected journey. A phone number
+is a lookup key, not caller verification. On a real browser or telephone call,
+the assistant must complete the approved verification challenge before it
+reveals any earlier case, order, invoice, or account details. After that
+verification, it still asks whether the earlier matter is relevant before
+reading a specific summary or appending an update.
+
+The controlled browser demo has one separately seeded
+`DEMO_TRUSTED` identity. The backend may assign it only to an authenticated
+`isTest=true` session and labels it visibly as a fixture. It lets the demo show
+the returning-caller branch without representing a real caller-verification
+method. It must not be accepted from a browser-supplied phone number or reused
+for a carrier call.
 
 When the match is uncertain, the call remains a new/unknown caller workflow.
 The demo records the match rationale for staff review rather than presenting a
@@ -69,10 +76,11 @@ free-text description, and whether the product is still available. Create a
 `RECORDED` complaint ticket. For a possible safety concern or an explicit
 human request, route to the staffed priority queue.
 
-**Returning caller path:** show the staff member a prior open ticket and ask
-the caller whether this is an update to that ticket. If confirmed, append an
-update; otherwise create a separately linked complaint. Do not merge similar
-complaints solely because the caller number matches.
+**Returning caller path:** after verified identity (or the clearly labelled
+browser-test identity), ask whether this is an update to an earlier complaint.
+Reveal the prior ticket summary only after the caller confirms relevance. If
+confirmed, append an update; otherwise create a separately linked complaint.
+Do not merge similar complaints solely because the caller number matches.
 
 **Photo evidence:** After the ticket is recorded, offer a photo-evidence
 request. The ticket stores `evidenceRequestedAt` and an attachment state of
@@ -96,10 +104,10 @@ language, product and quantity request, delivery preference, and the requested
 outcome. The first demo creates a `RECORDED` retailer enquiry/callback item;
 it does not place an order or reserve inventory.
 
-**Returning caller path:** confirm the shop and show the caller’s last open
-enquiry only after confirmation. The assistant asks whether the request is a
-follow-up or a new requirement, preserves both request identifiers, and
-records an explicit callback preference.
+**Returning caller path:** verify identity first, then confirm the shop and
+whether the prior enquiry is relevant before showing its details. The assistant
+asks whether the request is a follow-up or a new requirement, preserves both
+request identifiers, and records an explicit callback preference.
 
 **Fixture boundary:** a seeded order or availability result can demonstrate
 how the call desk renders a connected response, but it is labelled `FIXTURE`.
@@ -122,10 +130,11 @@ assistant creates a `RECORDED` account/supply case and routes it by territory
 and language. It does not disclose a balance or invoice result without a
 verified source and caller verification.
 
-**Returning caller path:** confirm the caller’s relationship to the distributor
-and the previous case reference. Show unresolved cases to staff and offer an
-update or separate case. If a seeded reference is used in the demo, its result
-is labelled `FIXTURE` in the call desk and in the conversation transcript.
+**Returning caller path:** verify the caller’s relationship to the distributor,
+then confirm the previous case reference before showing account or case
+details. Show unresolved cases to staff and offer an update or separate case.
+If a seeded reference is used in the demo, its result is labelled `FIXTURE` in
+the call desk and in the conversation transcript.
 
 **Success:** staff see the verification state, territory queue, source
 reference, and callback/handoff state. A `PENDING_STAFF` callback remains
@@ -142,11 +151,11 @@ a `RECORDED` lead and select the relevant sales queue. No pricing, credit,
 availability, or partnership acceptance is promised unless supplied by an
 approved source.
 
-**Returning caller path:** ask whether the caller is following up on the
-previous lead. If confirmed, append a dated note and retain the original lead
-owner; otherwise create a linked lead. The assistant may say the sales team
-will review the request, not that a meeting or callback is booked unless a
-staff member has accepted it.
+**Returning caller path:** verify identity, then ask whether the caller is
+following up on the previous lead before naming it. If confirmed, append a
+dated note and retain the original lead owner; otherwise create a linked lead.
+The assistant may say the sales team will review the request, not that a
+meeting or callback is booked unless a staff member has accepted it.
 
 **Success:** the assigned sales queue sees a complete lead brief and a visible
 `PENDING_STAFF` status. The caller can request a human in the same room when a
@@ -165,21 +174,51 @@ The vertical slice passes only when all of the following are demonstrated:
 
 1. A browser caller completes the new complaint path in Hindi, English, or
    Hinglish and sees a durable ticket reference.
-2. A second browser call from the same controlled caller identity is offered
-   prior context without exposing it before confirmation.
+2. A second browser call from the separately seeded `DEMO_TRUSTED` test
+   identity is offered prior context only after the test identity and relevant
+   matter are confirmed. The same acceptance test proves that a real,
+   unverified caller receives no prior case/order details.
 3. The same call can request photo evidence; the UI accurately distinguishes
    a fixture, a received object, a request, and an unavailable attachment
    channel.
 4. A territory/language queue is chosen, a staff member accepts the handoff,
    joins the existing room, and is the only human audio publisher after
    takeover.
-5. A safety-phrased complaint opens a staffed urgency alert even when
-   sentiment is neutral; an angry routine complaint does not automatically
-   become an SOS claim.
+5. In the controlled scripted demo, a labelled safety fixture opens the
+   staffed urgency-alert UI even when sentiment is neutral; an angry routine
+   complaint does not automatically become an SOS claim. This verifies the
+   workflow, not detector accuracy or production live routing.
 
 The remaining three journeys reuse the same durable identity, request,
 callback, and handoff contracts. They become additional demo scripts after
 the vertical slice is stable, not separate architecture projects.
+
+## Inbound and outbound boundary
+
+The demo sequence is inbound browser first, then controlled inbound telephone
+validation. Optional outbound calling follows only after that phone gate. It
+supports two staff-triggered purposes: an eligible customer/support callback
+and an eligible sales-lead follow-up. A request to call back creates a durable
+`PENDING_STAFF` record; it does not dial. A dial is allowed only when an
+approved policy confirms contact eligibility, opt-in/permission, contact
+window, destination, and retry limit. The system creates an idempotent job and
+records answer, no-answer, busy, rejected, cancelled, and uncertain carrier
+outcomes separately from the original request.
+
+There are no real outbound calls in this planning/demo setup. The outbound
+feature remains visibly unavailable until controlled inbound phone evidence,
+the approved outbound carrier path, and explicit policy-owner approval are in
+place.
+
+## Deferred voice-cloning gate
+
+Voice cloning is not part of the demo. It can enter a later evaluation only
+after standard-voice inbound and controlled outbound calls meet their own
+acceptance gates; an authorised brand-speaker consent record, permitted
+reference material, retention/revocation process, and a telephone-bandwidth
+quality/latency comparison are available. Customer-call audio is not training
+material. If the candidate fails quality, latency, rights, or revocation
+testing, the standard voice remains the only enabled voice.
 
 ## Workflow decision diagram
 
@@ -221,7 +260,8 @@ flowchart TD
 | Photo received | approved private attachment storage, authenticated upload, metadata/retention policy, staff access rules | stored object and attachment metadata linked to a test ticket |
 | Account/order answer | authoritative source, caller verification policy, scoped adapter, error handling | source response linked to the case without exposure to an unverified caller |
 | Callback completion | approved outbound carrier path, contact permission, contact-window policy, durable attempt reconciliation | attempt outcome recorded separately from callback request |
-| SOS automation | business definition, staffed primary and fallback owner, approved copy, shadow evaluation | reviewed alerts and documented missed/false-alert evidence |
+| Scripted SOS demo | approved demo fixture, staffed primary/fallback owner, approved copy | alert UI, queue request, handoff/fallback state, and fixture label are visible |
+| Production SOS routing | business definition, staffed primary and fallback owner, approved copy, shadow evaluation | reviewed shadow results document missed/false-alert evidence, delay, and staffing outcomes before any automated routing |
 
 ## Demo run sheet
 
@@ -240,9 +280,11 @@ flowchart TD
 5. Run a short version of the retailer, distributor, and prospect cards. For
    each, point out `FIXTURE`, `UNAVAILABLE`, and `PENDING_STAFF` labels where
    applicable.
-6. Run a calm possible-safety complaint and an angry routine complaint. Show
-   the separate urgency and sentiment records, then the staffed fallback
-   state if the operator is unavailable.
+6. Run a labelled scripted possible-safety complaint and an angry routine
+   complaint. Show the separate urgency and sentiment records, then the
+   staffed fallback state if the operator is unavailable. State that this is a
+   controlled workflow demonstration; production detection remains shadow-only
+   until its validation gate is passed.
 7. Close by showing the call, ticket/lead, handoff, and callback-request audit
    trail. Do not claim telephone calling, live stock, account answers,
    WhatsApp, refunds, or completed callbacks unless the corresponding gate has

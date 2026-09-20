@@ -2,12 +2,20 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:17-alpine
@@ -37,10 +45,18 @@ jobs:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@v5
       - run: pnpm install --frozen-lockfile
+      - name: Check development environment
+        run: pnpm check:dev-environment
+      - name: Test development environment checker
+        run: pnpm test:dev-environment
       - name: Apply migrations
         run: pnpm --filter @msva/db migrate
-      - name: Build shared, contracts, and database package declarations
-        run: pnpm --filter @msva/shared --filter @msva/contracts --filter @msva/db build
+      - name: Verify migration status
+        run: pnpm --filter @msva/db exec prisma migrate status
+      - name: Build shared and contract package declarations
+        run: pnpm --filter @msva/shared build && pnpm --filter @msva/contracts build
+      - name: Build database package declarations
+        run: pnpm --filter @msva/db build
       - name: Check generated demo contracts
         run: pnpm contracts:check
       - name: Validate demo contracts in Python 3.12

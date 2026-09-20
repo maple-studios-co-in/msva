@@ -37,10 +37,11 @@ body:
     attributes:
       label: Current status
       options:
-        - Planned
+        - Backlog
+        - Ready
         - In progress
+        - Review
         - Blocked
-        - Ready for review
         - Done
     validations:
       required: true

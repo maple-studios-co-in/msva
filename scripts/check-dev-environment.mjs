@@ -50,22 +50,26 @@ if (existsSync(lockfilePath)) {
   fail("pnpm-lock.yaml is missing; run this check from the repository root.");
 }
 
-const pythonMarkers = [
-  "apps/voice/pyproject.toml",
-  "apps/voice/requirements.txt",
-  "apps/voice/Pipfile"
+const pythonManifests = [
+  "apps/voice-agent/pyproject.toml",
+  "apps/voice-agent/requirements.txt",
+  "apps/voice-agent/Pipfile",
+  "apps/voice-agent/setup.py",
+  "apps/voice-agent/setup.cfg"
 ];
-const pythonRequired = pythonMarkers.some((path) => existsSync(join(root, path)));
+const pythonRequired = pythonManifests.some((path) => existsSync(join(root, path)));
 
 if (pythonRequired) {
   const pythonVersion = commandVersion("python3");
-  if (pythonVersion) {
-    pass(`${pythonVersion} (required by apps/voice)`);
+  if (/^Python 3\.12(?:\.\d+)?(?:\s|$)/.test(pythonVersion ?? "")) {
+    pass(`${pythonVersion} (required by apps/voice-agent)`);
+  } else if (pythonVersion) {
+    fail(`${pythonVersion} is installed; apps/voice-agent requires Python 3.12.`);
   } else {
-    fail("Python 3 is required because apps/voice declares Python dependencies.");
+    fail("Python 3.12 is required because apps/voice-agent declares Python dependencies.");
   }
 } else {
-  pass("Python 3 not required (no apps/voice Python manifest found)");
+  pass("Python 3.12 not required (no apps/voice-agent Python manifest found)");
 }
 
 if (failed) {

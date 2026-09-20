@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { buildAssessmentSnapshot, capabilityFor, JEV_QUESTIONS, toCallAssessmentDto, validateProviderResult } from "./callAssessment.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { buildAssessmentSnapshot, capabilityFor, invokeJev, JEV_QUESTIONS, readJevConfig, toCallAssessmentDto, validateProviderResult } from "./callAssessment.js";
 
 const choice = <T extends string>(value: T, choices: readonly T[]) => ({
   type: "choice",
@@ -9,6 +9,8 @@ const choice = <T extends string>(value: T, choices: readonly T[]) => ({
 });
 
 describe("post-call assessment snapshots", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
   it("orders saved utterances by sequence and does not duplicate Turn text", () => {
     const snapshot = buildAssessmentSnapshot({
       id: "call-1",
@@ -16,6 +18,7 @@ describe("post-call assessment snapshots", () => {
       endedAt: new Date("2026-09-21T00:00:00.000Z"),
       language: "hi",
       callerName: "Asha",
+      caller: null,
       fromNumber: "+919876543210",
       utterances: [
         { id: "b", seq: 2, speaker: "AGENT", text: "Ticket recorded" },
@@ -51,6 +54,14 @@ describe("post-call assessment snapshots", () => {
         callerSentiment: { ...answers.callerSentiment, choice: "neutral", probabilities: { positive: 1, neutral: 0, frustrated: 0, unclear: 0 } }
       }
     }, false)).toThrow("RESPONSE_INVALID");
+    expect(() => validateProviderResult({
+      model: "jev-1.13.0",
+      answers: { ...answers, urgency: { ...answers.urgency, probabilities: { possible_safety: 0.5, routine: 0.5 } } }
+    }, false)).toThrow("RESPONSE_INVALID");
+    expect(() => validateProviderResult({
+      model: "jev-1.13.0",
+      answers: { ...answers, repetition: { ...answers.repetition, probabilities: { repetitive: 0.8, not_repetitive: 0.8, insufficient_context: 0 } } }
+    }, false)).toThrow("RESPONSE_INVALID");
   });
 
   it("sends concrete typed questions and exposes failed retryability only after cooldown", () => {
@@ -73,5 +84,42 @@ describe("post-call assessment snapshots", () => {
   it("keeps the provider unavailable until every server-side setting is present", () => {
     expect(capabilityFor({ enabled: false, apiKey: "key", allowedOrigins: new Set(["https://console.example"]) })).toMatchObject({ available: false, reason: "DISABLED" });
     expect(capabilityFor({ enabled: true, apiKey: null, allowedOrigins: new Set(["https://console.example"]) })).toMatchObject({ available: false, reason: "MISSING_API_KEY" });
+  });
+
+  it("redacts case variants of both Call and linked Caller names before any provider payload", () => {
+    const snapshot = buildAssessmentSnapshot({
+      id: "call-redaction", status: "COMPLETED", endedAt: new Date(), language: "en",
+      callerName: null, caller: { name: "Asha Sharma" }, fromNumber: "+919876543210", tickets: [],
+      utterances: [{ id: "1", seq: 1, speaker: "CALLER", text: "asha sharma emailed a@example.test from 9876543210; ASHA SHARMA needs help." }]
+    });
+    expect(snapshot.input.transcript).toBe("CALLER: [REDACTED] emailed [EMAIL] from [PHONE]; [REDACTED] needs help.");
+  });
+
+  it("cancels and aborts an oversized provider stream, and bounds a hanging provider", async () => {
+    const config = readJevConfig({ JEV_ENABLED: "true", JEV_API_KEY: "test-key", JEV_ALLOWED_ORIGINS: "https://console.test" });
+    const input = { transcript: "CALLER: test", language: "en", linkedTicketRecorded: false, utteranceCount: 1 };
+    let cancelled = false;
+    let aborted = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new TextEncoder().encode("x".repeat(100_001))); },
+      cancel() { cancelled = true; }
+    });
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+      init.signal?.addEventListener("abort", () => { aborted = true; });
+      return new Response(body, { status: 200 });
+    }));
+    await expect(invokeJev(input, config)).rejects.toThrow("RESPONSE_INVALID");
+    expect(cancelled).toBe(true);
+    expect(aborted).toBe(true);
+
+    let timeoutAbort = false;
+    vi.stubGlobal("fetch", vi.fn((_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init.signal?.addEventListener("abort", () => {
+        timeoutAbort = true;
+        reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+      });
+    })));
+    await expect(invokeJev(input, config, { timeoutMs: 5 })).rejects.toThrow("TIMEOUT");
+    expect(timeoutAbort).toBe(true);
   });
 });

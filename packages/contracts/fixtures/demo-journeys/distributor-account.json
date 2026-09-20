@@ -1,0 +1,14 @@
+{
+  "requestId": "distributor-request-001",
+  "callId": "browser-call-distributor-001",
+  "journey": "DISTRIBUTOR_CASE",
+  "callerConfirmation": "SEPARATE",
+  "fields": {
+    "enquiryType": "account-statement",
+    "description": "Please record a request for account help; no account facts are disclosed here.",
+    "requestedResolution": "A verified support representative should review the account request.",
+    "distributorCode": "DIST-017",
+    "referenceNumber": "REF-102"
+  },
+  "queue": { "territory": "Gujarat", "language": "en" }
+}

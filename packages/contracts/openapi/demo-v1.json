@@ -1,0 +1,2129 @@
+{
+  "components": {
+    "schemas": {
+      "CallerContext": {
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "callId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "identityAssurance": {
+                "const": "UNVERIFIED",
+                "type": "string"
+              },
+              "language": {
+                "enum": [
+                  "hi",
+                  "en",
+                  "hinglish"
+                ],
+                "type": "string"
+              },
+              "match": {
+                "enum": [
+                  "NEW",
+                  "RETURNING_UNCONFIRMED",
+                  "UNCERTAIN"
+                ],
+                "type": "string"
+              },
+              "priorRequests": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "journey": {
+                      "enum": [
+                        "CONSUMER_COMPLAINT",
+                        "RETAILER_ENQUIRY",
+                        "DISTRIBUTOR_CASE",
+                        "SALES_LEAD"
+                      ],
+                      "type": "string"
+                    },
+                    "summary": {
+                      "maxLength": 4000,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "truthState": {
+                      "const": "RECORDED",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "journey",
+                    "truthState",
+                    "summary"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 0,
+                "minItems": 0,
+                "type": "array"
+              },
+              "territory": {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "callId",
+              "language",
+              "identityAssurance",
+              "match",
+              "priorRequests"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "callerId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "callId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "identityAssurance": {
+                "enum": [
+                  "VERIFIED",
+                  "DEMO_TRUSTED"
+                ],
+                "type": "string"
+              },
+              "language": {
+                "enum": [
+                  "hi",
+                  "en",
+                  "hinglish"
+                ],
+                "type": "string"
+              },
+              "match": {
+                "enum": [
+                  "NEW",
+                  "RETURNING_UNCONFIRMED",
+                  "UNCERTAIN"
+                ],
+                "type": "string"
+              },
+              "priorRequests": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "journey": {
+                      "enum": [
+                        "CONSUMER_COMPLAINT",
+                        "RETAILER_ENQUIRY",
+                        "DISTRIBUTOR_CASE",
+                        "SALES_LEAD"
+                      ],
+                      "type": "string"
+                    },
+                    "summary": {
+                      "maxLength": 4000,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "truthState": {
+                      "const": "RECORDED",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "journey",
+                    "truthState",
+                    "summary"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 0,
+                "minItems": 0,
+                "type": "array"
+              },
+              "territory": {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "callId",
+              "language",
+              "identityAssurance",
+              "match",
+              "priorRequests"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "callerId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "callId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "identityAssurance": {
+                "enum": [
+                  "VERIFIED",
+                  "DEMO_TRUSTED"
+                ],
+                "type": "string"
+              },
+              "language": {
+                "enum": [
+                  "hi",
+                  "en",
+                  "hinglish"
+                ],
+                "type": "string"
+              },
+              "match": {
+                "const": "RETURNING_CONFIRMED",
+                "type": "string"
+              },
+              "priorRequests": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "journey": {
+                      "enum": [
+                        "CONSUMER_COMPLAINT",
+                        "RETAILER_ENQUIRY",
+                        "DISTRIBUTOR_CASE",
+                        "SALES_LEAD"
+                      ],
+                      "type": "string"
+                    },
+                    "summary": {
+                      "maxLength": 4000,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "truthState": {
+                      "const": "RECORDED",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "journey",
+                    "truthState",
+                    "summary"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 50,
+                "minItems": 1,
+                "type": "array"
+              },
+              "territory": {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "callId",
+              "language",
+              "identityAssurance",
+              "match",
+              "priorRequests"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "CallerContextInput": {
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "confirmation": {
+                "const": "FOLLOW_UP",
+                "type": "string"
+              },
+              "parentRequestId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "confirmation",
+              "parentRequestId"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "confirmation": {
+                "enum": [
+                  "NONE",
+                  "NEW",
+                  "SEPARATE"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "confirmation"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "CreateRequestInput": {
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "callerConfirmation": {
+                "const": "NEW",
+                "type": "string"
+              },
+              "callId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "fields": {
+                "additionalProperties": false,
+                "properties": {
+                  "batch": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "description": {
+                    "maxLength": 4000,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "expiry": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "issueCategory": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "product": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "productAvailable": {
+                    "type": "boolean"
+                  },
+                  "purchaseArea": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "product",
+                  "purchaseArea",
+                  "issueCategory",
+                  "description",
+                  "productAvailable"
+                ],
+                "type": "object"
+              },
+              "journey": {
+                "const": "CONSUMER_COMPLAINT",
+                "type": "string"
+              },
+              "queue": {
+                "additionalProperties": false,
+                "properties": {
+                  "language": {
+                    "enum": [
+                      "hi",
+                      "en",
+                      "hinglish"
+                    ],
+                    "type": "string"
+                  },
+                  "territory": {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "territory",
+                  "language"
+                ],
+                "type": "object"
+              },
+              "requestId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "requestId",
+              "callId",
+              "journey",
+              "callerConfirmation",
+              "fields",
+              "queue"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "callerConfirmation": {
+                "const": "SEPARATE",
+                "type": "string"
+              },
+              "callId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "fields": {
+                "additionalProperties": false,
+                "properties": {
+                  "batch": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "description": {
+                    "maxLength": 4000,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "expiry": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "issueCategory": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "product": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "productAvailable": {
+                    "type": "boolean"
+                  },
+                  "purchaseArea": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "product",
+                  "purchaseArea",
+                  "issueCategory",
+                  "description",
+                  "productAvailable"
+                ],
+                "type": "object"
+              },
+              "journey": {
+                "const": "CONSUMER_COMPLAINT",
+                "type": "string"
+              },
+              "queue": {
+                "additionalProperties": false,
+                "properties": {
+                  "language": {
+                    "enum": [
+                      "hi",
+                      "en",
+                      "hinglish"
+                    ],
+                    "type": "string"
+                  },
+                  "territory": {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "territory",
+                  "language"
+                ],
+                "type": "object"
+              },
+              "requestId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "requestId",
+              "callId",
+              "journey",
+              "callerConfirmation",
+              "fields",
+              "queue"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "callerConfirmation": {
+                "const": "FOLLOW_UP",
+                "type": "string"
+              },
+              "callId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "fields": {
+                "additionalProperties": false,
+                "properties": {
+                  "batch": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "description": {
+                    "maxLength": 4000,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "expiry": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "issueCategory": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "product": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "productAvailable": {
+                    "type": "boolean"
+                  },
+                  "purchaseArea": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "product",
+                  "purchaseArea",
+                  "issueCategory",
+                  "description",
+                  "productAvailable"
+                ],
+                "type": "object"
+              },
+              "journey": {
+                "const": "CONSUMER_COMPLAINT",
+                "type": "string"
+              },
+              "parentRequestId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "queue": {
+                "additionalProperties": false,
+                "properties": {
+                  "language": {
+                    "enum": [
+                      "hi",
+                      "en",
+                      "hinglish"
+                    ],
+                    "type": "string"
+                  },
+                  "territory": {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "territory",
+                  "language"
+                ],
+                "type": "object"
+              },
+              "requestId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "requestId",
+              "callId",
+              "journey",
+              "callerConfirmation",
+              "fields",
+              "queue",
+              "parentRequestId"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "callerConfirmation": {
+                "const": "NEW",
+                "type": "string"
+              },
+              "callId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "fields": {
+                "additionalProperties": false,
+                "properties": {
+                  "contactPerson": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "deliveryPreference": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "productRequest": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "quantityRequest": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "requestedOutcome": {
+                    "maxLength": 4000,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "shopName": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "shopName",
+                  "contactPerson",
+                  "productRequest",
+                  "quantityRequest",
+                  "requestedOutcome"
+                ],
+                "type": "object"
+              },
+              "journey": {
+                "const": "RETAILER_ENQUIRY",
+                "type": "string"
+              },
+              "queue": {
+                "additionalProperties": false,
+                "properties": {
+                  "language": {
+                    "enum": [
+                      "hi",
+                      "en",
+                      "hinglish"
+                    ],
+                    "type": "string"
+                  },
+                  "territory": {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "territory",
+                  "language"
+                ],
+                "type": "object"
+              },
+              "requestId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "requestId",
+              "callId",
+              "journey",
+              "callerConfirmation",
+              "fields",
+              "queue"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "callerConfirmation": {
+                "const": "SEPARATE",
+                "type": "string"
+              },
+              "callId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "fields": {
+                "additionalProperties": false,
+                "properties": {
+                  "contactPerson": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "deliveryPreference": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "productRequest": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "quantityRequest": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "requestedOutcome": {
+                    "maxLength": 4000,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "shopName": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "shopName",
+                  "contactPerson",
+                  "productRequest",
+                  "quantityRequest",
+                  "requestedOutcome"
+                ],
+                "type": "object"
+              },
+              "journey": {
+                "const": "RETAILER_ENQUIRY",
+                "type": "string"
+              },
+              "queue": {
+                "additionalProperties": false,
+                "properties": {
+                  "language": {
+                    "enum": [
+                      "hi",
+                      "en",
+                      "hinglish"
+                    ],
+                    "type": "string"
+                  },
+                  "territory": {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "territory",
+                  "language"
+                ],
+                "type": "object"
+              },
+              "requestId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "requestId",
+              "callId",
+              "journey",
+              "callerConfirmation",
+              "fields",
+              "queue"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "callerConfirmation": {
+                "const": "FOLLOW_UP",
+                "type": "string"
+              },
+              "callId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "fields": {
+                "additionalProperties": false,
+                "properties": {
+                  "contactPerson": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "deliveryPreference": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "productRequest": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "quantityRequest": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "requestedOutcome": {
+                    "maxLength": 4000,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "shopName": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "shopName",
+                  "contactPerson",
+                  "productRequest",
+                  "quantityRequest",
+                  "requestedOutcome"
+                ],
+                "type": "object"
+              },
+              "journey": {
+                "const": "RETAILER_ENQUIRY",
+                "type": "string"
+              },
+              "parentRequestId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "queue": {
+                "additionalProperties": false,
+                "properties": {
+                  "language": {
+                    "enum": [
+                      "hi",
+                      "en",
+                      "hinglish"
+                    ],
+                    "type": "string"
+                  },
+                  "territory": {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "territory",
+                  "language"
+                ],
+                "type": "object"
+              },
+              "requestId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "requestId",
+              "callId",
+              "journey",
+              "callerConfirmation",
+              "fields",
+              "queue",
+              "parentRequestId"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "callerConfirmation": {
+                "const": "NEW",
+                "type": "string"
+              },
+              "callId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "fields": {
+                "additionalProperties": false,
+                "properties": {
+                  "affectedProducts": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "description": {
+                    "maxLength": 4000,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "distributorCode": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "enquiryType": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "referenceNumber": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "requestedResolution": {
+                    "maxLength": 4000,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "enquiryType",
+                  "description",
+                  "requestedResolution"
+                ],
+                "type": "object"
+              },
+              "journey": {
+                "const": "DISTRIBUTOR_CASE",
+                "type": "string"
+              },
+              "queue": {
+                "additionalProperties": false,
+                "properties": {
+                  "language": {
+                    "enum": [
+                      "hi",
+                      "en",
+                      "hinglish"
+                    ],
+                    "type": "string"
+                  },
+                  "territory": {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "territory",
+                  "language"
+                ],
+                "type": "object"
+              },
+              "requestId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "requestId",
+              "callId",
+              "journey",
+              "callerConfirmation",
+              "fields",
+              "queue"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "callerConfirmation": {
+                "const": "SEPARATE",
+                "type": "string"
+              },
+              "callId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "fields": {
+                "additionalProperties": false,
+                "properties": {
+                  "affectedProducts": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "description": {
+                    "maxLength": 4000,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "distributorCode": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "enquiryType": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "referenceNumber": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "requestedResolution": {
+                    "maxLength": 4000,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "enquiryType",
+                  "description",
+                  "requestedResolution"
+                ],
+                "type": "object"
+              },
+              "journey": {
+                "const": "DISTRIBUTOR_CASE",
+                "type": "string"
+              },
+              "queue": {
+                "additionalProperties": false,
+                "properties": {
+                  "language": {
+                    "enum": [
+                      "hi",
+                      "en",
+                      "hinglish"
+                    ],
+                    "type": "string"
+                  },
+                  "territory": {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "territory",
+                  "language"
+                ],
+                "type": "object"
+              },
+              "requestId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "requestId",
+              "callId",
+              "journey",
+              "callerConfirmation",
+              "fields",
+              "queue"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "callerConfirmation": {
+                "const": "FOLLOW_UP",
+                "type": "string"
+              },
+              "callId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "fields": {
+                "additionalProperties": false,
+                "properties": {
+                  "affectedProducts": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "description": {
+                    "maxLength": 4000,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "distributorCode": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "enquiryType": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "referenceNumber": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "requestedResolution": {
+                    "maxLength": 4000,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "enquiryType",
+                  "description",
+                  "requestedResolution"
+                ],
+                "type": "object"
+              },
+              "journey": {
+                "const": "DISTRIBUTOR_CASE",
+                "type": "string"
+              },
+              "parentRequestId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "queue": {
+                "additionalProperties": false,
+                "properties": {
+                  "language": {
+                    "enum": [
+                      "hi",
+                      "en",
+                      "hinglish"
+                    ],
+                    "type": "string"
+                  },
+                  "territory": {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "territory",
+                  "language"
+                ],
+                "type": "object"
+              },
+              "requestId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "requestId",
+              "callId",
+              "journey",
+              "callerConfirmation",
+              "fields",
+              "queue",
+              "parentRequestId"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "callerConfirmation": {
+                "const": "NEW",
+                "type": "string"
+              },
+              "callId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "fields": {
+                "additionalProperties": false,
+                "properties": {
+                  "contactPreference": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "interest": {
+                    "maxLength": 4000,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "location": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "name": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "organisation": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "contactPreference",
+                  "interest"
+                ],
+                "type": "object"
+              },
+              "journey": {
+                "const": "SALES_LEAD",
+                "type": "string"
+              },
+              "queue": {
+                "additionalProperties": false,
+                "properties": {
+                  "language": {
+                    "enum": [
+                      "hi",
+                      "en",
+                      "hinglish"
+                    ],
+                    "type": "string"
+                  },
+                  "territory": {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "territory",
+                  "language"
+                ],
+                "type": "object"
+              },
+              "requestId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "requestId",
+              "callId",
+              "journey",
+              "callerConfirmation",
+              "fields",
+              "queue"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "callerConfirmation": {
+                "const": "SEPARATE",
+                "type": "string"
+              },
+              "callId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "fields": {
+                "additionalProperties": false,
+                "properties": {
+                  "contactPreference": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "interest": {
+                    "maxLength": 4000,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "location": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "name": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "organisation": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "contactPreference",
+                  "interest"
+                ],
+                "type": "object"
+              },
+              "journey": {
+                "const": "SALES_LEAD",
+                "type": "string"
+              },
+              "queue": {
+                "additionalProperties": false,
+                "properties": {
+                  "language": {
+                    "enum": [
+                      "hi",
+                      "en",
+                      "hinglish"
+                    ],
+                    "type": "string"
+                  },
+                  "territory": {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "territory",
+                  "language"
+                ],
+                "type": "object"
+              },
+              "requestId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "requestId",
+              "callId",
+              "journey",
+              "callerConfirmation",
+              "fields",
+              "queue"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "callerConfirmation": {
+                "const": "FOLLOW_UP",
+                "type": "string"
+              },
+              "callId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "fields": {
+                "additionalProperties": false,
+                "properties": {
+                  "contactPreference": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "interest": {
+                    "maxLength": 4000,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "location": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "name": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "organisation": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "contactPreference",
+                  "interest"
+                ],
+                "type": "object"
+              },
+              "journey": {
+                "const": "SALES_LEAD",
+                "type": "string"
+              },
+              "parentRequestId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "queue": {
+                "additionalProperties": false,
+                "properties": {
+                  "language": {
+                    "enum": [
+                      "hi",
+                      "en",
+                      "hinglish"
+                    ],
+                    "type": "string"
+                  },
+                  "territory": {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "territory",
+                  "language"
+                ],
+                "type": "object"
+              },
+              "requestId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "requestId",
+              "callId",
+              "journey",
+              "callerConfirmation",
+              "fields",
+              "queue",
+              "parentRequestId"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "CreateRequestResult": {
+        "additionalProperties": false,
+        "properties": {
+          "actionState": {
+            "enum": [
+              "RECORDED",
+              "PENDING_STAFF"
+            ],
+            "type": "string"
+          },
+          "callId": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "caseId": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "evidenceState": {
+            "const": "NOT_REQUESTED",
+            "type": "string"
+          },
+          "requestId": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "ticketNumber": {
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer"
+          },
+          "truthState": {
+            "const": "RECORDED",
+            "type": "string"
+          }
+        },
+        "required": [
+          "requestId",
+          "callId",
+          "caseId",
+          "ticketNumber",
+          "truthState",
+          "actionState",
+          "evidenceState"
+        ],
+        "type": "object"
+      },
+      "DemoError": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "enum": [
+              "INVALID_REQUEST",
+              "CALL_NOT_FOUND",
+              "IDENTITY_REQUIRED",
+              "PARENT_NOT_ACCESSIBLE",
+              "IDEMPOTENCY_CONFLICT",
+              "TEMPORARILY_UNAVAILABLE"
+            ],
+            "type": "string"
+          },
+          "message": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "Evidence": {
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "state": {
+                "const": "NOT_REQUESTED",
+                "type": "string"
+              },
+              "truthState": {
+                "const": "RECORDED",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "truthState"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "state": {
+                "const": "REQUESTED",
+                "type": "string"
+              },
+              "truthState": {
+                "const": "RECORDED",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "truthState"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "state": {
+                "const": "UNAVAILABLE",
+                "type": "string"
+              },
+              "truthState": {
+                "const": "UNAVAILABLE",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "truthState"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "fixtureRef": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "state": {
+                "const": "REQUESTED",
+                "type": "string"
+              },
+              "truthState": {
+                "const": "FIXTURE",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "truthState",
+              "fixtureRef"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "receivedAt": {
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                "type": "string"
+              },
+              "state": {
+                "const": "RECEIVED",
+                "type": "string"
+              },
+              "storageKey": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "truthState": {
+                "const": "RECORDED",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "truthState",
+              "storageKey",
+              "receivedAt"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Handoff": {
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "callId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "state": {
+                "enum": [
+                  "REQUESTED",
+                  "ASSIGNED",
+                  "JOINING",
+                  "FAILED",
+                  "TIMED_OUT"
+                ],
+                "type": "string"
+              },
+              "version": {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "callId",
+              "version",
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "activatedAt": {
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                "type": "string"
+              },
+              "assignedUserId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "callId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "state": {
+                "const": "HUMAN_ACTIVE",
+                "type": "string"
+              },
+              "version": {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "callId",
+              "version",
+              "state",
+              "assignedUserId",
+              "activatedAt"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "IdentityAssurance": {
+        "enum": [
+          "UNVERIFIED",
+          "VERIFIED",
+          "DEMO_TRUSTED"
+        ],
+        "type": "string"
+      },
+      "JourneyKind": {
+        "enum": [
+          "CONSUMER_COMPLAINT",
+          "RETAILER_ENQUIRY",
+          "DISTRIBUTOR_CASE",
+          "SALES_LEAD"
+        ],
+        "type": "string"
+      },
+      "Language": {
+        "enum": [
+          "hi",
+          "en",
+          "hinglish"
+        ],
+        "type": "string"
+      },
+      "RiskAssessment": {
+        "additionalProperties": false,
+        "properties": {
+          "callId": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "mode": {
+            "const": "SHADOW",
+            "type": "string"
+          },
+          "rationale": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "sentiment": {
+            "enum": [
+              "NEUTRAL",
+              "POSITIVE",
+              "NEGATIVE",
+              "UNKNOWN"
+            ],
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "FIXTURE",
+              "DETECTOR"
+            ],
+            "type": "string"
+          },
+          "urgency": {
+            "enum": [
+              "ROUTINE",
+              "POSSIBLE_SAFETY",
+              "UNKNOWN"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "callId",
+          "sentiment",
+          "urgency",
+          "mode",
+          "source",
+          "rationale"
+        ],
+        "type": "object"
+      },
+      "SourceResult": {
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "data": {
+                "additionalProperties": false,
+                "properties": {
+                  "items": {
+                    "items": {
+                      "maxLength": 200,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "reference": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "status": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "reference",
+                  "status",
+                  "items"
+                ],
+                "type": "object"
+              },
+              "sourceRef": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "truthState": {
+                "const": "CONNECTED",
+                "type": "string"
+              }
+            },
+            "required": [
+              "truthState",
+              "sourceRef",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "data": {
+                "additionalProperties": false,
+                "properties": {
+                  "items": {
+                    "items": {
+                      "maxLength": 200,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "reference": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "status": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "reference",
+                  "status",
+                  "items"
+                ],
+                "type": "object"
+              },
+              "fixtureRef": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "truthState": {
+                "const": "FIXTURE",
+                "type": "string"
+              }
+            },
+            "required": [
+              "truthState",
+              "fixtureRef",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "reason": {
+                "maxLength": 4000,
+                "minLength": 1,
+                "type": "string"
+              },
+              "truthState": {
+                "const": "UNAVAILABLE",
+                "type": "string"
+              }
+            },
+            "required": [
+              "truthState",
+              "reason"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "TruthState": {
+        "enum": [
+          "RECORDED",
+          "CONNECTED",
+          "FIXTURE",
+          "UNAVAILABLE",
+          "PENDING_STAFF"
+        ],
+        "type": "string"
+      }
+    },
+    "securitySchemes": {
+      "serviceBearer": {
+        "bearerFormat": "service-token",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "title": "MSVA demo foundation contracts",
+    "version": "v1"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/v1/calls/{callId}/demo-context": {
+      "get": {
+        "parameters": [
+          {
+            "description": "Durable application call identity. The route is planned and unmounted.",
+            "in": "path",
+            "name": "callId",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallerContext"
+                }
+              }
+            },
+            "description": "Confirmed caller context when future policy allows disclosure."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DemoError"
+                }
+              }
+            },
+            "description": "Invalid context request."
+          }
+        },
+        "security": [
+          {
+            "serviceBearer": []
+          }
+        ],
+        "x-implementation-status": "planned-unmounted"
+      }
+    },
+    "/v1/calls/{callId}/demo-requests": {
+      "post": {
+        "parameters": [
+          {
+            "description": "Durable application call identity. The route is planned and unmounted.",
+            "in": "path",
+            "name": "callId",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-MSVA-Call-Lease",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRequestInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateRequestResult"
+                }
+              }
+            },
+            "description": "Durable request receipt only; staff work remains pending."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DemoError"
+                }
+              }
+            },
+            "description": "Rejected request."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DemoError"
+                }
+              }
+            },
+            "description": "Idempotency conflict."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DemoError"
+                }
+              }
+            },
+            "description": "Temporary persistence failure."
+          }
+        },
+        "security": [
+          {
+            "serviceBearer": []
+          }
+        ],
+        "x-implementation-status": "planned-unmounted"
+      }
+    }
+  }
+}

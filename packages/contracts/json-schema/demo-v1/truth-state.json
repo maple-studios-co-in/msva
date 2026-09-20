@@ -1,0 +1,12 @@
+{
+  "$id": "https://msva.example.invalid/contracts/demo-v1/truth-state.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "enum": [
+    "RECORDED",
+    "CONNECTED",
+    "FIXTURE",
+    "UNAVAILABLE",
+    "PENDING_STAFF"
+  ],
+  "type": "string"
+}

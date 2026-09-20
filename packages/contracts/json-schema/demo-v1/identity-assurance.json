@@ -1,0 +1,10 @@
+{
+  "$id": "https://msva.example.invalid/contracts/demo-v1/identity-assurance.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "enum": [
+    "UNVERIFIED",
+    "VERIFIED",
+    "DEMO_TRUSTED"
+  ],
+  "type": "string"
+}

@@ -1,0 +1,10 @@
+{
+  "$id": "https://msva.example.invalid/contracts/demo-v1/language.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "enum": [
+    "hi",
+    "en",
+    "hinglish"
+  ],
+  "type": "string"
+}

@@ -1,0 +1,108 @@
+{
+  "valid": [
+    { "schema": "CreateRequestInput", "file": "consumer-returning.json" },
+    { "schema": "CreateRequestInput", "file": "retailer-enquiry.json" },
+    { "schema": "CreateRequestInput", "file": "distributor-account.json" },
+    { "schema": "CreateRequestInput", "file": "sales-prospect.json" },
+    { "schema": "SourceResult", "file": "seeded-order.json" },
+    {
+      "schema": "CallerContext",
+      "payload": {
+        "callId": "browser-call-consumer-001",
+        "identityAssurance": "VERIFIED",
+        "match": "RETURNING_CONFIRMED",
+        "language": "hinglish",
+        "callerId": "caller-001",
+        "priorRequests": [{
+          "id": "prior-request-001",
+          "journey": "CONSUMER_COMPLAINT",
+          "truthState": "RECORDED",
+          "summary": "A prior recorded packaging complaint."
+        }]
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "unknown truth state",
+      "schema": "SourceResult",
+      "payload": { "truthState": "MADE_UP", "reason": "bad state" }
+    },
+    {
+      "name": "follow up without parent",
+      "schema": "CreateRequestInput",
+      "payload": {
+        "requestId": "invalid-001", "callId": "call-001", "journey": "SALES_LEAD", "callerConfirmation": "FOLLOW_UP",
+        "fields": { "name": "A", "contactPreference": "Email", "interest": "A valid interest" },
+        "queue": { "territory": "MP", "language": "en" }
+      }
+    },
+    {
+      "name": "new request with parent",
+      "schema": "CreateRequestInput",
+      "payload": {
+        "requestId": "invalid-002", "callId": "call-002", "journey": "SALES_LEAD", "callerConfirmation": "NEW", "parentRequestId": "prior-001",
+        "fields": { "name": "A", "contactPreference": "Email", "interest": "A valid interest" },
+        "queue": { "territory": "MP", "language": "en" }
+      }
+    },
+    {
+      "name": "unknown nested request field",
+      "schema": "CreateRequestInput",
+      "payload": {
+        "requestId": "invalid-003", "callId": "call-003", "journey": "CONSUMER_COMPLAINT", "callerConfirmation": "NEW",
+        "fields": { "product": "Oil", "purchaseArea": "Bhopal", "issueCategory": "packaging", "description": "A sufficiently clear description.", "productAvailable": true, "truthState": "RECORDED" },
+        "queue": { "territory": "MP", "language": "en" }
+      }
+    },
+    {
+      "name": "forged server-owned verification",
+      "schema": "CreateRequestInput",
+      "payload": {
+        "requestId": "invalid-004", "callId": "call-004", "journey": "SALES_LEAD", "callerConfirmation": "NEW", "identityAssurance": "VERIFIED", "isTest": true,
+        "fields": { "name": "A", "contactPreference": "Email", "interest": "A valid interest" },
+        "queue": { "territory": "MP", "language": "en" }
+      }
+    },
+    {
+      "name": "unverified history disclosure",
+      "schema": "CallerContext",
+      "payload": {
+        "callId": "call-005", "identityAssurance": "UNVERIFIED", "match": "RETURNING_UNCONFIRMED", "language": "en", "callerId": "caller-001", "priorRequests": []
+      }
+    },
+    {
+      "name": "verified unconfirmed history disclosure",
+      "schema": "CallerContext",
+      "payload": {
+        "callId": "call-006", "identityAssurance": "VERIFIED", "match": "RETURNING_UNCONFIRMED", "language": "en",
+        "priorRequests": [{ "id": "request-001", "journey": "SALES_LEAD", "truthState": "RECORDED", "summary": "Past matter" }]
+      }
+    },
+    {
+      "name": "connected source without reference",
+      "schema": "SourceResult",
+      "payload": { "truthState": "CONNECTED", "data": { "reference": "ORD-1", "status": "Shipped", "items": ["Oil"] } }
+    },
+    {
+      "name": "fixture evidence cannot be received",
+      "schema": "Evidence",
+      "payload": { "state": "RECEIVED", "truthState": "FIXTURE", "fixtureRef": "image-001" }
+    },
+    {
+      "name": "received evidence requires storage key",
+      "schema": "Evidence",
+      "payload": { "state": "RECEIVED", "truthState": "RECORDED", "receivedAt": "2026-09-21T10:00:00Z" }
+    },
+    {
+      "name": "received evidence requires valid datetime",
+      "schema": "Evidence",
+      "payload": { "state": "RECEIVED", "truthState": "RECORDED", "storageKey": "evidence-001", "receivedAt": "not-a-date" }
+    },
+    {
+      "name": "account disclosure lacks verification contract",
+      "schema": "SourceResult",
+      "payload": { "truthState": "CONNECTED", "sourceRef": "server-ref-001", "data": { "accountBalance": "100" } }
+    }
+  ]
+}

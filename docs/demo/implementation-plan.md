@@ -116,11 +116,12 @@ and trust fields are not request input.
 
 The successful immutable creation receipt has `truthState: "RECORDED"`,
 `actionState: "PENDING_STAFF"`, and `evidenceState: "NOT_REQUESTED"`.
-`PENDING_STAFF` is work state, not a truth state. Source provenance is carried
-by the canonical source/evidence contracts: `CONNECTED` requires a server
-source reference, `FIXTURE` is explicitly labelled, and `UNAVAILABLE` is not
-a successful business action. Fixtures demonstrate values but do not define
-the contract.
+For this creation receipt, `PENDING_STAFF` is carried in `actionState`, not
+its truth state; the general canonical `TruthState` schema may use it in other
+representations. Source provenance is carried by the canonical source/evidence
+contracts: `CONNECTED` requires a server source reference, `FIXTURE` is
+explicitly labelled, and `UNAVAILABLE` is not a successful business action.
+Fixtures demonstrate values but do not define the contract.
 
 The following worker and staff routes are future planned surfaces, not mounted
 foundation endpoints. When implemented, worker mutations require a service
@@ -242,8 +243,9 @@ later complaint, worker, browser audio, phone, handoff, or deployment phases
 are implemented.
 
 - [ ] Write contract tests that reject an unknown truth state, `RECEIVED`
-  evidence without `storageKey`, a distributor account case without a
-  verification state, and a `CONNECTED` result without `sourceRef`.
+  evidence without `storageKey`, request input that supplies caller identity
+  or verification assurance (server-owned trust fields), and a `CONNECTED`
+  result without `sourceRef`.
 - [ ] Run the contract tests and verify each invalid fixture fails at schema
   parsing.
 - [ ] Add the Zod schemas, derived types, and four valid JSON fixtures. Make
@@ -337,7 +339,7 @@ another persistence path.
 - [ ] Build the journey component with required complaint fields: product,
   batch/expiry when available, purchase area, issue category, description,
   product availability, language, and territory. Render the returned truth
-  state beside the spoken confirmation.
+  state beside the on-screen confirmation.
 - [ ] Run API and browser-component tests. Add an accessibility assertion for
   visible status text rather than colour-only state.
 - [ ] Commit this independently reviewable slice with a focused message.

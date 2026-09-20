@@ -86,6 +86,7 @@ export async function ensureCaller(
 
 export type CallStartInput = {
   id: string;
+  startedAt?: string;
   provider: string;
   providerSid?: string | null;
   fromNumber: string;
@@ -123,7 +124,7 @@ export async function recordCallStart(input: CallStartInput): Promise<{ id: stri
 
   const call = await prisma.call.upsert({
     where: { id: input.id },
-    create: { id: input.id, ...data },
+    create: { id: input.id, ...data, startedAt: input.startedAt ? new Date(input.startedAt) : undefined },
     update: data
   });
   return { id: call.id };
@@ -148,7 +149,10 @@ export type TurnInput = {
 };
 
 export async function recordTurn(callId: string, turn: TurnInput): Promise<void> {
-  const call = await prisma.call.findUnique({ where: { id: callId }, select: { id: true, startedAt: true } });
+  const call = await prisma.call.findUnique({
+    where: { id: callId },
+    select: { id: true, startedAt: true, endedAt: true, outcome: true, _count: { select: { tickets: true } } }
+  });
   if (!call) throw new Error(`Unknown call ${callId}`);
   const atMs = Date.now() - call.startedAt.getTime();
 
@@ -178,7 +182,13 @@ export async function recordTurn(callId: string, turn: TurnInput): Promise<void>
 
   const outcome = toOutcome(turn.outcome);
   const callUpdate: Prisma.CallUpdateInput = {};
+  let reconciledOutcome: CallOutcome | undefined;
   if (outcome && outcome !== "IN_PROGRESS") callUpdate.outcome = outcome;
+  else if (call.endedAt && call.outcome === "ABANDONED") {
+    // Hangup may be saved before the model's final turn report. A late turn
+    // proves interaction, not resolution; keep the original disconnect time.
+    reconciledOutcome = call._count.tickets > 0 ? "TICKET_CREATED" : "IN_PROGRESS";
+  }
   if (turn.collected && Object.keys(turn.collected).length > 0) callUpdate.collected = turn.collected;
   if (turn.escalationReason) callUpdate.escalationReason = turn.escalationReason;
   if (turn.intent && turn.intent !== "unknown") callUpdate.intent = turn.intent;
@@ -195,13 +205,19 @@ export async function recordTurn(callId: string, turn: TurnInput): Promise<void>
           prisma.utterance.createMany({ data: utterances })
         ]
       : []),
-    ...(Object.keys(callUpdate).length > 0 ? [prisma.call.update({ where: { id: callId }, data: callUpdate })] : [])
+    ...(Object.keys(callUpdate).length > 0 ? [prisma.call.update({ where: { id: callId }, data: callUpdate })] : []),
+    ...(reconciledOutcome ? [prisma.call.updateMany({
+      // A ticket tool can save a confirmed outcome outside the log queue.
+      // Reconcile only if the row is still abandoned when this write runs.
+      where: { id: callId, outcome: "ABANDONED" },
+      data: { outcome: reconciledOutcome }
+    })] : [])
   ]);
 }
 
 export async function recordCallEnd(
   callId: string,
-  input: { status?: string | null; outcome?: string | null }
+  input: { status?: string | null; outcome?: string | null; endedAt?: string }
 ): Promise<void> {
   const call = await prisma.call.findUnique({
     where: { id: callId },
@@ -210,15 +226,21 @@ export async function recordCallEnd(
   if (!call) throw new Error(`Unknown call ${callId}`);
   if (call.endedAt) return; // idempotent
 
-  const endedAt = new Date();
+  const capturedEndMs = input.endedAt ? Date.parse(input.endedAt) : Date.now();
+  if (!Number.isFinite(capturedEndMs)) throw new Error("Invalid call end time");
+  const endedAt = new Date(Math.max(call.startedAt.getTime(), capturedEndMs));
   let status: CallStatus = "COMPLETED";
   const requested = (input.status ?? "").toUpperCase();
   if (requested === "FAILED" || requested === "NO_ANSWER") status = requested;
 
-  let outcome = toOutcome(input.outcome) ?? call.outcome;
+  const reportedOutcome = toOutcome(input.outcome);
+  // A stale in-progress end event must not erase a confirmed earlier action.
+  let outcome = reportedOutcome && reportedOutcome !== "IN_PROGRESS" ? reportedOutcome : call.outcome;
   if (outcome === "IN_PROGRESS") {
     if (call._count.tickets > 0) outcome = "TICKET_CREATED";
-    else outcome = call._count.turns > 1 ? "RESOLVED_BY_VA" : "ABANDONED";
+    else if (call._count.turns === 0) outcome = "ABANDONED";
+    // Logged turns can contain only retries/errors. Their count is not
+    // evidence of resolution; keep the outcome explicitly unconfirmed.
   }
 
   await prisma.call.update({

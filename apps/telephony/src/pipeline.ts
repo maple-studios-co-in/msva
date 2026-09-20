@@ -206,6 +206,9 @@ export function createCallPipeline(ws: WebSocket, call: TelephonyCall): CallPipe
     if (closed || turnInFlight) return;
     turnInFlight = true;
     const index = ++turnIndex;
+    // Save received speech before waiting for the model. The final report
+    // upserts this same index, so hangup cannot erase an unfinished turn.
+    void callLog.turn(sessionId, { index, callerText: utterance });
     const turnStart = Date.now();
     let firstTokenAt: number | null = null;
     let finalAt: number | null = null;
@@ -356,6 +359,7 @@ export function createCallPipeline(ws: WebSocket, call: TelephonyCall): CallPipe
     },
     async close() {
       if (closed) return;
+      const endedAt = new Date().toISOString();
       closed = true;
       pendingUtterances.length = 0;
       bargeInAudio = Buffer.alloc(0);
@@ -367,7 +371,7 @@ export function createCallPipeline(ws: WebSocket, call: TelephonyCall): CallPipe
       tts = null;
       if (started && !ended) {
         ended = true;
-        void callLog.end(sessionId, { outcome: conversation?.outcome });
+        void callLog.end(sessionId, { outcome: conversation?.outcome, endedAt });
       }
     }
   };

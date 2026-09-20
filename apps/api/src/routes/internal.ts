@@ -37,6 +37,7 @@ internalRouter.use((request, response, next) => {
 const startSchema = z.object({
   id: z.string().min(6).max(128),
   provider: z.enum(["browser", "exotel", "twilio"]),
+  startedAt: z.string().datetime({ offset: true }).optional(),
   providerSid: z.string().nullish(),
   fromNumber: z.string().min(1),
   toNumber: z.string().nullish(),
@@ -95,6 +96,7 @@ internalRouter.post("/calls/:id/turns", async (request, response, next) => {
 });
 
 const endSchema = z.object({
+  endedAt: z.string().datetime({ offset: true }).optional(),
   status: z.string().nullish(),
   outcome: z.string().nullish()
 });

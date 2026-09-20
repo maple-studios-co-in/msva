@@ -3,7 +3,7 @@ import cors from "cors";
 import express from "express";
 import path from "node:path";
 import { z } from "zod";
-import { buildAnalytics, loadCallRecords } from "./analytics.js";
+import { createSampleAnalytics } from "./sampleAnalytics.js";
 import { demoCalls, findDemoCall } from "./demoCalls.js";
 import { BULBUL_V3_VOICES, previewVoice } from "./sarvamPreview.js";
 import { getActiveModel, getLlmEnabled, handleChat, initialState, setLlmEnabled, streamChat } from "./voiceAgent.js";
@@ -11,6 +11,7 @@ import { DEMO_FAILSAFE_AUDIO_PATH, demoFailsafeAvailable, loadDemoFailsafe } fro
 import { databaseReady } from "@msva/db";
 import { adminRouter } from "./routes/admin.js";
 import { internalRouter } from "./routes/internal.js";
+import { createLiveCallsHandler } from "./liveCalls.js";
 
 const app = express();
 const port = Number(process.env.PORT ?? 4100);
@@ -22,29 +23,24 @@ app.use(cors({ origin: process.env.CORS_ORIGIN?.split(",").map((o) => o.trim()) 
 app.use(express.json({ limit: "1mb" }));
 app.set("trust proxy", true);
 
-let records = loadCallRecords(path.resolve(process.cwd(), csvPath));
+const sampleAnalytics = createSampleAnalytics(path.resolve(process.cwd(), csvPath));
 
 app.get("/health", async (_request, response) => {
   response.json({
     ok: true,
     service: "msva-api",
     model: getActiveModel(),
-    records: records.length,
+    records: sampleAnalytics.recordCount,
+    sampleAnalytics: sampleAnalytics.status,
     database: await databaseReady()
   });
 });
 
 app.use("/api/internal", internalRouter);
 app.use("/api/admin", adminRouter);
+app.get("/api/live-calls", createLiveCallsHandler());
 
-app.get("/api/analytics", (_request, response) => {
-  response.json(buildAnalytics(records));
-});
-
-app.post("/api/analytics/reload", (_request, response) => {
-  records = loadCallRecords(path.resolve(process.cwd(), csvPath));
-  response.json({ ok: true, records: records.length });
-});
+app.use("/api/analytics", sampleAnalytics.router);
 
 app.get("/api/demo-calls", (_request, response) => {
   response.json(demoCalls);

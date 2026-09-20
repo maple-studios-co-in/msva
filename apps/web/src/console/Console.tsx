@@ -25,6 +25,7 @@ import {
 } from "./api";
 import { isCallActive } from "./polling";
 import { usePollingLoad } from "./usePollingLoad";
+import { CallAssessmentPanel } from "./CallAssessmentPanel.js";
 
 // ---------------------------------------------------------------------------
 // Console v0 — overview, call history with drawer, ticket queue, users.
@@ -493,6 +494,12 @@ function CallDrawer({ id, user, onClose, onAuthError }: { id: string; user: Sess
               </div>
             )}
           </section>
+          <CallAssessmentPanel
+            callId={c.id}
+            canAssess={atLeast(user, "SUPERVISOR")}
+            onAuthError={onAuthError}
+            onChanged={call.reload}
+          />
           <section className="co-section">
             <h3>Latency per turn</h3>
             <div className="co-tablewrap"><table className="co-table">

@@ -20,6 +20,46 @@
           "summary": "A prior recorded packaging complaint."
         }]
       }
+    },
+    {
+      "schema": "Evidence",
+      "payload": {
+        "state": "RECEIVED",
+        "truthState": "RECORDED",
+        "storageKey": "evidence-001",
+        "receivedAt": "2026-09-21T10:00:00Z"
+      }
+    },
+    {
+      "schema": "Handoff",
+      "payload": {
+        "id": "handoff-001",
+        "callId": "browser-call-consumer-001",
+        "version": 1,
+        "state": "ASSIGNED",
+        "assignedUserId": "user-001"
+      }
+    },
+    {
+      "schema": "Handoff",
+      "payload": {
+        "id": "handoff-002",
+        "callId": "browser-call-consumer-001",
+        "version": 2,
+        "state": "JOINING",
+        "assignedUserId": "user-001"
+      }
+    },
+    {
+      "schema": "Handoff",
+      "payload": {
+        "id": "handoff-003",
+        "callId": "browser-call-consumer-001",
+        "version": 3,
+        "state": "HUMAN_ACTIVE",
+        "assignedUserId": "user-001",
+        "activatedAt": "2026-09-21T10:02:00Z"
+      }
     }
   ],
   "invalid": [
@@ -98,6 +138,31 @@
       "name": "received evidence requires valid datetime",
       "schema": "Evidence",
       "payload": { "state": "RECEIVED", "truthState": "RECORDED", "storageKey": "evidence-001", "receivedAt": "not-a-date" }
+    },
+    {
+      "name": "year-zero evidence datetime is unsupported",
+      "schema": "Evidence",
+      "payload": { "state": "RECEIVED", "truthState": "RECORDED", "storageKey": "evidence-001", "receivedAt": "0000-01-01T00:00:00Z" }
+    },
+    {
+      "name": "assigned handoff requires owner",
+      "schema": "Handoff",
+      "payload": { "id": "handoff-004", "callId": "call-007", "version": 1, "state": "ASSIGNED" }
+    },
+    {
+      "name": "joining handoff requires owner",
+      "schema": "Handoff",
+      "payload": { "id": "handoff-005", "callId": "call-007", "version": 2, "state": "JOINING" }
+    },
+    {
+      "name": "active handoff requires owner",
+      "schema": "Handoff",
+      "payload": { "id": "handoff-006", "callId": "call-007", "version": 3, "state": "HUMAN_ACTIVE", "activatedAt": "2026-09-21T10:02:00Z" }
+    },
+    {
+      "name": "year-zero handoff datetime is unsupported",
+      "schema": "Handoff",
+      "payload": { "id": "handoff-007", "callId": "call-007", "version": 4, "state": "HUMAN_ACTIVE", "assignedUserId": "user-001", "activatedAt": "0000-01-01T00:00:00Z" }
     },
     {
       "name": "account disclosure lacks verification contract",

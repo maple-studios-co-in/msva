@@ -80,10 +80,14 @@ function openApi(schemas: Record<string, Record<string, JsonValue>>): Record<str
     },
     paths: {
       "/v1/calls/{callId}/demo-context": {
-        get: {
+        post: {
           "x-implementation-status": "planned-unmounted",
           security: [{ serviceBearer: [] }],
           parameters: [callIdParameter],
+          requestBody: {
+            required: true,
+            content: { "application/json": { schema: { $ref: "#/components/schemas/CallerContextInput" } } }
+          },
           responses: {
             "200": {
               description: "Confirmed caller context when future policy allows disclosure.",
@@ -91,6 +95,18 @@ function openApi(schemas: Record<string, Record<string, JsonValue>>): Record<str
             },
             "400": {
               description: "Invalid context request.",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/DemoError" } } }
+            },
+            "401": {
+              description: "Missing or invalid service authorization.",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/DemoError" } } }
+            },
+            "403": {
+              description: "The service is not authorized for this call-scoped context.",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/DemoError" } } }
+            },
+            "404": {
+              description: "The call does not exist.",
               content: { "application/json": { schema: { $ref: "#/components/schemas/DemoError" } } }
             }
           }

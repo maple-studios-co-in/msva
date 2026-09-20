@@ -31,12 +31,21 @@ describe("demo contract artifact export", () => {
     await expect(checkDemoContractArtifacts(root)).rejects.toThrow("stale:");
   });
 
-  it("embeds the canonical request and response shapes in OpenAPI", async () => {
+  it("embeds canonical shapes and planned context input in OpenAPI", async () => {
     const root = await mkdtemp(join(tmpdir(), "msva-contracts-"));
     await writeDemoContractArtifacts(root);
     const openApi = JSON.parse(
       await readFile(join(root, "packages/contracts/openapi/demo-v1.json"), "utf8")
-    ) as { components: { schemas: Record<string, unknown> } };
+    ) as {
+      components: { schemas: Record<string, unknown> };
+      paths: Record<string, {
+        post: {
+          requestBody: { content: Record<string, { schema: unknown }> };
+          responses: Record<string, unknown>;
+          security: unknown;
+        };
+      }>;
+    };
     for (const [component, filename] of [
       ["CreateRequestInput", "create-request.json"],
       ["CreateRequestResult", "create-request-result.json"],
@@ -49,5 +58,11 @@ describe("demo contract artifact export", () => {
       delete standalone.$schema;
       expect(openApi.components.schemas[component]).toEqual(standalone);
     }
+    const contextOperation = openApi.paths["/v1/calls/{callId}/demo-context"].post;
+    expect(contextOperation.requestBody.content["application/json"].schema).toEqual({
+      $ref: "#/components/schemas/CallerContextInput"
+    });
+    expect(contextOperation.security).toEqual([{ serviceBearer: [] }]);
+    expect(Object.keys(contextOperation.responses).sort()).toEqual(["200", "400", "401", "403", "404"]);
   });
 });

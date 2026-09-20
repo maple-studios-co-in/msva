@@ -66,6 +66,39 @@ const SalesFieldsSchema = z.strictObject({
   location: ShortTextSchema.optional()
 });
 
+type RequestBranchShape<
+  TJourney extends z.ZodTypeAny,
+  TConfirmation extends z.ZodTypeAny,
+  TFields extends z.ZodTypeAny
+> = {
+  requestId: typeof IdSchema;
+  callId: typeof IdSchema;
+  journey: TJourney;
+  callerConfirmation: TConfirmation;
+  fields: TFields;
+  queue: typeof QueueSchema;
+};
+
+function createRequestBranch<
+  TJourney extends z.ZodTypeAny,
+  TConfirmation extends z.ZodTypeAny,
+  TFields extends z.ZodTypeAny
+>(
+  journey: TJourney,
+  confirmation: TConfirmation,
+  fields: TFields
+): z.ZodObject<RequestBranchShape<TJourney, TConfirmation, TFields>>;
+function createRequestBranch<
+  TJourney extends z.ZodTypeAny,
+  TConfirmation extends z.ZodTypeAny,
+  TFields extends z.ZodTypeAny,
+  TParentRequestId extends z.ZodTypeAny
+>(
+  journey: TJourney,
+  confirmation: TConfirmation,
+  fields: TFields,
+  parentRequestId: TParentRequestId
+): z.ZodObject<RequestBranchShape<TJourney, TConfirmation, TFields> & { parentRequestId: TParentRequestId }>;
 function createRequestBranch<
   TJourney extends z.ZodTypeAny,
   TConfirmation extends z.ZodTypeAny,
@@ -200,6 +233,8 @@ export const SourceResultSchema = z.union([
 ]);
 export type SourceResult = z.infer<typeof SourceResultSchema>;
 
+const DateTimeSchema = z.iso.datetime().regex(/^(?!0000-)/);
+
 export const EvidenceSchema = z.union([
   z.strictObject({ state: z.literal("NOT_REQUESTED"), truthState: z.literal("RECORDED") }),
   z.strictObject({ state: z.literal("REQUESTED"), truthState: z.literal("RECORDED") }),
@@ -209,7 +244,7 @@ export const EvidenceSchema = z.union([
     state: z.literal("RECEIVED"),
     truthState: z.literal("RECORDED"),
     storageKey: IdSchema,
-    receivedAt: z.iso.datetime()
+    receivedAt: DateTimeSchema
   })
 ]);
 export type Evidence = z.infer<typeof EvidenceSchema>;
@@ -220,12 +255,17 @@ const HandoffBase = {
   version: z.number().int().positive()
 };
 export const HandoffSchema = z.union([
-  z.strictObject({ ...HandoffBase, state: z.enum(["REQUESTED", "ASSIGNED", "JOINING", "FAILED", "TIMED_OUT"]) }),
+  z.strictObject({ ...HandoffBase, state: z.enum(["REQUESTED", "FAILED", "TIMED_OUT"]) }),
+  z.strictObject({
+    ...HandoffBase,
+    state: z.enum(["ASSIGNED", "JOINING"]),
+    assignedUserId: IdSchema
+  }),
   z.strictObject({
     ...HandoffBase,
     state: z.literal("HUMAN_ACTIVE"),
     assignedUserId: IdSchema,
-    activatedAt: z.iso.datetime()
+    activatedAt: DateTimeSchema
   })
 ]);
 export type Handoff = z.infer<typeof HandoffSchema>;

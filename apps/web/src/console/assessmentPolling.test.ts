@@ -14,7 +14,7 @@ const running = (leaseExpiresAt: string): CallAssessmentResponse => ({
   ...ready(),
   assessment: {
     id: "assessment-1", callId: "call-1", status: "RUNNING", requestedAt: "2026-09-21T10:00:00.000Z", completedAt: null,
-    leaseExpiresAt, retryable: true, requestedModel: "jev-1.13.0", returnedModel: null, rubricVersion: "msva-post-call-v1", inputHash: "hash", errorCode: null, result: null
+    leaseExpiresAt, retryable: false, requestedModel: "jev-1.13.0", returnedModel: null, rubricVersion: "msva-post-call-v1", inputHash: "hash", errorCode: null, result: null
   }
 });
 
@@ -92,7 +92,8 @@ describe("AssessmentPollController", () => {
 
     expect(expiry).toHaveBeenCalledTimes(1);
     expect(pendingSignal?.aborted).toBe(true);
-    expect(assessmentView(response, true, new Date()).kind).toBe("interrupted");
+    expect(assessmentView(response, true, new Date())).toMatchObject({ kind: "interrupted", canRequest: true, actionLabel: "Try assessment again" });
+    expect(assessmentView(response, false, new Date())).toMatchObject({ kind: "interrupted", canRequest: false, actionLabel: null });
     await vi.advanceTimersByTimeAsync(10000);
     expect(load).toHaveBeenCalledTimes(2);
     controller.stop();

@@ -55,7 +55,7 @@ export function assessmentView(response: CallAssessmentResponse, canAssess: bool
     }
     return {
       kind: "interrupted", headline: "Assessment was interrupted", detail: "The assessment lease expired before a result was saved.",
-      liveMessage: null, canRequest: canAssess && assessment.retryable, actionLabel: canAssess && assessment.retryable ? "Try assessment again" : null,
+      liveMessage: null, canRequest: canAssess, actionLabel: canAssess ? "Try assessment again" : null,
       shouldPoll: false, showResult: false
     };
   }

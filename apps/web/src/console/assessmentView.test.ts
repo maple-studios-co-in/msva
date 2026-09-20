@@ -44,6 +44,16 @@ describe("assessmentView", () => {
     expect(view).toMatchObject({ kind: "running", canRequest: false, shouldPoll: true, liveMessage: "Assessment running. Results will appear here." });
   });
 
+  it("offers a supervisor manual recovery when an otherwise non-retryable running lease expires", () => {
+    const response = {
+      ...base,
+      assessment: { ...succeeded, status: "RUNNING" as const, completedAt: null, leaseExpiresAt: "2026-09-21T10:00:00.000Z", retryable: false, result: null }
+    };
+
+    expect(assessmentView(response, true, new Date("2026-09-21T10:00:01.000Z"))).toMatchObject({ kind: "interrupted", canRequest: true, actionLabel: "Try assessment again" });
+    expect(assessmentView(response, false, new Date("2026-09-21T10:00:01.000Z"))).toMatchObject({ kind: "interrupted", canRequest: false, actionLabel: null });
+  });
+
   it("does not offer an assessment action when the capability is disabled", () => {
     const view = assessmentView({
       ...base,

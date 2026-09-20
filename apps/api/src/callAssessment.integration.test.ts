@@ -207,17 +207,19 @@ describe("CallAssessment migration and service", () => {
 
     const successor = requestCallAssessment(callId, userId);
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-    resolvers[1](new Response(JSON.stringify(providerPayload()), { status: 200 }));
-    const successorResult = await successor;
-    const beforeOldCompletion = await db.callAssessment.findUniqueOrThrow({ where: { id: firstRecord.id } });
-    expect(successorResult.response?.assessment).toMatchObject({ id: firstRecord.id, status: "SUCCEEDED" });
-    expect(beforeOldCompletion.attemptCount).toBe(2);
-
+    const successorBeforeOldCompletion = await db.callAssessment.findUniqueOrThrow({ where: { id: firstRecord.id } });
+    const auditsBeforeOldCompletion = await db.auditLog.count({ where: { entity: "CallAssessment", entityId: firstRecord.id } });
+    expect(successorBeforeOldCompletion).toMatchObject({ status: "RUNNING", attemptCount: 2, result: null });
     resolvers[0](new Response(JSON.stringify(providerPayload()), { status: 200 }));
     await oldAttempt;
     const afterOldCompletion = await db.callAssessment.findUniqueOrThrow({ where: { id: firstRecord.id } });
-    expect(afterOldCompletion).toMatchObject({ status: "SUCCEEDED", attemptCount: 2, attemptToken: beforeOldCompletion.attemptToken });
-    expect(await db.auditLog.count({ where: { entity: "CallAssessment", entityId: firstRecord.id } })).toBe(3);
+    expect(afterOldCompletion).toMatchObject({ status: "RUNNING", attemptCount: 2, attemptToken: successorBeforeOldCompletion.attemptToken, result: null });
+    expect(await db.auditLog.count({ where: { entity: "CallAssessment", entityId: firstRecord.id } })).toBe(auditsBeforeOldCompletion);
+
+    resolvers[1](new Response(JSON.stringify(providerPayload()), { status: 200 }));
+    const successorResult = await successor;
+    expect(successorResult.response?.assessment).toMatchObject({ id: firstRecord.id, status: "SUCCEEDED" });
+    expect(await db.auditLog.count({ where: { entity: "CallAssessment", entityId: firstRecord.id } })).toBe(auditsBeforeOldCompletion + 1);
   });
 
   it("returns the current cached A assessment after A-to-B-to-A transcript changes", async () => {

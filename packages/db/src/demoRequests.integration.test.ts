@@ -342,6 +342,38 @@ describe("createBusinessRequest", () => {
     expect((await db.businessRequest.findFirstOrThrow({ where: { callId: "call-allowed" } })).verificationState).toBe("DEMO_TRUSTED");
   });
 
+  it("does not trust an allowlisted DEMO_TRUSTED attestation on a non-test browser call", async () => {
+    await createCall("call-browser-real", { isTest: false });
+    await demoAttest("call-browser-real");
+    await createBusinessRequest(db, input({ callId: "call-browser-real" }), { isDemoFixtureAllowed: () => true });
+    const parent = await db.businessRequest.findFirstOrThrow({ where: { callId: "call-browser-real" } });
+    expect(parent.verificationState).toBe("UNVERIFIED");
+
+    await createCall("call-browser-real-follow", { isTest: false });
+    await demoAttest("call-browser-real-follow");
+    await expect(
+      createBusinessRequest(
+        db,
+        input({
+          callId: "call-browser-real-follow",
+          callerConfirmation: "FOLLOW_UP",
+          parentRequestId: parent.id
+        }),
+        { isDemoFixtureAllowed: () => true }
+      )
+    ).rejects.toMatchObject({ code: "PARENT_NOT_ACCESSIBLE" });
+    expect(await db.ticketNote.count()).toBe(0);
+  });
+
+  it("does not trust a fixture attestation when the server allowlist rejects its caller/key pair", async () => {
+    await createCall("call-rejected-fixture");
+    await demoAttest("call-rejected-fixture", { fixtureKey: "fixture-rejected" });
+    await createBusinessRequest(db, input({ callId: "call-rejected-fixture" }), {
+      isDemoFixtureAllowed: (callerId, fixtureKey) => callerId === "caller-a" && fixtureKey === "fixture-allowed"
+    });
+    expect((await db.businessRequest.findFirstOrThrow({ where: { callId: "call-rejected-fixture" } })).verificationState).toBe("UNVERIFIED");
+  });
+
   it("rejects an identity attestation that does not match the Call caller", async () => {
     await createCall("call-mismatch");
     await demoAttest("call-mismatch", { callerId: "caller-b" });
@@ -357,6 +389,31 @@ describe("createBusinessRequest", () => {
     expect(result.caseId).toBeTruthy();
     expect(await db.ticket.count()).toBe(2);
     expect(await db.ticketNote.count()).toBe(0);
+  });
+
+  it("replays an exact trusted follow-up without changing its ticket or duplicating work", async () => {
+    await createBusinessRequest(db, input());
+    const parent = await db.businessRequest.findFirstOrThrow();
+    const ticketBefore = await db.ticket.findUniqueOrThrow({ where: { id: parent.ticketId } });
+    await createCall("call-follow-up-replay");
+    await attest("call-follow-up-replay");
+    const command = input({
+      callId: "call-follow-up-replay",
+      callerConfirmation: "FOLLOW_UP",
+      parentRequestId: parent.id
+    });
+
+    const first = await createBusinessRequest(db, command);
+    const replay = await createBusinessRequest(db, command);
+    const ticketAfter = await db.ticket.findUniqueOrThrow({ where: { id: parent.ticketId } });
+
+    expect(replay).toEqual(first);
+    expect(first.caseId).toBe(parent.ticketId);
+    expect(ticketAfter).toEqual(ticketBefore);
+    expect(await db.ticketNote.count()).toBe(1);
+    expect(await db.businessRequest.count()).toBe(2);
+    expect(await db.queueAssignment.count()).toBe(2);
+    expect(await db.auditLog.count()).toBe(2);
   });
 
   it("keeps callback records passive and lets PostgreSQL enforce evidence, handoff, and foreign keys", async () => {

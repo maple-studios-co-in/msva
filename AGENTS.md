@@ -23,7 +23,7 @@ Update the task register when work starts, blocks, enters review or completes. C
 
 ## Branches and releases
 
-- Start feature work from `develop` using `codex/<feature-name>` unless Aditya supplies another name.
+- Start work from `develop` using `feature/<name>` for a feature or setup change, `bugs/<name>` for an ordinary fix, or `hotfix/<name>` for an urgent release fix. Tool and model names never determine branch names.
 - Open a focused PR into `develop`; preserve independent feature history and push completed increments.
 - `develop` is the demo integration branch. A merge is not a deployment.
 - Do not point a develop deployment at the current production environment. A separate demo target, credentials and deployment checks must exist first.

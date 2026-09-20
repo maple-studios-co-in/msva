@@ -23,7 +23,7 @@ Use Terra for product planning and implementation, Astra for architecture design
 2. An implementer claims it, records actual agent/model and creates an isolated feature worktree.
 3. The implementer makes a focused change and runs meaningful local checks.
 4. A different agent reviews it. The implementer resolves findings.
-5. Push the feature branch and open a PR into `develop` with evidence and known limitations.
+5. Push the work branch and open a PR into `develop` with evidence and known limitations.
 6. Merge after the agreed checks/review pass. Record the integrated commit separately from deployment.
 7. Deploy a reviewed `develop` revision to the dedicated demo environment when that environment is ready; perform real smoke checks and record the result.
 
@@ -50,13 +50,19 @@ Subtasks should produce testable results. Examples: caller identity contract, co
 
 | Branch | Purpose | Promotion rule |
 |---|---|---|
-| `codex/<feature-name>` | One coherent feature or setup change | Focused reviewed PR into develop |
+| `feature/<name>` | One coherent feature or setup change | Focused reviewed PR into develop |
+| `bugs/<name>` | One ordinary fix | Focused reviewed PR into develop |
+| `hotfix/<name>` | One urgent release fix | Focused reviewed PR into develop |
 | `develop` | Demo integration | Deploy only to an explicitly configured demo target |
 | `staging` | Later release validation | Promote a known develop commit through a release task |
 | `prod` | Later production release | Promote a validated staging revision through a release task |
 | `main` | Existing repository branch | Remains unchanged during this demo setup |
 
 Branch existence is not proof of an environment. Before deployment, record the target URL/host, database isolation, provider credentials, eligible test recipients, smoke procedure and rollback route in private operations configuration. Do not enable deployment from every feature push.
+
+Tool and model names never determine branch names. Use the branch category for
+the work being delivered; existing base and promotion decisions remain
+unchanged.
 
 ## Quality and delivery gates
 

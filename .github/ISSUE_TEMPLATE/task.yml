@@ -1,0 +1,46 @@
+name: Engineering task
+description: Track a scoped implementation task and its verification evidence.
+title: "[Task]: "
+labels: [task]
+body:
+  - type: input
+    id: task-id
+    attributes:
+      label: Task ID
+      placeholder: MSVA-123
+  - type: input
+    id: owner
+    attributes:
+      label: Owner or active agent
+      placeholder: Name or team
+    validations:
+      required: true
+  - type: input
+    id: role-model
+    attributes:
+      label: Role and model
+      placeholder: Development tooling / model name
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies and blockers
+      placeholder: List required decisions, services, or linked work.
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria and evidence
+      placeholder: State measurable acceptance criteria and the commands, links, or screenshots that will prove them.
+    validations:
+      required: true
+  - type: dropdown
+    id: status
+    attributes:
+      label: Current status
+      options:
+        - Planned
+        - In progress
+        - Blocked
+        - Ready for review
+        - Done
+    validations:
+      required: true

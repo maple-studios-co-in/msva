@@ -2,12 +2,21 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [develop]
   pull_request:
+    branches: [develop]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:17-alpine
@@ -33,8 +42,12 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Check development environment
+        run: pnpm check:dev-environment
       - name: Apply migrations
         run: pnpm --filter @msva/db migrate
+      - name: Verify migration status
+        run: pnpm --filter @msva/db exec prisma migrate status
       - name: Build shared package declarations
         run: pnpm --filter @msva/shared --filter @msva/db build
       - name: Typecheck

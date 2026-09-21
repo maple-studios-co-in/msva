@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { PrismaClient } from "@msva/db";
-import { claimVoiceLease, createVoiceSession, finalizeVoiceSession, invokeVoiceTool, prepareBrowserAdmission, recordVoiceDispatch, recordVoiceEvent, renewVoiceLease, revokeAdmissions, VoiceError, voiceContext, workerParticipantIdentity } from "./voiceService.js";
+import { authorizeSignalConnection, claimMediaControlIntent, claimVoiceLease, createVoiceSession, finalizeVoiceSession, finishMediaControlIntent, invokeVoiceTool, prepareBrowserAdmission, recordVoiceDispatch, recordVoiceEvent, releaseSignalConnection, renewSignalConnection, renewVoiceLease, revokeAdmissions, VoiceError, voiceContext, workerParticipantIdentity } from "./voiceService.js";
 
 const databaseUrl = process.env.MSVA_VOICE_TEST_DATABASE_URL;
 if (!databaseUrl) throw new Error("MSVA_VOICE_TEST_DATABASE_URL is required");
@@ -127,5 +127,39 @@ describe("voice session persistence", () => {
     await expect(recordVoiceEvent({ schemaVersion: 1, eventId: "future", callId: item.callId, agentEpoch: 1, sourceSequence: 1, occurredAt: new Date(Date.now() + 6_000).toISOString(), type: "agent.ready", payload: { participantId: workerParticipantIdentity(item.callId) } }, lease.token, db)).rejects.toMatchObject({ code: "EVENT_TIME_INVALID" } satisfies Partial<VoiceError>);
     await db.voiceLease.updateMany({ where: { sessionId: item.id }, data: { expiresAt: new Date(Date.now() - 24 * 60 * 60 * 1000 - 1) } });
     await expect(recordVoiceEvent({ schemaVersion: 1, eventId: "too-old", callId: item.callId, agentEpoch: 1, sourceSequence: 1, occurredAt: new Date().toISOString(), type: "agent.ready", payload: { participantId: workerParticipantIdentity(item.callId) } }, lease.token, db)).rejects.toMatchObject({ code: "LEASE_EXPIRED" } satisfies Partial<VoiceError>);
+  });
+  it("revalidates caller admission after reservation and fences connection owners", async () => {
+    process.env.VOICE_BROWSER_ORIGIN = "https://console.test";
+    const item = await session();
+    const row = await db.voiceSession.findUniqueOrThrow({ where: { id: item.id } });
+    await claimVoiceLease({ callId: item.callId, roomName: row.roomName, dispatchId: "dispatch", participantId: workerParticipantIdentity(item.callId) }, worker, db);
+    const user = await db.user.create({ data: { email: `${randomUUID()}@test.invalid`, name: "Caller", role: "AGENT" } });
+    const browser = await db.session.create({ data: { userId: user.id, tokenHash: "caller-token", expiresAt: new Date(Date.now() + 60_000) } });
+    await db.voiceSession.update({ where: { id: item.id }, data: { ownerUserId: user.id, ownerSessionId: browser.id } });
+    const admission = await prepareBrowserAdmission({ callId: item.callId, userId: user.id, sessionId: browser.id, role: "CALLER", expectedAuthorizationVersion: 1 }, db);
+    const input = { tokenClaims: { subject: admission.participantIdentity, room: row.roomName, roomJoin: true, publish: true, subscribe: true }, sessionTokenHash: "caller-token", origin: "https://console.test", protocol: "v1" as const, reconnect: false, participantSid: null, now: new Date() };
+    await expect(authorizeSignalConnection({ ...input, participantSid: "forged-sid" }, db)).rejects.toMatchObject({ code: "INITIAL_SID_FORBIDDEN" } satisfies Partial<VoiceError>);
+    const connection = await authorizeSignalConnection(input, db);
+    await renewSignalConnection({ admissionId: connection.admissionId, connectionEpoch: connection.connectionEpoch, connectionOwner: connection.connectionOwner }, db);
+    await releaseSignalConnection({ admissionId: connection.admissionId, connectionEpoch: connection.connectionEpoch, connectionOwner: connection.connectionOwner }, db);
+    await expect(renewSignalConnection({ admissionId: connection.admissionId, connectionEpoch: connection.connectionEpoch, connectionOwner: connection.connectionOwner }, db)).rejects.toMatchObject({ code: "CONNECTION_STALE" } satisfies Partial<VoiceError>);
+    await db.voiceSession.update({ where: { id: item.id }, data: { state: "FAILED" } });
+    await expect(authorizeSignalConnection(input, db)).rejects.toMatchObject({ code: "ADMISSION_DENIED" } satisfies Partial<VoiceError>);
+  });
+  it("revokes grants with a single remove intent under concurrent callers", async () => {
+    const item = await session();
+    const row = await db.voiceSession.findUniqueOrThrow({ where: { id: item.id } });
+    await claimVoiceLease({ callId: item.callId, roomName: row.roomName, dispatchId: "dispatch", participantId: workerParticipantIdentity(item.callId) }, worker, db);
+    const user = await db.user.create({ data: { email: `${randomUUID()}@test.invalid`, name: "Operator", role: "AGENT" } });
+    const browser = await db.session.create({ data: { userId: user.id, tokenHash: "token-hash", expiresAt: new Date(Date.now() + 60_000) } });
+    await db.voiceSession.update({ where: { id: item.id }, data: { ownerUserId: user.id, ownerSessionId: browser.id } });
+    const admission = await prepareBrowserAdmission({ callId: item.callId, userId: user.id, sessionId: browser.id, role: "OPERATOR_LISTENER", expectedAuthorizationVersion: 1 }, db);
+    await db.mediaControlIntent.create({ data: { admissionId: admission.id, authorizationVersion: 1, kind: "GRANT" } });
+    const claimed = await claimMediaControlIntent(db);
+    expect(claimed).toMatchObject({ admissionId: admission.id, kind: "GRANT" });
+    await Promise.all([db.$transaction((tx) => revokeAdmissions(tx, { callId: item.callId, reason: "CALL_ENDED" })), db.$transaction((tx) => revokeAdmissions(tx, { callId: item.callId, reason: "CALL_ENDED" }))]);
+    expect(await db.mediaControlIntent.count({ where: { admissionId: admission.id, kind: "REMOVE" } })).toBe(1);
+    expect(await db.mediaControlIntent.findFirstOrThrow({ where: { admissionId: admission.id, kind: "GRANT" } })).toMatchObject({ status: "FAILED", errorCode: "REVOKED" });
+    await expect(finishMediaControlIntent({ id: claimed!.id, attemptToken: claimed!.attemptToken, success: true }, db)).rejects.toMatchObject({ code: "CONTROL_ATTEMPT_STALE" } satisfies Partial<VoiceError>);
   });
 });

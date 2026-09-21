@@ -52,6 +52,12 @@ async function lockedSession(tx: VoiceDb, callId: string) {
   if (!session) throw new VoiceError(404, "CALL_NOT_FOUND");
   return session;
 }
+async function lockedAdmission(tx: VoiceDb, participantIdentity: string) {
+  await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "VoiceAdmission" WHERE "participantIdentity" = ${participantIdentity} FOR UPDATE`);
+  const admission = await tx.voiceAdmission.findUnique({ where: { participantIdentity }, include: { voiceSession: true } });
+  if (!admission) throw new VoiceError(403, "ADMISSION_DENIED");
+  return admission;
+}
 function activeLease(session: Awaited<ReturnType<typeof lockedSession>>, token: string, now: Date) {
   if (!session.lease || !tokenEquals(`Bearer ${token}`, leaseToken(session.id, session.lease.agentEpoch)) || hash(token) !== session.lease.tokenHash) throw new VoiceError(401, "LEASE_INVALID");
   if (session.lease.expiresAt > now) return session.lease;
@@ -263,13 +269,88 @@ export async function revokeAdmissions(tx: Prisma.TransactionClient, input: { se
   const admissions = await tx.voiceAdmission.findMany({ where: { ...(input.sessionId ? { sessionId: input.sessionId } : {}), ...(input.userId ? { userId: input.userId } : {}), ...(input.callId ? { callId: input.callId } : {}), state: { in: ["ISSUED", "CONNECTING", "ACTIVE"] } } });
   for (const admission of admissions) {
     const version = admission.authorizationVersion + 1;
-    await tx.mediaControlIntent.updateMany({ where: { admissionId: admission.id, kind: "GRANT", status: "PENDING" }, data: { status: "FAILED", errorCode: "REVOKED" } });
-    await tx.voiceAdmission.update({ where: { id: admission.id }, data: { state: "REVOKING", authorizationVersion: version, revokedAt: now, revokeReason: input.reason, connectionLeaseExpiresAt: now } });
+    const revoked = await tx.voiceAdmission.updateMany({ where: { id: admission.id, authorizationVersion: admission.authorizationVersion, state: { in: ["ISSUED", "CONNECTING", "ACTIVE"] } }, data: { state: "REVOKING", authorizationVersion: version, revokedAt: now, revokeReason: input.reason, connectionLeaseExpiresAt: now, connectionOwner: null } });
+    if (revoked.count !== 1) continue;
+    await tx.mediaControlIntent.updateMany({ where: { admissionId: admission.id, kind: "GRANT", status: { in: ["PENDING", "RUNNING"] } }, data: { status: "FAILED", errorCode: "REVOKED", leaseExpiresAt: null } });
     await tx.mediaControlIntent.create({ data: { admissionId: admission.id, authorizationVersion: version, kind: "REMOVE" } });
   }
 }
 
 export async function authorizeSignalConnection(input: { tokenClaims: VerifiedBrowserClaims; sessionTokenHash: string; origin: string; protocol: "v0" | "v1"; reconnect: boolean; participantSid: string | null; now: Date }, db: PrismaClient = prisma) {
   // This is intentionally an internal, post-verifier primitive. No HTTP route accepts claims.
-  return serializable(db, async (tx) => { const now = new Date(); const admission = await tx.voiceAdmission.findUnique({ where: { participantIdentity: input.tokenClaims.subject }, include: { voiceSession: true } }); const expectedOrigin = process.env.VOICE_BROWSER_ORIGIN; const canPublish = admission?.role !== "OPERATOR_LISTENER"; if (!expectedOrigin || input.origin !== expectedOrigin || !admission || !input.tokenClaims.roomJoin || input.tokenClaims.publish && !canPublish || admission.voiceSession.roomName !== input.tokenClaims.room || admission.voiceSession.state !== "ACTIVE" || admission.state === "REVOKING" || admission.state === "REVOKED" || admission.state === "EXPIRED" || admission.absoluteExpiresAt <= now || (admission.state === "ISSUED" && admission.firstJoinExpiresAt <= now)) throw new VoiceError(403, "ADMISSION_DENIED"); const browser = await tx.session.findFirst({ where: { id: admission.sessionId, userId: admission.userId, tokenHash: input.sessionTokenHash, expiresAt: { gt: now }, user: { active: true }, ...(admission.role === "CALLER" ? { id: admission.voiceSession.ownerSessionId ?? "" } : {}) } }); const assignment = admission.role === "CALLER" ? true : Boolean(await tx.handoff.findFirst({ where: { callId: admission.callId, assignedUserId: admission.userId, state: admission.role === "OPERATOR_SPEAKER" ? "HUMAN_ACTIVE" : { in: ["ASSIGNED", "JOINING", "HUMAN_ACTIVE"] } } })); if (!browser || !assignment || admission.authorizationVersion !== admission.voiceSession.authorizationVersion) throw new VoiceError(403, "ADMISSION_DENIED"); if (admission.connectionLeaseExpiresAt && admission.connectionLeaseExpiresAt > now) throw new VoiceError(409, "CONNECTION_ACTIVE"); if (!input.reconnect && input.participantSid) throw new VoiceError(403, "INITIAL_SID_FORBIDDEN"); if (input.reconnect && admission.participantSid !== input.participantSid) throw new VoiceError(403, "RECONNECT_MISMATCH"); const epoch = admission.connectionEpoch + 1; const until = new Date(now.getTime() + CONNECTION_MS); const owner = randomUUID(); await tx.voiceAdmission.update({ where: { id: admission.id }, data: { connectionEpoch: epoch, connectionOwner: owner, connectionLeaseExpiresAt: until, participantSid: input.reconnect ? input.participantSid : admission.participantSid, lastAuthorizedAt: now, state: "CONNECTING" } }); return { admissionId: admission.id, callId: admission.callId, participantIdentity: admission.participantIdentity, authorizationVersion: admission.authorizationVersion, connectionEpoch: epoch, connectionOwner: owner, connectionLeaseExpiresAt: until }; });
+  return serializable(db, async (tx) => {
+    const now = new Date();
+    const admission = await lockedAdmission(tx, input.tokenClaims.subject);
+    const session = admission.voiceSession;
+    const expectedOrigin = process.env.VOICE_BROWSER_ORIGIN;
+    const canPublish = admission.role !== "OPERATOR_LISTENER";
+    if (!expectedOrigin || input.origin !== expectedOrigin || input.protocol !== "v1"
+      || !input.tokenClaims.roomJoin || !input.tokenClaims.subscribe
+      || (input.tokenClaims.publish && !canPublish)
+      || session.roomName !== input.tokenClaims.room || session.state !== "ACTIVE"
+      || admission.state === "REVOKING" || admission.state === "REVOKED" || admission.state === "EXPIRED"
+      || admission.absoluteExpiresAt <= now || (admission.state === "ISSUED" && admission.firstJoinExpiresAt <= now)) throw new VoiceError(403, "ADMISSION_DENIED");
+    const browser = await tx.session.findFirst({ where: { id: admission.sessionId, userId: admission.userId, tokenHash: input.sessionTokenHash, expiresAt: { gt: now }, user: { active: true } } });
+    const callerAuthorized = admission.role === "CALLER" && session.ownerUserId === admission.userId && session.ownerSessionId === admission.sessionId;
+    const assignment = admission.role === "CALLER" ? null : await tx.handoff.findFirst({ where: { callId: admission.callId, assignedUserId: admission.userId, state: admission.role === "OPERATOR_SPEAKER" ? "HUMAN_ACTIVE" : { in: ["ASSIGNED", "JOINING", "HUMAN_ACTIVE"] } } });
+    const operatorAuthorized = admission.role !== "CALLER" && Boolean(assignment) && (admission.role !== "OPERATOR_SPEAKER" || session.ownershipMode === "HUMAN");
+    if (!browser || !(callerAuthorized || operatorAuthorized) || admission.authorizationVersion !== session.authorizationVersion) throw new VoiceError(403, "ADMISSION_DENIED");
+    if (admission.connectionLeaseExpiresAt && admission.connectionLeaseExpiresAt > now) throw new VoiceError(409, "CONNECTION_ACTIVE");
+    if (!input.reconnect && input.participantSid) throw new VoiceError(403, "INITIAL_SID_FORBIDDEN");
+    if (input.reconnect && (!input.participantSid || admission.participantSid !== input.participantSid)) throw new VoiceError(403, "RECONNECT_MISMATCH");
+    const epoch = admission.connectionEpoch + 1;
+    const until = new Date(now.getTime() + CONNECTION_MS);
+    const owner = randomUUID();
+    await tx.voiceAdmission.update({ where: { id: admission.id }, data: { connectionEpoch: epoch, connectionOwner: owner, connectionLeaseExpiresAt: until, lastAuthorizedAt: now, state: "CONNECTING" } });
+    return { admissionId: admission.id, callId: admission.callId, participantIdentity: admission.participantIdentity, authorizationVersion: admission.authorizationVersion, connectionEpoch: epoch, connectionOwner: owner, connectionLeaseExpiresAt: until };
+  });
+}
+
+export async function renewSignalConnection(input: { admissionId: string; connectionEpoch: number; connectionOwner: string }, db: PrismaClient = prisma) {
+  return serializable(db, async (tx) => {
+    await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "VoiceAdmission" WHERE "id" = ${input.admissionId} FOR UPDATE`);
+    const admission = await tx.voiceAdmission.findUniqueOrThrow({ where: { id: input.admissionId }, include: { voiceSession: true } });
+    const now = new Date();
+    if (admission.connectionEpoch !== input.connectionEpoch || admission.connectionOwner !== input.connectionOwner || !admission.connectionLeaseExpiresAt || admission.connectionLeaseExpiresAt <= now || admission.voiceSession.state !== "ACTIVE" || admission.authorizationVersion !== admission.voiceSession.authorizationVersion) throw new VoiceError(409, "CONNECTION_STALE");
+    const connectionLeaseExpiresAt = new Date(now.getTime() + CONNECTION_MS);
+    await tx.voiceAdmission.update({ where: { id: admission.id }, data: { connectionLeaseExpiresAt, lastAuthorizedAt: now, state: "ACTIVE" } });
+    return { connectionLeaseExpiresAt };
+  });
+}
+
+export async function releaseSignalConnection(input: { admissionId: string; connectionEpoch: number; connectionOwner: string }, db: PrismaClient = prisma): Promise<void> {
+  await serializable(db, async (tx) => {
+    const released = await tx.voiceAdmission.updateMany({ where: { id: input.admissionId, connectionEpoch: input.connectionEpoch, connectionOwner: input.connectionOwner, state: { in: ["CONNECTING", "ACTIVE"] } }, data: { connectionOwner: null, connectionLeaseExpiresAt: new Date() } });
+    if (released.count !== 1) throw new VoiceError(409, "CONNECTION_STALE");
+  });
+}
+
+/** Claims one durable media instruction for a gateway worker. The attempt token
+ * fences a late adapter response after revocation or watchdog recovery. */
+export async function claimMediaControlIntent(db: PrismaClient = prisma) {
+  return serializable(db, async (tx) => {
+    const candidate = await tx.mediaControlIntent.findFirst({ where: { status: "PENDING" }, orderBy: { createdAt: "asc" }, include: { admission: { include: { voiceSession: true } } } });
+    if (!candidate) return null;
+    await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "MediaControlIntent" WHERE "id" = ${candidate.id} FOR UPDATE`);
+    const current = await tx.mediaControlIntent.findUniqueOrThrow({ where: { id: candidate.id }, include: { admission: { include: { voiceSession: true } } } });
+    if (current.status !== "PENDING") return null;
+    const validGrant = current.kind !== "GRANT" || (current.admission.state !== "REVOKING" && current.admission.state !== "REVOKED" && current.admission.authorizationVersion === current.authorizationVersion && current.admission.voiceSession.authorizationVersion === current.authorizationVersion);
+    if (!validGrant) {
+      await tx.mediaControlIntent.update({ where: { id: current.id }, data: { status: "FAILED", errorCode: "REVOKED" } });
+      return null;
+    }
+    const attemptToken = randomUUID();
+    const leaseExpiresAt = new Date(Date.now() + CONNECTION_MS);
+    await tx.mediaControlIntent.update({ where: { id: current.id }, data: { status: "RUNNING", attemptToken, leaseExpiresAt } });
+    return { id: current.id, admissionId: current.admissionId, authorizationVersion: current.authorizationVersion, kind: current.kind, attemptToken, leaseExpiresAt };
+  });
+}
+
+export async function finishMediaControlIntent(input: { id: string; attemptToken: string; success: boolean; errorCode?: string }, db: PrismaClient = prisma): Promise<void> {
+  await serializable(db, async (tx) => {
+    const intent = await tx.mediaControlIntent.findUnique({ where: { id: input.id }, include: { admission: true } });
+    if (!intent || intent.status !== "RUNNING" || intent.attemptToken !== input.attemptToken) throw new VoiceError(409, "CONTROL_ATTEMPT_STALE");
+    if (input.success && intent.kind === "GRANT" && (intent.admission.state === "REVOKING" || intent.admission.state === "REVOKED" || intent.admission.authorizationVersion !== intent.authorizationVersion)) throw new VoiceError(409, "CONTROL_ATTEMPT_STALE");
+    await tx.mediaControlIntent.update({ where: { id: intent.id }, data: { status: input.success ? "CONFIRMED" : "FAILED", errorCode: input.success ? null : input.errorCode ?? "ADAPTER_FAILED", leaseExpiresAt: null } });
+  });
 }

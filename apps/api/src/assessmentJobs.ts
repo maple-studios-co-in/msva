@@ -67,10 +67,15 @@ export async function markPostCallAssessmentDirty(tx: Prisma.TransactionClient, 
   const existing = await tx.assessmentJob.findUnique({ where: { callId_kind: { callId, kind: "POST_CALL" } } });
   const dueAt = new Date(now.getTime() + SETTLE_MS);
   if (existing) {
-    const activeCount = existing.state === "SKIPPED"
+    // Replaying an identical final turn must not reset the automatic retry
+    // budget. New evidence changes the normalized input hash and is the only
+    // reason to start a new generation.
+    if (existing.lastInputHash === snapshot.inputHash) return;
+    const inactive = existing.state !== "PENDING" && existing.state !== "RUNNING";
+    const activeCount = inactive
       ? await tx.assessmentJob.count({ where: { state: { in: ["PENDING", "RUNNING"] } } })
       : 0;
-    const admitSkipped = existing.state !== "SKIPPED" || activeCount < MAX_PENDING;
+    const admit = !inactive || activeCount < MAX_PENDING;
     await tx.assessmentJob.update({
       where: { id: existing.id },
       data: {
@@ -79,7 +84,7 @@ export async function markPostCallAssessmentDirty(tx: Prisma.TransactionClient, 
         lastInputHash: snapshot.inputHash,
         dueAt,
         reason: null,
-        ...(existing.state === "RUNNING" ? {} : admitSkipped
+        ...(existing.state === "RUNNING" ? {} : admit
           ? { state: "PENDING", claimedGeneration: null, leaseToken: null, leaseExpiresAt: null }
           : { state: "SKIPPED", reason: "QUEUE_CAPACITY", claimedGeneration: null, leaseToken: null, leaseExpiresAt: null })
       }
@@ -107,7 +112,7 @@ type ClaimedWork = {
   token: string;
 };
 
-async function claimWork(now: Date): Promise<ClaimedWork | null> {
+async function claimWork(now: Date, excludedCallIds: string[] = []): Promise<ClaimedWork | null> {
   const token = randomUUID();
   return prisma.$transaction(async (tx) => {
     await ensureSlots(tx);
@@ -130,7 +135,7 @@ async function claimWork(now: Date): Promise<ClaimedWork | null> {
     });
     if (slotClaimed.count !== 1) return null;
     const candidate = await tx.assessmentJob.findFirst({
-      where: { state: "PENDING", dueAt: { lte: now } },
+      where: { state: "PENDING", dueAt: { lte: now }, ...(excludedCallIds.length ? { callId: { notIn: excludedCallIds } } : {}) },
       orderBy: [{ dueAt: "asc" }, { createdAt: "asc" }]
     });
     if (!candidate) {
@@ -154,8 +159,8 @@ async function releaseWork(work: ClaimedWork, data: {
   state: "PENDING" | "SUCCEEDED" | "FAILED";
   dueAt?: Date;
   reason?: string | null;
-  attempted?: boolean;
   replaceInputHash?: string;
+  releaseReservation?: boolean;
 }) {
   const now = new Date();
   await prisma.$transaction(async (tx) => {
@@ -172,17 +177,39 @@ async function releaseWork(work: ClaimedWork, data: {
     } : {
       state: data.state, dueAt: data.dueAt ?? current.dueAt, reason: data.reason ?? null,
       claimedGeneration: null, leaseToken: null, leaseExpiresAt: null,
-      ...(data.attempted ? { attempts: { increment: 1 } } : {})
+      ...(data.releaseReservation ? { attempts: { decrement: 1 } } : {})
     };
     const updated = await tx.assessmentJob.updateMany({
-      where: { id: current.id, state: "RUNNING", leaseToken: work.token, claimedGeneration: work.job.generation },
+      // Fence against a dirty write between the read and this transition.
+      where: { id: current.id, state: "RUNNING", leaseToken: work.token, claimedGeneration: work.job.generation, generation: work.job.generation },
       data: next
     });
-    if (updated.count === 1) await tx.assessmentWorkerSlot.updateMany({
+    if (updated.count === 0 && dirty) {
+      // A late transcript/ticket changed generation while the provider was in
+      // flight. Preserve that generation and requeue it; never overwrite it
+      // with the stale result.
+      await tx.assessmentJob.updateMany({
+        where: { id: current.id, state: "RUNNING", leaseToken: work.token },
+        data: { state: "PENDING", dueAt: new Date(now.getTime() + SETTLE_MS), reason: null, claimedGeneration: null, leaseToken: null, leaseExpiresAt: null }
+      });
+    }
+    if (updated.count === 1 || dirty) await tx.assessmentWorkerSlot.updateMany({
       where: { slot: work.slot, ownerToken: work.token, jobId: work.job.id },
       data: { ownerToken: null, jobId: null, leaseExpiresAt: null }
     });
   });
+}
+
+async function reserveProviderAttempt(work: ClaimedWork): Promise<number | null> {
+  const reserved = await prisma.assessmentJob.updateMany({
+    where: {
+      id: work.job.id, state: "RUNNING", leaseToken: work.token,
+      claimedGeneration: work.job.generation, generation: work.job.generation,
+      attempts: { lt: MAX_ATTEMPTS }
+    },
+    data: { attempts: { increment: 1 } }
+  });
+  return reserved.count === 1 ? work.job.attempts + 1 : null;
 }
 
 async function processWork(work: ClaimedWork, now: Date): Promise<void> {
@@ -194,20 +221,31 @@ async function processWork(work: ClaimedWork, now: Date): Promise<void> {
   if (work.job.lastInputHash && work.job.lastInputHash !== snapshot.inputHash) {
     return releaseWork(work, { state: "PENDING", dueAt: new Date(now.getTime() + SETTLE_MS), replaceInputHash: snapshot.inputHash });
   }
+  const existing = await prisma.callAssessment.findUnique({ where: { callId_inputHash_requestedModel_rubricVersion: { callId: work.job.callId, inputHash: snapshot.inputHash, requestedModel: "jev-1.13.0", rubricVersion: "msva-post-call-v2" } } });
+  if (existing?.status === "SUCCEEDED") return releaseWork(work, { state: "SUCCEEDED", reason: null });
+  if (existing?.status === "RUNNING" && existing.leaseExpiresAt && existing.leaseExpiresAt > now) {
+    return releaseWork(work, { state: "PENDING", dueAt: existing.leaseExpiresAt, reason: "ASSESSMENT_LEASE_ACTIVE" });
+  }
+  // Reserve before the request can reach the provider. A crash after this
+  // point is conservatively charged to the immutable snapshot's three-attempt
+  // budget, so restart recovery cannot create an unbounded provider loop.
+  const attempt = await reserveProviderAttempt(work);
+  if (attempt === null) return releaseWork(work, { state: "FAILED", reason: "MAX_ATTEMPTS" });
   const result = await requestCallAssessment(work.job.callId, null, { trigger: "AUTO_POST_CALL", expectedInputHash: snapshot.inputHash });
-  if (result.stale) return releaseWork(work, { state: "PENDING", dueAt: new Date(now.getTime() + SETTLE_MS), reason: null });
+  if (result.stale) return releaseWork(work, { state: "PENDING", dueAt: new Date(now.getTime() + SETTLE_MS), reason: null, releaseReservation: true });
   if (result.pending) {
     const lease = result.response?.assessment?.leaseExpiresAt;
-    return releaseWork(work, { state: "PENDING", dueAt: lease ? new Date(lease) : new Date(now.getTime() + SETTLE_MS), reason: "ASSESSMENT_LEASE_ACTIVE" });
+    return releaseWork(work, { state: "PENDING", dueAt: lease ? new Date(lease) : new Date(now.getTime() + SETTLE_MS), reason: "ASSESSMENT_LEASE_ACTIVE", releaseReservation: true });
   }
   const assessment = result.response?.assessment;
-  if (assessment?.status === "SUCCEEDED" && result.response?.current) return releaseWork(work, { state: "SUCCEEDED", reason: null, attempted: result.invoked });
+  if (assessment?.status === "SUCCEEDED" && result.response?.current) return releaseWork(work, { state: "SUCCEEDED", reason: null, releaseReservation: !result.invoked });
   const code = assessment?.errorCode ?? "PROVIDER_UNAVAILABLE";
-  if (retryableCodes.has(code) && work.job.attempts + (result.invoked ? 1 : 0) < MAX_ATTEMPTS) {
-    const retryDelay = work.job.attempts === 0 ? 30_000 : 120_000;
-    return releaseWork(work, { state: "PENDING", dueAt: new Date(now.getTime() + retryDelay), reason: code, attempted: result.invoked });
+  if (!result.invoked) return releaseWork(work, { state: "PENDING", dueAt: new Date(now.getTime() + 30_000), reason: code, releaseReservation: true });
+  if (retryableCodes.has(code) && attempt < MAX_ATTEMPTS) {
+    const retryDelay = attempt === 1 ? 30_000 : 120_000;
+    return releaseWork(work, { state: "PENDING", dueAt: new Date(now.getTime() + retryDelay), reason: code });
   }
-  return releaseWork(work, { state: "FAILED", reason: code, attempted: result.invoked });
+  return releaseWork(work, { state: "FAILED", reason: code });
 }
 
 export async function reconcileAssessmentJobs(now = new Date()): Promise<number> {
@@ -246,13 +284,15 @@ export async function runAssessmentTick(now = new Date()): Promise<{ claimed: nu
   await reconcileAssessmentJobs(now);
   let claimed = 0;
   let completed = 0;
+  const claimedCallIds: string[] = [];
   // A process can claim at most two, and the persisted slots cap all processes.
   for (let index = 0; index < 2; index++) {
     let work: ClaimedWork | null = null;
     try {
-      work = await claimWork(now);
+      work = await claimWork(now, claimedCallIds);
       if (!work) break;
       claimed++;
+      claimedCallIds.push(work.job.callId);
       await processWork(work, now);
       completed++;
     } catch {

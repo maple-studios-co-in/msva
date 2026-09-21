@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PrismaClient } from "@msva/db";
 import { recordCallEnd } from "./calls.js";
+import { recordTurn } from "./calls.js";
 import { runAssessmentTick } from "./assessmentJobs.js";
+import { createTicket } from "./tools/crm.js";
 
 const databaseUrl = process.env.JEV_TEST_DATABASE_URL;
 if (!databaseUrl || !new URL(databaseUrl).pathname.endsWith("/msva_jev_test") || process.env.DATABASE_URL !== databaseUrl) {
@@ -104,5 +106,88 @@ describe("automatic post-call queue", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(await db.assessmentJob.findUniqueOrThrow({ where: { callId_kind: { callId, kind: "POST_CALL" } } })).toMatchObject({ state: "SUCCEEDED", attempts: 1 });
     expect(await db.callAssessment.findFirstOrThrow({ where: { callId } })).toMatchObject({ status: "SUCCEEDED", requestedById: null });
+  });
+
+  it("keeps an old provider result historical when a late transcript changes the generation", async () => {
+    const callId = await openCall();
+    await recordCallEnd(callId, {});
+    let resolveProvider: ((response: Response) => void) | undefined;
+    const provider = new Promise<Response>((resolve) => { resolveProvider = resolve; });
+    const fetchMock = vi.fn(() => provider);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tick = runAssessmentTick(new Date(Date.now() + 6_000));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    await recordTurn(callId, { index: 2, callerText: "Please call me after lunch." });
+    resolveProvider?.(new Response(JSON.stringify(providerPayload()), { status: 200 }));
+    await tick;
+
+    expect(await db.assessmentJob.findUniqueOrThrow({ where: { callId_kind: { callId, kind: "POST_CALL" } } })).toMatchObject({ state: "PENDING", generation: 2, attempts: 0 });
+    expect(await db.callAssessment.findFirstOrThrow({ where: { callId } })).toMatchObject({ status: "SUCCEEDED" });
+  });
+
+  it("creates a new queued generation when a late linked ticket changes assessment input", async () => {
+    const callId = await openCall();
+    await recordCallEnd(callId, {});
+    const before = await db.assessmentJob.findUniqueOrThrow({ where: { callId_kind: { callId, kind: "POST_CALL" } } });
+
+    expect((await createTicket(callId, { phone: "", intent: "delivery_delay", summary: "Late delivery" })).ok).toBe(true);
+
+    expect(await db.assessmentJob.findUniqueOrThrow({ where: { callId_kind: { callId, kind: "POST_CALL" } } })).toMatchObject({ state: "PENDING", generation: 2, lastInputHash: expect.not.stringMatching(new RegExp(`^${before.lastInputHash}$`)) });
+  });
+
+  it("does not retry authentication failures automatically", async () => {
+    const callId = await openCall();
+    await recordCallEnd(callId, {});
+    const fetchMock = vi.fn(async () => new Response("unauthorized", { status: 401 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await runAssessmentTick(new Date(Date.now() + 6_000));
+    await runAssessmentTick(new Date(Date.now() + 60_000));
+
+    expect(await db.assessmentJob.findUniqueOrThrow({ where: { callId_kind: { callId, kind: "POST_CALL" } } })).toMatchObject({ state: "FAILED", attempts: 1, reason: "AUTH_FAILED" });
+  });
+
+  it("backs off a rate-limited provider request after reserving one attempt", async () => {
+    const callId = await openCall();
+    await recordCallEnd(callId, {});
+    const fetchMock = vi.fn(async () => new Response("slow down", { status: 429 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await runAssessmentTick(new Date(Date.now() + 6_000));
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const job = await db.assessmentJob.findUniqueOrThrow({ where: { callId_kind: { callId, kind: "POST_CALL" } } });
+    expect(job).toMatchObject({ state: "PENDING", attempts: 1, reason: "RATE_LIMITED" });
+    expect(job.dueAt.getTime()).toBeGreaterThan(Date.now() + 25_000);
+  });
+
+  it("recovers an expired worker claim without accepting its stale token", async () => {
+    const callId = await openCall();
+    await recordCallEnd(callId, {});
+    const job = await db.assessmentJob.findUniqueOrThrow({ where: { callId_kind: { callId, kind: "POST_CALL" } } });
+    const expired = new Date(Date.now() - 1_000);
+    await db.assessmentJob.update({ where: { id: job.id }, data: { state: "RUNNING", claimedGeneration: job.generation, leaseToken: "stale-worker", leaseExpiresAt: expired } });
+    await db.assessmentWorkerSlot.upsert({ where: { slot: 0 }, create: { slot: 0, ownerToken: "stale-worker", jobId: job.id, leaseExpiresAt: expired }, update: { ownerToken: "stale-worker", jobId: job.id, leaseExpiresAt: expired } });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(providerPayload()), { status: 200 })));
+
+    await runAssessmentTick(new Date(Date.now() + 6_000));
+
+    expect(await db.assessmentJob.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject({ state: "SUCCEEDED", attempts: 1, leaseToken: null });
+    expect(await db.assessmentWorkerSlot.findUniqueOrThrow({ where: { slot: 0 } })).toMatchObject({ ownerToken: null, jobId: null });
+  });
+
+  it("keeps a changed inactive job skipped when concurrent admission is at capacity", async () => {
+    const callId = await openCall();
+    await recordCallEnd(callId, {});
+    await db.assessmentJob.update({ where: { callId_kind: { callId, kind: "POST_CALL" } }, data: { state: "SUCCEEDED" } });
+    const saturationIds = Array.from({ length: 1_000 }, (_, index) => `auto-cap-${index}-${randomUUID()}`);
+    callIds.push(...saturationIds);
+    await db.call.createMany({ data: saturationIds.map((id) => ({ id, provider: "BROWSER" as const, isTest: true, fromNumber: "browser", status: "IN_PROGRESS", outcome: "IN_PROGRESS" })) });
+    await db.assessmentJob.createMany({ data: saturationIds.map((id) => ({ callId: id, kind: "POST_CALL" as const, state: "PENDING" as const, dueAt: new Date(), source: "AUTO_POST_CALL" })) });
+
+    await recordTurn(callId, { index: 2, callerText: "A changed final detail." });
+
+    expect(await db.assessmentJob.findUniqueOrThrow({ where: { callId_kind: { callId, kind: "POST_CALL" } } })).toMatchObject({ state: "SKIPPED", reason: "QUEUE_CAPACITY" });
   });
 });

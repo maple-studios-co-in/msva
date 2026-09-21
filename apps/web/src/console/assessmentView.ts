@@ -1,7 +1,7 @@
 import type { CallAssessmentResponse } from "@msva/shared";
 
 export type AssessmentView = {
-  kind: "unavailable" | "ineligible" | "ready" | "running" | "interrupted" | "failed" | "stale" | "succeeded";
+  kind: "unavailable" | "ineligible" | "ready" | "queued" | "running" | "interrupted" | "failed" | "stale" | "succeeded";
   headline: string;
   detail: string;
   liveMessage: string | null;
@@ -38,14 +38,26 @@ export function assessmentView(response: CallAssessmentResponse, canAssess: bool
     };
   }
 
+  const automatic = response.automaticJob;
+  const automaticActive = Boolean(automatic && (automatic.state === "PENDING" || (automatic.state === "RUNNING" && !automatic.stalled)));
   const assessment = response.assessment;
-  if (!assessment) {
+  // A successful manual result is authoritative when current. A historical
+  // success must stay visibly stale even while the queue prepares its update.
+  if (assessment?.status === "SUCCEEDED") {
+    if (!response.current) {
+      return {
+        kind: "stale", headline: "Saved assessment is stale",
+        detail: `Transcript or recorded facts changed; assess again before relying on this result.${automaticActive ? " Automatic assessment queued to refresh it." : ""}`,
+        liveMessage: null, canRequest: canAssess, actionLabel: canAssess ? "Assess again" : null,
+        shouldPoll: automaticActive, showResult: assessment.result !== null
+      };
+    }
     return {
-      kind: "ready", headline: "No assessment saved", detail: "Sends this saved transcript to TypeSafe AI for advisory assessment.",
-      liveMessage: null, canRequest: canAssess, actionLabel: canAssess ? "Run assessment" : null, shouldPoll: false, showResult: false
+      kind: "succeeded", headline: "Assessment saved", detail: "Advisory AI assessment — review the transcript.",
+      liveMessage: null, canRequest: canAssess, actionLabel: canAssess ? "Assess again" : null, shouldPoll: false, showResult: assessment.result !== null
     };
   }
-  if (assessment.status === "RUNNING") {
+  if (assessment?.status === "RUNNING") {
     const leaseActive = assessment.leaseExpiresAt !== null && new Date(assessment.leaseExpiresAt).getTime() > now.getTime();
     if (leaseActive) {
       return {
@@ -59,7 +71,7 @@ export function assessmentView(response: CallAssessmentResponse, canAssess: bool
       shouldPoll: false, showResult: false
     };
   }
-  if (assessment.status === "FAILED") {
+  if (assessment?.status === "FAILED") {
     const cooldown = assessmentWakeDelay(response, now);
     return {
       kind: "failed", headline: "Assessment could not be completed", detail: assessment.retryable ? "No advisory result was saved. Review the transcript and try again if needed." : "No advisory result was saved. Retry will be available shortly.",
@@ -67,19 +79,50 @@ export function assessmentView(response: CallAssessmentResponse, canAssess: bool
       shouldPoll: cooldown !== null, showResult: false
     };
   }
-  if (!response.current) {
+  if (automatic && (automatic.state === "PENDING" || (automatic.state === "RUNNING" && !automatic.stalled))) {
+    const running = automatic.state === "RUNNING";
     return {
-      kind: "stale", headline: "Saved assessment is stale", detail: "Transcript or recorded facts changed; assess again before relying on this result.",
-      liveMessage: null, canRequest: canAssess, actionLabel: canAssess ? "Assess again" : null, shouldPoll: false, showResult: assessment.result !== null
+      kind: "queued",
+      headline: running ? "Automatic assessment running" : "Automatic assessment queued",
+      detail: running ? "A post-call assessment is running for the saved transcript." : "A post-call assessment will run after final call details settle.",
+      liveMessage: running ? "Automatic assessment running. Results will appear here." : "Automatic assessment queued. Results will appear here.",
+      canRequest: canAssess,
+      actionLabel: canAssess ? "Run assessment" : null,
+      shouldPoll: true,
+      showResult: savedResult
     };
   }
-  return {
-    kind: "succeeded", headline: "Assessment saved", detail: "Advisory AI assessment — review the transcript.",
-    liveMessage: null, canRequest: canAssess, actionLabel: canAssess ? "Assess again" : null, shouldPoll: false, showResult: assessment.result !== null
-  };
+  if (automatic?.stalled) {
+    return {
+      kind: "interrupted", headline: "Automatic assessment was interrupted",
+      detail: "The automatic assessment worker lease expired before a result was saved.",
+      liveMessage: null, canRequest: canAssess, actionLabel: canAssess ? "Run assessment" : null,
+      shouldPoll: false, showResult: savedResult
+    };
+  }
+  if (automatic && (automatic.state === "FAILED" || automatic.state === "SKIPPED")) {
+    return {
+      kind: "failed", headline: "Automatic assessment was not completed",
+      detail: automatic.state === "SKIPPED" ? "Automatic assessment was not queued because the queue was full." : "Automatic assessment needs attention before it can be retried.",
+      liveMessage: null, canRequest: canAssess, actionLabel: canAssess ? "Run assessment" : null,
+      shouldPoll: false, showResult: savedResult
+    };
+  }
+  if (!assessment) {
+    return {
+      kind: "ready", headline: "No assessment saved", detail: "Sends this saved transcript to TypeSafe AI for advisory assessment.",
+      liveMessage: null, canRequest: canAssess, actionLabel: canAssess ? "Run assessment" : null, shouldPoll: false, showResult: false
+    };
+  }
+  return { kind: "ready", headline: "No assessment saved", detail: "Sends this saved transcript to TypeSafe AI for advisory assessment.", liveMessage: null, canRequest: canAssess, actionLabel: canAssess ? "Run assessment" : null, shouldPoll: false, showResult: false };
 }
 
 export function assessmentWakeDelay(response: CallAssessmentResponse, now: Date): number | null {
+  const automatic = response.automaticJob;
+  if (automatic && (automatic.state === "PENDING" || (automatic.state === "RUNNING" && !automatic.stalled))) {
+    if (automatic.state === "RUNNING" && automatic.leaseExpiresAt && new Date(automatic.leaseExpiresAt).getTime() <= now.getTime()) return null;
+    return POLL_INTERVAL_MS;
+  }
   const assessment = response.assessment;
   if (!assessment) return null;
   if (assessment.status === "RUNNING") {

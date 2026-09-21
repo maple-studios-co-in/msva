@@ -6,6 +6,7 @@ import {
   type CallerType,
   type Prisma
 } from "@msva/db";
+import { markPostCallAssessmentDirty } from "./assessmentJobs.js";
 
 // ---------------------------------------------------------------------------
 // Call persistence
@@ -193,26 +194,26 @@ export async function recordTurn(callId: string, turn: TurnInput): Promise<void>
   if (turn.escalationReason) callUpdate.escalationReason = turn.escalationReason;
   if (turn.intent && turn.intent !== "unknown") callUpdate.intent = turn.intent;
 
-  await prisma.$transaction([
-    prisma.turn.upsert({
+  await prisma.$transaction(async (tx) => {
+    await tx.turn.upsert({
       where: { callId_index: { callId, index: turn.index } },
       create: { callId, index: turn.index, ...turnData },
       update: turnData
-    }),
-    ...(utterances.length > 0
-      ? [
-          prisma.utterance.deleteMany({ where: { callId, seq: { in: utterances.map((u) => u.seq) } } }),
-          prisma.utterance.createMany({ data: utterances })
-        ]
-      : []),
-    ...(Object.keys(callUpdate).length > 0 ? [prisma.call.update({ where: { id: callId }, data: callUpdate })] : []),
-    ...(reconciledOutcome ? [prisma.call.updateMany({
+    });
+    if (utterances.length > 0) {
+      await tx.utterance.deleteMany({ where: { callId, seq: { in: utterances.map((u) => u.seq) } } });
+      await tx.utterance.createMany({ data: utterances });
+    }
+    if (Object.keys(callUpdate).length > 0) await tx.call.update({ where: { id: callId }, data: callUpdate });
+    if (reconciledOutcome) await tx.call.updateMany({
       // A ticket tool can save a confirmed outcome outside the log queue.
       // Reconcile only if the row is still abandoned when this write runs.
       where: { id: callId, outcome: "ABANDONED" },
       data: { outcome: reconciledOutcome }
-    })] : [])
-  ]);
+    });
+    // A late final transcript turn may make an already-ended call eligible.
+    if (call.endedAt && utterances.length > 0) await markPostCallAssessmentDirty(tx, callId, new Date());
+  });
 }
 
 export async function recordCallEnd(
@@ -243,8 +244,11 @@ export async function recordCallEnd(
     // evidence of resolution; keep the outcome explicitly unconfirmed.
   }
 
-  await prisma.call.update({
-    where: { id: callId },
-    data: { status, outcome, endedAt, durationMs: endedAt.getTime() - call.startedAt.getTime() }
+  await prisma.$transaction(async (tx) => {
+    await tx.call.update({
+      where: { id: callId },
+      data: { status, outcome, endedAt, durationMs: endedAt.getTime() - call.startedAt.getTime() }
+    });
+    await markPostCallAssessmentDirty(tx, callId, new Date());
   });
 }

@@ -77,7 +77,9 @@ export class AssessmentPollController {
     const delay = assessmentWakeDelay(this.response, now);
     if (delay !== null) this.pollTimer = setTimeout(() => this.read(), delay);
 
-    const leaseExpiresAt = this.response.assessment?.status === "RUNNING" ? this.response.assessment.leaseExpiresAt : null;
+    const leaseExpiresAt = this.response.assessment?.status === "RUNNING"
+      ? this.response.assessment.leaseExpiresAt
+      : this.response.automaticJob?.state === "RUNNING" ? this.response.automaticJob.leaseExpiresAt : null;
     if (!leaseExpiresAt) return;
     const untilExpiry = new Date(leaseExpiresAt).getTime() - now.getTime();
     if (untilExpiry <= 0) {

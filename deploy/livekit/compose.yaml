@@ -86,7 +86,8 @@ services:
     # while calls are disabled.
     command: ["uv", "run", "--frozen", "python", "-m", "madhusudan_voice.replay"]
     healthcheck:
-      # Fails once no delivery pass has completed for 30 s.
+      # Fails once no delivery round has completed for 30 s: the loop is alive, which is
+      # not the same as the API accepting what it sends.
       test: ["CMD", "uv", "run", "--frozen", "python", "-m", "madhusudan_voice.replay", "healthcheck"]
       interval: 15s
       timeout: 10s

@@ -45,11 +45,14 @@ per-call credential. Each round it sends every call's next event, four at a time
 backlog does not hold up another's, and a live call's events are retried at least every 2 s. A
 call only appends; when it ends it waits briefly for its evidence to be delivered. The companion
 needs `VOICE_INTERNAL_API_URL` and `VOICE_REPLAY_CREDENTIAL_KEY`, not LiveKit or provider
-secrets, and keeps running when `VOICE_RUNTIME_ENABLED=false`. Its healthcheck fails once no
-delivery pass has completed for 30 s, and the worker starts only once it is healthy. If a live
-call's oldest undelivered event has waited 15 s while the API is reachable (the companion down,
-a proxy refusing it), the worker ends that call's AI authority; the evidence stays in the spool.
-During an API outage the lease bounds the call instead.
+secrets, and keeps running when `VOICE_RUNTIME_ENABLED=false`.
+
+The companion's healthcheck fails once no delivery round has completed for 30 s. That shows its
+delivery loop is alive, not that the API accepts what it sends. The worker starts only once the
+companion is healthy, and refuses new calls while that heartbeat is stale. If a live call's oldest
+undelivered event has waited 15 s while the API is reachable (the companion down, a proxy
+refusing it), the worker ends that call's AI authority; the evidence stays in the spool. During
+an API outage the lease bounds the call instead.
 
 Evidence the API refuses for one of its own reasons stops that call's stream; the call's worker
 then ends AI authority, and the stop is logged. An event stamped just ahead of the API's clock,

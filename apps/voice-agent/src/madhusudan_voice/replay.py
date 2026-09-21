@@ -2,7 +2,7 @@
 
     python -m madhusudan_voice.replay                        run the companion
     python -m madhusudan_voice.replay clear-faults [CALL]    retry stopped streams
-    python -m madhusudan_voice.replay healthcheck            exit 1 once delivery passes stop
+    python -m madhusudan_voice.replay healthcheck            exit 1 once delivery rounds stop
     python -m madhusudan_voice.replay quarantine-unreadable  stop streams no key can read
 
 A stream stops when the API refuses one of its events for good. Once the cause is
@@ -24,17 +24,27 @@ import time
 from pathlib import Path
 
 from .api import ReplayDrainer, VoiceApiClient
-from .config import ReplayConfig
+from .config import ReplayConfig, RuntimeConfig
 from .spool import EventSpool
 
 
-# The companion touches its heartbeat after every completed delivery pass (about once a
-# second); a heartbeat older than this means it has stopped delivering.
+# The companion touches its heartbeat after every delivery round and completed pass
+# (about once a second); one older than this means its delivery loop has stopped.
 HEARTBEAT_MAX_AGE_SECONDS = 30
 
 
-def heartbeat_path(config: ReplayConfig) -> Path:
+def heartbeat_path(config: ReplayConfig | RuntimeConfig) -> Path:
     return config.spool_path.with_name("replay.heartbeat")
+
+
+def companion_delivering(config: ReplayConfig | RuntimeConfig, *, now: float | None = None) -> bool:
+    """Whether the companion's delivery loop is alive: it completed a round recently. It
+    says nothing about whether the API accepts what the companion sends."""
+    try:
+        age = (time.time() if now is None else now) - heartbeat_path(config).stat().st_mtime
+    except OSError:
+        return False
+    return age <= HEARTBEAT_MAX_AGE_SECONDS
 
 
 def open_spool(config: ReplayConfig, *, verify_credentials: bool = True) -> EventSpool:
@@ -74,13 +84,7 @@ def quarantine_unreadable() -> int:
 
 
 def healthcheck(*, now: float | None = None) -> bool:
-    """Whether the companion completed a delivery pass recently."""
-    path = heartbeat_path(ReplayConfig.from_env(dict(os.environ)))
-    try:
-        age = (time.time() if now is None else now) - path.stat().st_mtime
-    except OSError:
-        return False
-    return age <= HEARTBEAT_MAX_AGE_SECONDS
+    return companion_delivering(ReplayConfig.from_env(dict(os.environ)), now=now)
 
 
 def main(argv: list[str]) -> None:

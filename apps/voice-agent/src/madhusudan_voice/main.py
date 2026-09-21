@@ -16,6 +16,7 @@ from livekit.agents.voice.room_io.types import RoomOptions
 from .api import DispatchPending, Lease, VoiceApiClient, VoiceApiError
 from .config import RuntimeConfig, RuntimeDisabled
 from .events import EventWriter
+from .replay import HEARTBEAT_MAX_AGE_SECONDS, companion_delivering
 from .session import AgentSpeechObserver, FailureCode, LeaseGuard, MadhusudanAgent, TranscriptObserver, canonical_language, create_session
 from .spool import EventSpool
 
@@ -142,6 +143,12 @@ def build_server(config: RuntimeConfig) -> AgentServer:
         try:
             call_id = call_id_from_dispatch_metadata(request.job.metadata)
         except RuntimeDisabled:
+            await request.reject()
+            return
+        # Evidence reaches the API only through the host's replay companion. While its
+        # delivery loop is not completing rounds, a call could not be recorded.
+        if not companion_delivering(config):
+            logger.warning("voice call refused: the replay companion has not completed a delivery round in %s s", HEARTBEAT_MAX_AGE_SECONDS)
             await request.reject()
             return
         await request.accept(name="Madhusudan", identity=agent_identity_for_call(call_id))

@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -205,7 +206,7 @@ class VoiceApiClient:
     def replay_credential(self, lease: Lease) -> ReplayCredential:
         return ReplayCredential(lease.call_id, lease.agent_epoch, lease.token, lease.expires_at)
 
-    async def flush_spool(self, spool: EventSpool) -> int:
+    async def flush_spool(self, spool: EventSpool, *, on_round: Callable[[], None] | None = None) -> int:
         slots = asyncio.Semaphore(DELIVERY_CONCURRENCY)
 
         async def deliver(queued: SpoolEvent) -> int:
@@ -248,6 +249,8 @@ class VoiceApiClient:
                 if isinstance(result, BaseException):
                     raise result
             committed += sum(delivered)
+            if on_round is not None:
+                on_round()
         return committed
 
     async def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
@@ -342,7 +345,8 @@ class ReplayDrainer:
     def __init__(self, client: VoiceApiClient, spool: EventSpool, *, interval_seconds: float = 1.0, prune_seconds: float = 300.0,
                  heartbeat: Path | None = None) -> None:
         self.client, self.spool, self.interval_seconds, self.prune_seconds = client, spool, interval_seconds, prune_seconds
-        # Touched after every completed delivery pass; the companion's healthcheck reads its age.
+        # Touched after every delivery round and completed pass: its age shows whether the
+        # delivery loop is alive (not whether the API accepts what it sends).
         self.heartbeat = heartbeat
         self._stopping = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -365,16 +369,19 @@ class ReplayDrainer:
             except Exception as error:  # noqa: BLE001 - stopping must not skip the caller's cleanup
                 logger.warning("voice evidence replay stopped with %s", type(error).__name__)
 
+    def _beat(self) -> None:
+        if self.heartbeat is not None:
+            self.heartbeat.touch()
+
     async def _run(self) -> None:
         last_prune = float("-inf")
         while not self._stopping.is_set():
             try:
-                await self.client.flush_spool(self.spool)
+                await self.client.flush_spool(self.spool, on_round=self._beat)
                 if time.monotonic() - last_prune >= self.prune_seconds:
                     self.spool.prune()
                     last_prune = time.monotonic()
-                if self.heartbeat is not None:
-                    self.heartbeat.touch()
+                self._beat()
             except Exception as error:  # noqa: BLE001 - one bad pass must not end evidence recovery
                 logger.warning("voice evidence replay pass failed with %s", type(error).__name__)
             try:

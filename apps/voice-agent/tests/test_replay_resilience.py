@@ -211,3 +211,13 @@ async def test_streams_are_delivered_several_at_a_time(tmp_path):
     # One at a time this would take 1.6 s.
     assert time.monotonic() - started < 1.0
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_every_delivery_round_is_reported(tmp_path):
+    spool = spool_at(tmp_path)
+    for sequence in range(1, 4):
+        queue(spool, "call-a", sequence)
+    rounds: list[int] = []
+    assert await api_answering({}, []).flush_spool(spool, on_round=lambda: rounds.append(1)) == 3
+    assert len(rounds) == 3

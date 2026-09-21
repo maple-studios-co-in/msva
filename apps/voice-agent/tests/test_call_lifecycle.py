@@ -149,3 +149,35 @@ async def test_a_finished_call_releases_only_the_tool_intents_it_recorded(tmp_pa
     reopened = open_spool()
     assert reopened._connection.execute("SELECT invocation_id FROM tool_intent").fetchall() == [(theirs,)]
     reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_the_worker_refuses_calls_while_the_companion_is_not_delivering(tmp_path):
+    import json as json_module
+    from types import SimpleNamespace
+
+    import madhusudan_voice.main as main
+    from madhusudan_voice.config import RuntimeConfig
+
+    config = RuntimeConfig.from_env(enabled_env(tmp_path))
+    request_call = main.build_server(config)._request_fnc
+
+    class Request:
+        agent_name = config.agent_name
+        room = SimpleNamespace(name="room-1")
+        job = SimpleNamespace(metadata=json_module.dumps({"callId": "call-1"}))
+        outcome: str | None = None
+
+        async def reject(self) -> None:
+            self.outcome = "rejected"
+
+        async def accept(self, **_kwargs) -> None:
+            self.outcome = "accepted"
+
+    refused = Request()
+    await request_call(refused)
+    assert refused.outcome == "rejected", "no heartbeat: the companion is not delivering"
+    config.spool_path.with_name("replay.heartbeat").touch()
+    accepted = Request()
+    await request_call(accepted)
+    assert accepted.outcome == "accepted"

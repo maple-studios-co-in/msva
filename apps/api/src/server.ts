@@ -2,6 +2,7 @@ import "./env.js"; // must be first — loads .env before any env-reading module
 import cors from "cors";
 import express from "express";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { createSampleAnalytics } from "./sampleAnalytics.js";
 import { demoCalls, findDemoCall } from "./demoCalls.js";
@@ -11,11 +12,14 @@ import { DEMO_FAILSAFE_AUDIO_PATH, demoFailsafeAvailable, loadDemoFailsafe } fro
 import { databaseReady } from "@msva/db";
 import { adminRouter } from "./routes/admin.js";
 import { internalRouter } from "./routes/internal.js";
+import { internalAgentRouter } from "./routes/internalAgent.js";
 import { createLiveCallsHandler } from "./liveCalls.js";
 
-const app = express();
 const port = Number(process.env.PORT ?? 4100);
 const csvPath = process.env.CSV_PATH ?? "../../data/reports.csv";
+
+export function createApp(): express.Express {
+const app = express();
 
 // The console sends its session cookie, so CORS must name the origin rather
 // than use "*". Same-origin deployments (Caddy) never hit this path.
@@ -36,6 +40,9 @@ app.get("/health", async (_request, response) => {
   });
 });
 
+// This service-authenticated provider route must precede the legacy internal
+// router, whose development fallback is intentionally not valid for SSE.
+app.use("/api/internal/agent", internalAgentRouter);
 app.use("/api/internal", internalRouter);
 app.use("/api/admin", adminRouter);
 app.get("/api/live-calls", createLiveCallsHandler());
@@ -193,6 +200,11 @@ app.use((error: unknown, _request: express.Request, response: express.Response, 
   response.status(500).json({ error: "Internal server error" });
 });
 
-app.listen(port, () => {
-  console.log(`MSVA API running on http://localhost:${port}`);
-});
+  return app;
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  createApp().listen(port, () => {
+    console.log(`MSVA API running on http://localhost:${port}`);
+  });
+}

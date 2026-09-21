@@ -14,12 +14,24 @@ export async function* streamAgent(
   callId: string,
   message: string,
   state?: ConversationState,
-  sessionId?: string
+  sessionId?: string,
+  transport: "EXOTEL" | "BROWSER" = "EXOTEL",
+  browserConnectionId?: string
 ): AsyncGenerator<ChatStreamEvent, void, void> {
-  const response = await fetch(`${AGENT_BASE_URL}/api/voice-agent/chat/stream`, {
+  const token = process.env.INTERNAL_API_TOKEN;
+  if (!token) {
+    yield { type: "error", message: "Telephony service authentication is unavailable" };
+    return;
+  }
+
+  const response = await fetch(`${AGENT_BASE_URL}/api/internal/agent/chat/stream`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-    body: JSON.stringify({ callId, message, state, sessionId })
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+      "x-internal-token": token
+    },
+    body: JSON.stringify({ callId, message, state, sessionId, transport, browserConnectionId })
   });
 
   if (!response.ok || !response.body) {

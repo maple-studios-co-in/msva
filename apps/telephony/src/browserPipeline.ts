@@ -245,7 +245,7 @@ export function createBrowserPipeline(
         }
       })();
 
-      for await (const event of streamAgent(callId, utterance, conversation, sessionId)) {
+      for await (const event of streamAgent(callId, utterance, conversation, sessionId, "BROWSER")) {
         if (closed) break;
         if (event.type === "token" && firstTokenAt === null) firstTokenAt = Date.now();
         if (event.type === "final") finalAt = Date.now();

@@ -1,6 +1,57 @@
 {
   "components": {
     "schemas": {
+      "CreateRequestResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "actionState": {
+            "enum": [
+              "RECORDED",
+              "PENDING_STAFF"
+            ],
+            "type": "string"
+          },
+          "callId": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "caseId": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "evidenceState": {
+            "const": "NOT_REQUESTED",
+            "type": "string"
+          },
+          "requestId": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "ticketNumber": {
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer"
+          },
+          "truthState": {
+            "const": "RECORDED",
+            "type": "string"
+          }
+        },
+        "required": [
+          "requestId",
+          "callId",
+          "caseId",
+          "ticketNumber",
+          "truthState",
+          "actionState",
+          "evidenceState"
+        ],
+        "type": "object"
+      },
       "VoiceContext": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
@@ -589,7 +640,13 @@
       }
     },
     "securitySchemes": {
+      "callLease": {
+        "description": "Call-scoped epoch lease credential.",
+        "scheme": "bearer",
+        "type": "http"
+      },
       "workerBearer": {
+        "description": "Global worker credential; claim only.",
         "scheme": "bearer",
         "type": "http"
       }
@@ -603,42 +660,341 @@
   "paths": {
     "/calls/{callId}/context": {
       "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "callId",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceContext"
+                }
+              }
+            },
+            "description": "Committed response"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid credential"
+          },
+          "403": {
+            "description": "Credential scope denied"
+          },
+          "404": {
+            "description": "Unknown call or receipt"
+          },
+          "409": {
+            "description": "Fenced, stale, or conflicting operation"
+          },
+          "503": {
+            "description": "Voice service unavailable"
+          }
+        },
         "security": [
           {
-            "workerBearer": []
+            "callLease": []
           }
         ]
       }
     },
     "/calls/{callId}/events": {
       "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "callId",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkerEvent"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceEventReceipt"
+                }
+              }
+            },
+            "description": "Committed response"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid credential"
+          },
+          "403": {
+            "description": "Credential scope denied"
+          },
+          "404": {
+            "description": "Unknown call or receipt"
+          },
+          "409": {
+            "description": "Fenced, stale, or conflicting operation"
+          },
+          "503": {
+            "description": "Voice service unavailable"
+          }
+        },
         "security": [
           {
-            "workerBearer": []
+            "callLease": []
           }
         ]
       }
     },
     "/calls/{callId}/lease/renew": {
       "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "callId",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoiceLeaseRenew"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceLease"
+                }
+              }
+            },
+            "description": "Committed response"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid credential"
+          },
+          "403": {
+            "description": "Credential scope denied"
+          },
+          "404": {
+            "description": "Unknown call or receipt"
+          },
+          "409": {
+            "description": "Fenced, stale, or conflicting operation"
+          },
+          "503": {
+            "description": "Voice service unavailable"
+          }
+        },
         "security": [
           {
-            "workerBearer": []
+            "callLease": []
           }
         ]
       }
     },
     "/calls/{callId}/tools": {
       "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "callId",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoiceTool"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateRequestResult"
+                }
+              }
+            },
+            "description": "Committed response"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid credential"
+          },
+          "403": {
+            "description": "Credential scope denied"
+          },
+          "404": {
+            "description": "Unknown call or receipt"
+          },
+          "409": {
+            "description": "Fenced, stale, or conflicting operation"
+          },
+          "503": {
+            "description": "Voice service unavailable"
+          }
+        },
         "security": [
           {
-            "workerBearer": []
+            "callLease": []
+          }
+        ]
+      }
+    },
+    "/calls/{callId}/tools/{invocationId}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "callId",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "invocationId",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateRequestResult"
+                }
+              }
+            },
+            "description": "Committed response"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid credential"
+          },
+          "403": {
+            "description": "Credential scope denied"
+          },
+          "404": {
+            "description": "Unknown call or receipt"
+          },
+          "409": {
+            "description": "Fenced, stale, or conflicting operation"
+          },
+          "503": {
+            "description": "Voice service unavailable"
+          }
+        },
+        "security": [
+          {
+            "callLease": []
           }
         ]
       }
     },
     "/leases/claim": {
       "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoiceLeaseClaim"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceLease"
+                }
+              }
+            },
+            "description": "Committed response"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid credential"
+          },
+          "403": {
+            "description": "Credential scope denied"
+          },
+          "404": {
+            "description": "Unknown call or receipt"
+          },
+          "409": {
+            "description": "Fenced, stale, or conflicting operation"
+          },
+          "503": {
+            "description": "Voice service unavailable"
+          }
+        },
         "security": [
           {
             "workerBearer": []

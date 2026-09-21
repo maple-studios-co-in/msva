@@ -35,15 +35,15 @@ set every required value and use `VOICE_STT_MODE=realtime` only after the entitl
 docker compose --env-file .env -f deploy/livekit/compose.yaml config
 docker compose --env-file deploy/livekit/.env -f deploy/livekit/compose.yaml up -d redis livekit
 # Worker remains opt-in and requires live service contracts. Always run the replay
-# companion with it: it delivers retained call evidence when no call is running.
+# companion with it: it is the one process that delivers call evidence.
 docker compose --env-file deploy/livekit/.env -f deploy/livekit/compose.yaml --profile voice up -d voice-agent voice-replay
 ```
 
-`voice-replay` shares the worker's spool volume and sends evidence the worker persisted but
-could not deliver (for example after an API outage or a worker restart), using only each
-event's retained per-call credential. It needs `VOICE_INTERNAL_API_URL` and
-`VOICE_REPLAY_CREDENTIAL_KEY`, not LiveKit or provider secrets, and keeps running when
-`VOICE_RUNTIME_ENABLED=false`.
+`voice-replay` shares the worker's spool volume and delivers everything the worker persists,
+during a call and after it (an API outage, a worker restart), using only each event's retained
+per-call credential. A call only appends; when it ends it waits briefly for its evidence to be
+delivered. The companion needs `VOICE_INTERNAL_API_URL` and `VOICE_REPLAY_CREDENTIAL_KEY`, not
+LiveKit or provider secrets, and keeps running when `VOICE_RUNTIME_ENABLED=false`.
 
 Evidence the API refuses for one of its own reasons stops that call's stream, and the stop
 is logged. Other refusals (an HTML 404 from a misrouted

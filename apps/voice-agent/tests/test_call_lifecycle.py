@@ -14,11 +14,11 @@ def committed_types(api: FakeVoiceApi) -> list[str]:
     return [f"{event['type']}:{event['payload'].get('code', '')}".rstrip(":") for event in api.calls["call-1"].committed]
 
 
-def assert_released(runtime) -> None:
-    assert all(drainer.stopped for drainer in runtime.drainers)
+async def assert_released(runtime) -> None:
     assert all(spool.closed for spool in runtime.spools)
     assert all(client.closed for client in runtime.clients)
     assert runtime.runtimes == {}
+    await runtime.stop_companion()
 
 
 @pytest.mark.asyncio
@@ -28,7 +28,7 @@ async def test_a_refused_claim_releases_everything_it_opened(tmp_path, monkeypat
     runtime = install_runtime(monkeypatch, tmp_path, api)
     with pytest.raises(Exception):
         await runtime.entry(FakeCtx())
-    assert_released(runtime)
+    await assert_released(runtime)
     assert runtime.sessions == []
 
 
@@ -40,7 +40,7 @@ async def test_a_failed_session_start_is_reported_as_fatal(tmp_path, monkeypatch
     with pytest.raises(RuntimeError, match="provider refused"):
         await runtime.entry(FakeCtx())
     assert committed_types(api) == ["agent.ready", "agent.failed:FATAL", "transcript.flushed"]
-    assert_released(runtime)
+    await assert_released(runtime)
 
 
 @pytest.mark.asyncio
@@ -54,7 +54,7 @@ async def test_a_lapsed_claim_never_starts_a_speaking_session(tmp_path, monkeypa
     assert runtime.sessions == []
     assert ctx.shutdown_reasons == ["voice authority ended: LEASE_LOST"]
     assert committed_types(api) == ["agent.ready", "agent.failed:LEASE_LOST", "transcript.flushed"]
-    assert_released(runtime)
+    await assert_released(runtime)
 
 
 @pytest.mark.asyncio
@@ -76,7 +76,7 @@ async def test_a_fence_ends_the_job_and_records_its_cause_at_that_moment(tmp_pat
     failure = api.calls["call-1"].committed[1]
     occurred = datetime.fromisoformat(failure["occurredAt"].replace("Z", "+00:00"))
     assert occurred - fenced_at < timedelta(seconds=1), "failure evidence is stamped at the fence, not at shutdown"
-    assert_released(runtime)
+    await assert_released(runtime)
 
 
 @pytest.mark.asyncio
@@ -90,7 +90,7 @@ async def test_a_caller_hangup_ends_the_job_and_checkpoints_evidence(tmp_path, m
     assert ctx.shutdown_reasons == ["voice session closed"]
     await runtime.finalize(ctx)
     assert committed_types(api) == ["agent.ready", "transcript.flushed"]
-    assert_released(runtime)
+    await assert_released(runtime)
 
 
 @pytest.mark.asyncio
@@ -109,6 +109,7 @@ async def test_a_spool_that_cannot_open_releases_the_api_client(tmp_path, monkey
     with pytest.raises(SpoolKeyMismatch):
         await runtime.entry(FakeCtx())
     assert runtime.clients and all(client.closed for client in runtime.clients)
+    await runtime.stop_companion()
 
 
 def test_the_worker_starts_only_with_a_replay_key_that_reads_its_spool(tmp_path, monkeypatch):

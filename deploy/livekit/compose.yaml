@@ -54,8 +54,9 @@ services:
       livekit:
         condition: service_started
     networks: [media-private, provider-egress]
-    # Longer than the worker's 120 s drain, so a deploy stop lets calls finish.
-    stop_grace_period: 130s
+    # The worker's 120 s drain plus time for the SDK's forced shutdown and each call's
+    # final delivery wait, so a deploy stop lets calls finish.
+    stop_grace_period: 150s
     expose: ["8081"]
     healthcheck:
       test: ["CMD-SHELL", "python -c \"from urllib.request import urlopen; urlopen('http://127.0.0.1:8081/', timeout=3)\""]
@@ -77,8 +78,9 @@ services:
       - voice-spool:/var/lib/msva-voice-agent
     networks: [provider-egress]
     stop_grace_period: 15s
-    # Drains retained evidence with no call running; needs only VOICE_INTERNAL_API_URL,
-    # VOICE_REPLAY_CREDENTIAL_KEY and the shared spool, and runs while calls are disabled.
+    # The one process that delivers evidence, live calls' included. Needs only
+    # VOICE_INTERNAL_API_URL, VOICE_REPLAY_CREDENTIAL_KEY and the shared spool, and runs
+    # while calls are disabled.
     command: ["uv", "run", "--frozen", "python", "-m", "madhusudan_voice.replay"]
 
   sip:

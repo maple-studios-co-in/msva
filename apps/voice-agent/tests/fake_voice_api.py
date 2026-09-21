@@ -236,9 +236,15 @@ class Runtime:
     finalize: Callable
     runtimes: dict
     spools: list
-    drainers: list
     clients: list
     sessions: list
+    # The host's replay companion: the one process that delivers the calls' evidence.
+    companion: Any
+
+    async def stop_companion(self) -> None:
+        await self.companion.stop()
+        self.companion.spool.close()
+        await self.companion.client.aclose()
 
 
 def install_runtime(monkeypatch, tmp_path: Path, api: FakeVoiceApi, session_factory: Callable[[], FakeSession] | None = None) -> Runtime:
@@ -249,7 +255,6 @@ def install_runtime(monkeypatch, tmp_path: Path, api: FakeVoiceApi, session_fact
     from madhusudan_voice.spool import EventSpool
 
     spools: list = []
-    drainers: list = []
     clients: list = []
     sessions: list = []
 
@@ -262,16 +267,6 @@ def install_runtime(monkeypatch, tmp_path: Path, api: FakeVoiceApi, session_fact
         def close(self) -> None:
             self.closed = True
             super().close()
-
-    class RecordingDrainer(ReplayDrainer):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            self.stopped = False
-            drainers.append(self)
-
-        async def stop(self) -> None:
-            self.stopped = True
-            await super().stop()
 
     class RecordingClient(VoiceApiClient):
         def __init__(self, base_url: str, *, worker_credential: str | None = None):
@@ -290,13 +285,16 @@ def install_runtime(monkeypatch, tmp_path: Path, api: FakeVoiceApi, session_fact
         return session
 
     monkeypatch.setattr(main, "EventSpool", RecordingSpool)
-    monkeypatch.setattr(main, "ReplayDrainer", RecordingDrainer)
     monkeypatch.setattr(main, "VoiceApiClient", RecordingClient)
     monkeypatch.setattr(main, "create_session", make_session)
-    server = main.build_server(RuntimeConfig.from_env(enabled_env(tmp_path)))
+    config = RuntimeConfig.from_env(enabled_env(tmp_path))
+    server = main.build_server(config)
     finalize = server._session_end_fnc
     runtimes = inspect.getclosurevars(finalize).nonlocals["runtimes"]
-    return Runtime(server._entrypoint_fnc, finalize, runtimes, spools, drainers, clients, sessions)
+    companion = ReplayDrainer(VoiceApiClient(BASE, client=api.client()),
+        EventSpool(config.spool_path, max_events=config.spool_max_events, max_bytes=config.spool_max_bytes, replay_key=KEY), interval_seconds=0.02)
+    companion.start()
+    return Runtime(server._entrypoint_fnc, finalize, runtimes, spools, clients, sessions, companion)
 
 
 def lease_expiring_in(seconds: float, *, call_id: str = "call", epoch: int = 1, token: str = "token", wall_skew: float = 0.0):

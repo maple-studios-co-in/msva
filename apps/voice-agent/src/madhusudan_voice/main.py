@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from livekit.agents import AgentServer, AgentSession, JobContext, JobRequest, cli
 from livekit.agents.voice.room_io.types import RoomOptions
 
-from .api import DispatchPending, ReplayDrainer, VoiceApiClient, VoiceApiError
+from .api import DispatchPending, Lease, VoiceApiClient, VoiceApiError
 from .config import RuntimeConfig, RuntimeDisabled
 from .events import EventWriter
 from .session import AgentSpeechObserver, FailureCode, LeaseGuard, MadhusudanAgent, TranscriptObserver, canonical_language, create_session
@@ -47,14 +47,20 @@ def configure_livekit_environment(config: RuntimeConfig) -> None:
     os.environ["LIVEKIT_API_SECRET"] = str(config.livekit_api_secret)
 
 
+# How often a finishing call looks for its evidence having been delivered.
+DELIVERY_POLL_SECONDS = 0.25
+
+
 @dataclass
 class CallRuntime:
     """Everything one call owns. It exists before the first await, so every exit path
-    (success, early failure or shutdown) finalizes the same resources exactly once."""
+    (success, early failure or shutdown) finalizes the same resources exactly once.
+
+    The call only appends evidence. The host's replay companion is the one process
+    that delivers it, so no stream is ever posted twice at once."""
 
     client: VoiceApiClient
     spool: EventSpool
-    drainer: ReplayDrainer
     writer: EventWriter | None = None
     guard: LeaseGuard | None = None
     observer: TranscriptObserver | None = None
@@ -86,15 +92,20 @@ class CallRuntime:
                     await self.agent_speech.drain(min(10, budget_seconds))
                 if self.writer is not None:
                     self.writer.record_flush()
-                await self.drainer.drain(min(10, budget_seconds))
+                    await self._delivered(self.writer.lease)
         except (TimeoutError, VoiceApiError):
             pass
         except Exception as error:  # noqa: BLE001 - closing below must still happen
             logger.warning("voice call finalization failed: %s", type(error).__name__)
         finally:
-            await self.drainer.stop()
             self.spool.close()
             await self.client.aclose()
+
+    async def _delivered(self, lease: Lease) -> None:
+        """Waits, within the budget, for the companion to deliver this call's evidence, so a
+        clean end reaches the API before the job exits. Anything left stays in the spool."""
+        while self.spool.pending(lease.call_id, lease.agent_epoch) and self.spool.stream_fault(lease.call_id, lease.agent_epoch) is None:
+            await asyncio.sleep(DELIVERY_POLL_SECONDS)
 
 
 def build_server(config: RuntimeConfig) -> AgentServer:
@@ -138,7 +149,7 @@ def build_server(config: RuntimeConfig) -> AgentServer:
         except Exception:
             await client.aclose()
             raise
-        runtime = CallRuntime(client, spool, ReplayDrainer(client, spool))
+        runtime = CallRuntime(client, spool)
         runtimes[ctx.job.id] = runtime
         session: AgentSession | None = None
 
@@ -149,7 +160,6 @@ def build_server(config: RuntimeConfig) -> AgentServer:
                 session.shutdown(drain=False)
             ctx.shutdown(reason=f"voice authority ended: {code}")
 
-        runtime.drainer.start()
         try:
             await ctx.connect()
             # Dispatch persistence can lag LiveKit's accepted job. Retry only the explicit,

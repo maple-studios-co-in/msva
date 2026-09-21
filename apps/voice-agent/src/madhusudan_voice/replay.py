@@ -1,4 +1,4 @@
-"""Host companion for durable evidence replay while no LiveKit job is active.
+"""Host companion for durable evidence replay: the one process that delivers evidence.
 
     python -m madhusudan_voice.replay                        run the companion
     python -m madhusudan_voice.replay clear-faults [CALL]    retry stopped streams

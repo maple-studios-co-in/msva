@@ -83,6 +83,14 @@ it("trusts IPv6 proxy subnets and ignores invalid proxy configuration", async ()
   expect(trustedNetworkFromRequest(proxied("10.0.0.5", "198.51.100.1"))).toEqual({ address: "10.0.0.5" });
 });
 
+it("counts an IPv6 client by its /64 and an IPv4 client by its address", async () => {
+  const { rateAddress } = await import("./auth.js");
+  expect(rateAddress("203.0.113.40")).toBe("203.0.113.40");
+  expect(rateAddress("2001:db8:1:2:aaaa::1")).toBe("2001:db8:1:2::/64");
+  expect(rateAddress("2001:db8:1:2::ffff")).toBe(rateAddress("2001:db8:1:2:aaaa::1"));
+  expect(rateAddress("unknown")).toBe("unknown");
+});
+
 it("audits the trusted-chain client address, not a client-supplied one", async () => {
   vi.stubEnv("TRUSTED_PROXY_ADDRESSES", "127.0.0.1");
   const { audit } = await import("./auth.js");

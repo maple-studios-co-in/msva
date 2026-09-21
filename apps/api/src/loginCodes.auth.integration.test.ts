@@ -70,6 +70,24 @@ async function withFailingLoginCodeUpdate(state: "FAILED" | "DELIVERED", work: (
   }
 }
 
+/**
+ * Runs `work` while Postgres prefers plans that re-run a subquery once per outer
+ * row, as it may choose on real table statistics. The app's pool reconnects so
+ * its sessions pick the settings up.
+ */
+async function withRescanningPlans(work: () => Promise<void>) {
+  const settings = ["enable_material", "enable_hashjoin", "enable_mergejoin", "enable_hashagg", "enable_sort", "enable_indexscan", "enable_bitmapscan"];
+  const { prisma } = await import("@msva/db");
+  for (const name of settings) await db.$executeRawUnsafe(`ALTER DATABASE msva_auth_test SET ${name} = off`);
+  await prisma.$disconnect();
+  try {
+    await work();
+  } finally {
+    for (const name of settings) await db.$executeRawUnsafe(`ALTER DATABASE msva_auth_test RESET ${name}`);
+    await prisma.$disconnect();
+  }
+}
+
 const settle = (ms = 300) => new Promise((resolve) => setTimeout(resolve, ms));
 const wrongCode = (code: string) => (code === "000000" ? "111111" : "000000");
 
@@ -300,7 +318,28 @@ describe("shared throttles", () => {
       data: Array.from({ length: 150 }, (_, index) => ({ scope: "old", keyHash: `old-${index}`, windowStart: new Date(0), count: 1, expiresAt: expired }))
     });
     const auth = await authWithFakeDelivery(async () => undefined);
-    await auth.requestLoginCode("cleanup@example.test", network(61));
+    await withRescanningPlans(async () => {
+      await auth.requestLoginCode("cleanup@example.test", network(61));
+    });
     expect(await db.authRateBucket.count({ where: { scope: "old" } })).toBe(50);
+  });
+});
+
+describe("abuse resistance", () => {
+  it("does not let one client's flood lock everyone else out", async () => {
+    const auth = await authWithFakeDelivery(async () => undefined);
+    for (let index = 0; index < 120; index += 1) await auth.requestLoginCode("victim@example.test", network(70));
+    const others = await db.authRateBucket.findMany({ where: { scope: "request-global-hour" } });
+    expect(others.reduce((total, bucket) => total + bucket.count, 0)).toBeLessThanOrEqual(30);
+    const user = await db.user.create({ data: { email: "someone@example.test", name: "Someone", role: "AGENT" } });
+    expect(await auth.requestLoginCode(user.email, network(71))).toEqual({ ok: true });
+    await vi.waitFor(async () => expect(await db.loginCode.count({ where: { userId: user.id, deliveryState: "DELIVERED" } })).toBe(1));
+  });
+
+  it("creates no rate rows for denied attempts", async () => {
+    const auth = await authWithFakeDelivery(async () => undefined);
+    for (let index = 0; index < 200; index += 1) await auth.requestLoginCode(`fresh${index}@example.test`, network(72));
+    // 30 admitted fresh emails (minute and hour rows each), one IP row and one global row.
+    expect(await db.authRateBucket.count()).toBeLessThanOrEqual(62);
   });
 });

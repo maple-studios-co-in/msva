@@ -120,6 +120,19 @@ export function trustedNetworkFromRequest(request: express.Request): AuthNetwork
   return { address: peer };
 }
 
+/**
+ * The address a rate limit counts. An IPv6 client usually holds a whole /64, so
+ * counting single IPv6 addresses would let one client act as billions.
+ */
+export function rateAddress(address: string): string {
+  if (!address.includes(":")) return address;
+  const [head = "", tail = ""] = address.split("::");
+  const left = head ? head.split(":") : [];
+  const right = tail ? tail.split(":") : [];
+  const groups = [...left, ...Array(Math.max(0, 8 - left.length - right.length)).fill("0"), ...right];
+  return `${groups.slice(0, 4).join(":")}::/64`;
+}
+
 const RATE_CLEANUP_BATCH = 100;
 const windowStart = (now: Date, ms: number) => new Date(Math.floor(now.getTime() / ms) * ms);
 type RateLimit = { scope: string; key: string; limit: number; windowMs: number };
@@ -132,19 +145,28 @@ async function reserveRates(limits: RateLimit[], now = new Date()): Promise<numb
     for (const limit of [...prepared].sort((a, b) => `${a.scope}:${a.keyHash}`.localeCompare(`${b.scope}:${b.keyHash}`))) {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${limit.scope}:${limit.keyHash}`}))`;
     }
+    // All or nothing: an attempt is counted only if every bucket has room, so a
+    // client hammering one limit cannot also use up a shared one (such as the
+    // global hourly cap), and a denied attempt creates no rows.
     let retryAfter: number | null = null;
     for (const limit of prepared) {
-      const keyHash = limit.keyHash!;
-      const bucket = await tx.authRateBucket.upsert({
-        where: { scope_keyHash_windowStart: { scope: limit.scope, keyHash, windowStart: limit.start } },
-        create: { scope: limit.scope, keyHash, windowStart: limit.start, count: 1, expiresAt: new Date(limit.start.getTime() + limit.windowMs + 86_400_000) },
-        update: { count: { increment: 1 } }
-      });
-      if (bucket.count > limit.limit) retryAfter = Math.max(retryAfter ?? 0, Math.max(1, Math.ceil((limit.start.getTime() + limit.windowMs - now.getTime()) / 1000)));
+      const bucket = await tx.authRateBucket.findUnique({ where: { scope_keyHash_windowStart: { scope: limit.scope, keyHash: limit.keyHash!, windowStart: limit.start } }, select: { count: true } });
+      if ((bucket?.count ?? 0) >= limit.limit) retryAfter = Math.max(retryAfter ?? 0, Math.max(1, Math.ceil((limit.start.getTime() + limit.windowMs - now.getTime()) / 1000)));
     }
-    // Denied attempts stay counted. Expired buckets (a day past their window)
-    // are removed in small batches rather than all at once on a hot path.
-    await tx.$executeRaw`DELETE FROM "AuthRateBucket" WHERE "id" IN (SELECT "id" FROM "AuthRateBucket" WHERE "expiresAt" < ${now} LIMIT ${RATE_CLEANUP_BATCH} FOR UPDATE SKIP LOCKED)`;
+    if (retryAfter === null) {
+      for (const limit of prepared) {
+        await tx.authRateBucket.upsert({
+          where: { scope_keyHash_windowStart: { scope: limit.scope, keyHash: limit.keyHash!, windowStart: limit.start } },
+          create: { scope: limit.scope, keyHash: limit.keyHash!, windowStart: limit.start, count: 1, expiresAt: new Date(limit.start.getTime() + limit.windowMs + 86_400_000) },
+          update: { count: { increment: 1 } }
+        });
+      }
+    }
+    // Expired buckets (a day past their window) are removed in small batches
+    // rather than all at once on a hot path. The batch is chosen once: as an
+    // IN subquery, Postgres may re-run it for every candidate row, and each run
+    // skips the rows already deleted, so the whole table can go in one call.
+    await tx.$executeRaw`WITH doomed AS MATERIALIZED (SELECT "id" FROM "AuthRateBucket" WHERE "expiresAt" < ${now} LIMIT ${RATE_CLEANUP_BATCH} FOR UPDATE SKIP LOCKED) DELETE FROM "AuthRateBucket" AS bucket USING doomed WHERE bucket."id" = doomed."id"`;
     return retryAfter;
   });
 }
@@ -200,7 +222,7 @@ export async function requestLoginCode(
   const retryAfter = await reserveRates([
     { scope: "request-email-minute", key: email, limit: 1, windowMs: 60_000 },
     { scope: "request-email-hour", key: email, limit: 5, windowMs: 3_600_000 },
-    { scope: "request-ip-hour", key: network.address, limit: 30, windowMs: 3_600_000 },
+    { scope: "request-ip-hour", key: rateAddress(network.address), limit: 30, windowMs: 3_600_000 },
     { scope: "request-global-hour", key: "global", limit: 100, windowMs: 3_600_000 }
   ]);
   if (retryAfter) return { ok: false, limited: true, retryAfter };
@@ -251,7 +273,7 @@ export async function verifyLoginCode(
   if (!/^\d{6}$/.test(code)) return null;
   // Without both keys no code can be checked and no attempt can be throttled.
   if (!process.env.AUTH_CODE_HASH_KEY || !process.env.AUTH_RATE_HASH_KEY) return null;
-  const retryAfter = await reserveRates([{ scope: "verify-email", key: email, limit: 10, windowMs: 600_000 }, { scope: "verify-ip", key: network.address, limit: 60, windowMs: 600_000 }]);
+  const retryAfter = await reserveRates([{ scope: "verify-email", key: email, limit: 10, windowMs: 600_000 }, { scope: "verify-ip", key: rateAddress(network.address), limit: 60, windowMs: 600_000 }]);
   if (retryAfter) return { limited: true, retryAfter };
   const token = randomBytes(32).toString("hex");
   // Everything that authorizes the login is read after the user and code rows

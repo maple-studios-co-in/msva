@@ -135,18 +135,15 @@ class VoiceApiClient:
         committed = 0
         for queued in spool.ready():
             try:
-                # A retained historical credential has evidence-only authority. Never replay
-                # agent-ready/failed or any business action after a process restart.
-                if queued.payload.get("type") != "transcript.final":
-                    spool.retry(queued.event_id)
-                    continue
+                # Every schema-declared lifecycle event is evidence. The API separately
+                # constrains historical receipt so this never restores call authority.
                 await self.publish(queued.payload, Lease(
                     queued.credential.call_id, queued.credential.agent_epoch,
                     queued.credential.expires_at, queued.credential.token,
                 ))
             except (httpx.HTTPError, VoiceApiError):
                 spool.retry(queued.event_id)
-                continue
+                break
             spool.acknowledge(queued.event_id)
             committed += 1
         return committed
@@ -156,11 +153,21 @@ class VoiceApiClient:
         try:
             async with asyncio.timeout(12):
                 async with self._client.stream(method, url, **kwargs) as response:
-                    body = await response.aread()
+                    if response.is_stream_consumed:  # MockTransport JSON/content response
+                        body = response.content
+                        if len(body) > 65_536:
+                            raise VoiceApiError("internal voice API response exceeds 64 KiB")
+                    else:
+                        chunks: list[bytes] = []
+                        size = 0
+                        async for chunk in response.aiter_raw():
+                            size += len(chunk)
+                            if size > 65_536:
+                                raise VoiceApiError("internal voice API response exceeds 64 KiB")
+                            chunks.append(chunk)
+                        body = b"".join(chunks)
         except (TimeoutError, httpx.HTTPError) as exc:
             raise VoiceApiError("internal voice API is unavailable") from exc
-        if len(body) > 65_536:
-            raise VoiceApiError("internal voice API response exceeds 64 KiB")
         return httpx.Response(response.status_code, headers=response.headers, content=body, request=response.request)
 
     @staticmethod

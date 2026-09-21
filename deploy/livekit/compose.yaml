@@ -17,7 +17,7 @@ services:
   livekit:
     image: livekit/livekit-server:v1.13.7
     restart: unless-stopped
-    command: ["sh", "/etc/livekit/start-livekit.sh"]
+    entrypoint: ["/bin/sh", "/etc/livekit/start-livekit.sh"]
     env_file:
       - path: .env
         required: false
@@ -61,6 +61,20 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+
+  voice-replay:
+    build:
+      context: ../../apps/voice-agent
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    profiles: ["voice"]
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - voice-spool:/var/lib/msva-voice-agent
+    networks: [provider-egress]
+    command: ["uv", "run", "--frozen", "python", "-m", "madhusudan_voice.replay"]
 
   sip:
     image: livekit/sip:v1.13.0

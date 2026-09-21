@@ -78,7 +78,7 @@ async def test_final_caller_transcript_is_spooled_before_acknowledgement(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_replay_after_restart_uses_its_historical_lease_and_only_transcript(tmp_path):
+async def test_replay_after_restart_uses_historical_lease_for_every_lifecycle_event(tmp_path):
     spool = EventSpool(tmp_path / "spool.sqlite3", max_events=3, max_bytes=4096, replay_key=KEY)
     credential = ReplayCredential("call-1", 9, "old-lease", "2030-01-01T00:00:00Z")
     spool.enqueue(event_id="final", call_id="call-1", payload={"eventId": "final", "type": "transcript.final"}, credential=credential)
@@ -89,9 +89,9 @@ async def test_replay_after_restart_uses_its_historical_lease_and_only_transcrip
         body = json.loads(request.content)
         return httpx.Response(200, json={"eventId": body["eventId"], "status": "committed"})
     client = VoiceApiClient("https://api.example/api/internal/voice/v1", worker_credential="worker", client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
-    assert await client.flush_spool(spool) == 1
-    assert seen == ["Bearer old-lease"]
-    assert spool.pending_count() == 1
+    assert await client.flush_spool(spool) == 2
+    assert seen == ["Bearer old-lease", "Bearer old-lease"]
+    assert spool.pending_count() == 0
 
 
 @pytest.mark.asyncio

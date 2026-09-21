@@ -11,52 +11,41 @@ from .spool import EventSpool
 
 
 class EventWriter:
-    def __init__(self, spool: EventSpool, client: VoiceApiClient, lease: Lease) -> None:
+    def __init__(self, spool: EventSpool, client: VoiceApiClient, lease: Lease, *, agent_participant_id: str | None = None) -> None:
         self.spool = spool
         self.client = client
         self.lease = lease
         self._source_sequence = 0
+        self.agent_participant_id = agent_participant_id
 
     async def emit(self, event_type: str, payload: dict[str, Any]) -> str:
-        self._source_sequence = self.spool.next_sequence(
-            call_id=self.lease.call_id, agent_epoch=self.lease.agent_epoch
-        )
         event_id = str(uuid4())
-        event = {
-            "schemaVersion": 1,
-            "eventId": event_id,
-            "callId": self.lease.call_id,
-            "agentEpoch": self.lease.agent_epoch,
-            "sourceSequence": self._source_sequence,
-            "occurredAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-            "type": event_type,
-            "payload": payload,
-        }
+        def build(source_sequence: int) -> dict[str, Any]:
+            return {"schemaVersion": 1, "eventId": event_id, "callId": self.lease.call_id,
+                "agentEpoch": self.lease.agent_epoch, "sourceSequence": source_sequence,
+                "occurredAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"), "type": event_type, "payload": payload}
         # Persistence precedes every delivery attempt. Payloads contain only event metadata/text,
         # never audio bytes or HTTP headers.
-        self.spool.enqueue(
-            event_id=event_id,
-            call_id=self.lease.call_id,
-            payload=event,
-            credential=self.client.replay_credential(self.lease),
-        )
+        _, self._source_sequence = self.spool.append_event(call_id=self.lease.call_id, agent_epoch=self.lease.agent_epoch,
+            credential=self.client.replay_credential(self.lease), build=build)
         return event_id
 
     @property
     def last_source_sequence(self) -> int:
         return self._source_sequence
 
-    async def emit_agent_transcript(self, *, text: str, language: str) -> str:
+    async def emit_agent_transcript(self, *, text: str, language: str, segment_id: str, sequence: int) -> str:
         if not text.strip() or len(text) > 4000:
             raise ValueError("agent transcript text must be non-empty and at most 4000 characters")
+        stable_sequence = self.spool.segment_sequence(call_id=self.lease.call_id, agent_epoch=self.lease.agent_epoch, segment_id=segment_id)
         return await self.emit(
             "transcript.final",
             {
-                "segmentId": f"agent:{self.lease.agent_epoch}:{self._source_sequence + 1}",
+                "segmentId": segment_id,
                 "revision": 1,
                 "speaker": "AGENT",
-                "participantId": None,
-                "sequence": self._source_sequence + 1,
+                "participantId": self.agent_participant_id or "unbound-agent",
+                "sequence": stable_sequence,
                 "text": text,
                 "language": language,
             },
@@ -79,6 +68,7 @@ class EventWriter:
             raise ValueError("final transcript text must be non-empty and at most 4000 characters")
         if revision < 1 or sequence < 1:
             raise ValueError("final transcript revision and sequence must be positive")
+        stable_sequence = self.spool.segment_sequence(call_id=self.lease.call_id, agent_epoch=self.lease.agent_epoch, segment_id=segment_id)
         return await self.emit(
             "transcript.final",
             {
@@ -86,7 +76,7 @@ class EventWriter:
                 "revision": revision,
                 "speaker": "CALLER",
                 "participantId": participant_id,
-                "sequence": sequence,
+                "sequence": stable_sequence,
                 "text": text,
                 "startMs": start_ms,
                 "endMs": end_ms,

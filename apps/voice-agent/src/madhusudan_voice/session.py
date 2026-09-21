@@ -36,9 +36,27 @@ class LeaseGuard:
         self.lost = False
         self.on_lost = on_lost
         self._task: asyncio.Task[None] | None = None
+        self._expiry_task: asyncio.Task[None] | None = None
 
     def start(self) -> None:
+        if datetime.now(UTC) >= self._expiry():
+            self.active = False
+            self.lost = True
+            return
         self._task = asyncio.create_task(self._run(), name="voice-lease-renewal")
+        self._arm_expiry()
+
+    def _expiry(self) -> datetime:
+        return datetime.fromisoformat(self.writer.lease.expires_at.replace("Z", "+00:00"))
+
+    def _arm_expiry(self) -> None:
+        if self._expiry_task:
+            self._expiry_task.cancel()
+        self._expiry_task = asyncio.create_task(self._expire_at_deadline(), name="voice-lease-expiry")
+
+    async def _expire_at_deadline(self) -> None:
+        await asyncio.sleep(max(0, (self._expiry() - datetime.now(UTC)).total_seconds()))
+        await self.fail_closed()
 
     async def stop(self) -> None:
         self.active = False
@@ -48,9 +66,11 @@ class LeaseGuard:
                 await self._task
             except asyncio.CancelledError:
                 pass
+        if self._expiry_task:
+            self._expiry_task.cancel()
 
     def require_active(self) -> None:
-        expires_at = datetime.fromisoformat(self.writer.lease.expires_at.replace("Z", "+00:00"))
+        expires_at = self._expiry()
         if not self.active or datetime.now(UTC) >= expires_at:
             raise LeaseLost("lease renewal failed; business tools are disabled")
 
@@ -64,18 +84,20 @@ class LeaseGuard:
 
     async def _run(self) -> None:
         while self.active:
-            expires_at = datetime.fromisoformat(self.writer.lease.expires_at.replace("Z", "+00:00"))
+            expires_at = self._expiry()
             wait = min(self.renew_seconds, max(0, (expires_at - datetime.now(UTC)).total_seconds()))
             if wait == 0:
                 await self.fail_closed()
                 return
             await asyncio.sleep(wait)
             try:
-                renewed = await self.client.renew(self.writer.lease)
+                async with asyncio.timeout(max(0.001, (expires_at - datetime.now(UTC)).total_seconds())):
+                    renewed = await self.client.renew(self.writer.lease)
             except Exception:
                 await self.fail_closed()
                 return
             self.writer.update_lease(renewed)
+            self._arm_expiry()
 
 
 class MadhusudanAgent(Agent):
@@ -104,14 +126,18 @@ class MadhusudanAgent(Agent):
             name="create_business_request",
             arguments=request,
         )
-        result = await self._client.invoke_tool(
-            self._lease_guard.writer.lease,
-            invocation_id=invocation_id,
-            name="create_business_request",
-            arguments=request,
-        )
-        self._lease_guard.writer.spool.complete_tool_intent(invocation_id, result)
-        return result
+        try:
+            result = await self._client.invoke_tool(
+                self._lease_guard.writer.lease, invocation_id=invocation_id,
+                name="create_business_request", arguments=request,
+            )
+            self._lease_guard.writer.spool.complete_tool_intent(invocation_id, result)
+            return result
+        except Exception:
+            # A lost write may already have committed. The pilot fences all further effects
+            # until a human or a future safe receipt reconciliation resolves this intent.
+            await self._lease_guard.fail_closed()
+            raise
 
 
 class TranscriptObserver:
@@ -175,13 +201,12 @@ class AgentSpeechObserver:
 
     def __init__(self, writer: EventWriter, language: str, on_failure: Callable[[], Awaitable[None]]) -> None:
         self.writer, self.language, self.on_failure = writer, language, on_failure
-        self._pending: list[str] = []
         self._tasks: set[asyncio.Task[None]] = set()
 
     def conversation(self, event: ConversationItemAddedEvent) -> None:
-        item = event.item
-        if getattr(item, "role", None) == "assistant" and (text := getattr(item, "raw_text_content", "")):
-            self._pending.append(text)
+        # Items are read from the speech handle at completion, which associates them
+        # with actual playout instead of a global conversation queue.
+        return None
 
     def speech(self, event: SpeechCreatedEvent) -> None:
         task = asyncio.create_task(self._after_playout(event), name="voice-agent-playout-evidence")
@@ -191,10 +216,14 @@ class AgentSpeechObserver:
     async def _after_playout(self, event: SpeechCreatedEvent) -> None:
         try:
             await event.speech_handle.wait_for_playout()
-            if event.speech_handle.interrupted:
-                return
-            while self._pending:
-                await self.writer.emit_agent_transcript(text=self._pending.pop(0), language=self.language)
+            for item in event.speech_handle.chat_items:
+                if getattr(item, "role", None) != "assistant":
+                    continue
+                text = getattr(item, "raw_text_content", None)
+                if text:
+                    await self.writer.emit_agent_transcript(
+                        text=text, language=self.language, segment_id=str(getattr(item, "id", "agent-item")), sequence=0
+                    )
         except Exception:
             await self.on_failure()
 

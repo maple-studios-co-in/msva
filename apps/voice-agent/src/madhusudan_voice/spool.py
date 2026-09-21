@@ -8,7 +8,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 from uuid import uuid4
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -69,6 +69,10 @@ class EventSpool:
             arguments TEXT NOT NULL, invocation_id TEXT NOT NULL UNIQUE,
             state TEXT NOT NULL, receipt TEXT, created_at REAL NOT NULL,
             PRIMARY KEY(call_id, agent_epoch, name, arguments))""")
+        self._connection.execute("""CREATE TABLE IF NOT EXISTS segment_order (
+            call_id TEXT NOT NULL, agent_epoch INTEGER NOT NULL, segment_id TEXT NOT NULL,
+            ordering INTEGER NOT NULL, PRIMARY KEY(call_id, agent_epoch, segment_id),
+            UNIQUE(call_id, agent_epoch, ordering))""")
 
     @contextmanager
     def _write(self) -> Iterator[sqlite3.Connection]:
@@ -101,6 +105,16 @@ class EventSpool:
                 db.execute("INSERT INTO source_sequence(call_id,agent_epoch,next_value) VALUES (?, ?, ?)", (call_id, agent_epoch, value + 1))
         return value
 
+    def segment_sequence(self, *, call_id: str, agent_epoch: int, segment_id: str) -> int:
+        with self._write() as db:
+            row = db.execute("SELECT ordering FROM segment_order WHERE call_id=? AND agent_epoch=? AND segment_id=?", (call_id, agent_epoch, segment_id)).fetchone()
+            if row:
+                return int(row[0])
+            maximum = db.execute("SELECT COALESCE(MAX(ordering), 0) FROM segment_order WHERE call_id=? AND agent_epoch=?", (call_id, agent_epoch)).fetchone()
+            ordering = int(maximum[0]) + 1
+            db.execute("INSERT INTO segment_order(call_id,agent_epoch,segment_id,ordering) VALUES (?, ?, ?, ?)", (call_id, agent_epoch, segment_id, ordering))
+            return ordering
+
     def enqueue(self, *, event_id: str, call_id: str, payload: dict[str, Any], credential: ReplayCredential, now: float | None = None) -> bool:
         if credential.call_id != call_id:
             raise ValueError("replay credential belongs to another call")
@@ -120,10 +134,35 @@ class EventSpool:
                 self._cipher.encrypt(credential.token.encode()), credential.expires_at, now, now))
         return True
 
+    def append_event(
+        self, *, call_id: str, agent_epoch: int, credential: ReplayCredential,
+        build: Callable[[int], dict[str, Any]], now: float | None = None,
+    ) -> tuple[str, int]:
+        """Atomically reserve the next sequence and persist its immutable event."""
+        now = time.time() if now is None else now
+        with self._write() as db:
+            row = db.execute("SELECT next_value FROM source_sequence WHERE call_id=? AND agent_epoch=?", (call_id, agent_epoch)).fetchone()
+            sequence = int(row[0]) if row else 1
+            event = build(sequence)
+            event_id = str(event.get("eventId", ""))
+            serialized = canonical_json(event)
+            payload_bytes = len(serialized.encode())
+            totals = db.execute("SELECT COUNT(*), COALESCE(SUM(payload_bytes), 0) FROM event_spool").fetchone()
+            if not event_id or int(totals[0]) >= self.max_events or int(totals[1]) + payload_bytes > self.max_bytes:
+                raise SpoolCapacityError("durable event spool is at capacity")
+            db.execute("INSERT OR REPLACE INTO source_sequence(call_id,agent_epoch,next_value) VALUES (?, ?, ?)", (call_id, agent_epoch, sequence + 1))
+            db.execute("""INSERT INTO event_spool(event_id,call_id,agent_epoch,payload,payload_bytes,encrypted_token,expires_at,next_attempt_at,created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", (event_id, call_id, agent_epoch, serialized, payload_bytes,
+                self._cipher.encrypt(credential.token.encode()), credential.expires_at, now, now))
+        return event_id, sequence
+
     def ready(self, *, now: float | None = None, limit: int = 100) -> list[SpoolEvent]:
         now = time.time() if now is None else now
-        rows = self._connection.execute("""SELECT event_id,call_id,agent_epoch,payload,attempts,encrypted_token,expires_at
-            FROM event_spool WHERE next_attempt_at<=? ORDER BY created_at LIMIT ?""", (now, limit)).fetchall()
+        rows = self._connection.execute("""SELECT e.event_id,e.call_id,e.agent_epoch,e.payload,e.attempts,e.encrypted_token,e.expires_at
+            FROM event_spool e WHERE e.next_attempt_at<=? AND NOT EXISTS (
+              SELECT 1 FROM event_spool earlier WHERE earlier.call_id=e.call_id AND earlier.agent_epoch=e.agent_epoch
+              AND CAST(json_extract(earlier.payload, '$.sourceSequence') AS INTEGER) < CAST(json_extract(e.payload, '$.sourceSequence') AS INTEGER))
+            ORDER BY e.created_at LIMIT ?""", (now, limit)).fetchall()
         result = []
         for row in rows:
             try:

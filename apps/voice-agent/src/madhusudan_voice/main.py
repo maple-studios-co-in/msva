@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import asyncio
+import hashlib
 from collections.abc import Mapping
 
 from livekit.agents import AgentServer, JobContext, JobRequest, cli
@@ -28,6 +29,10 @@ def call_id_from_dispatch_metadata(metadata: str) -> str:
     if not value["callId"].strip():
         raise RuntimeDisabled("dispatch metadata callId cannot be empty")
     return value["callId"]
+
+
+def agent_identity_for_call(call_id: str) -> str:
+    return "msva-agent-" + hashlib.sha256(call_id.encode("utf-8")).hexdigest()[:32]
 
 
 def configure_livekit_environment(config: RuntimeConfig) -> None:
@@ -54,7 +59,12 @@ def build_server(config: RuntimeConfig) -> AgentServer:
         if request.agent_name != config.agent_name or request.room.name == "":
             await request.reject()
             return
-        await request.accept(name="Madhusudan", identity=f"msva-agent-{request.id}")
+        try:
+            call_id = call_id_from_dispatch_metadata(request.job.metadata)
+        except RuntimeDisabled:
+            await request.reject()
+            return
+        await request.accept(name="Madhusudan", identity=agent_identity_for_call(call_id))
 
     @server.rtc_session(agent_name=config.agent_name, on_request=on_request)
     async def run_call(ctx: JobContext) -> None:
@@ -80,7 +90,7 @@ def build_server(config: RuntimeConfig) -> AgentServer:
             context = await client.context(lease)
             if context.room_name != room_name or context.agent_participant_id != ctx.local_participant_identity:
                 raise RuntimeDisabled("MSVA context does not match the dispatched LiveKit participant")
-            writer = EventWriter(spool, client, lease)
+            writer = EventWriter(spool, client, lease, agent_participant_id=context.agent_participant_id)
             await writer.emit("agent.ready", {"participantId": ctx.local_participant_identity})
             session = create_session(config, canonical_language(context.language))
             stopped = asyncio.Event()
@@ -118,8 +128,8 @@ def build_server(config: RuntimeConfig) -> AgentServer:
                 await agent_speech.drain(min(10, config.drain_timeout_seconds))
                 if guard.lost:
                     # The API may be unavailable; the event is persisted first and replayed later.
-                    await writer.emit("agent.failed", {"code": "LEASE_RENEWAL_FAILED"})
-                await writer.emit("agent.final_watermark", {"sourceSequence": writer.last_source_sequence})
+                    await writer.emit("agent.failed", {"code": "LEASE_LOST"})
+                await writer.emit("transcript.flushed", {"lastSourceSequence": writer.last_source_sequence})
         finally:
             try:
                 await drainer.drain(min(10, config.drain_timeout_seconds))

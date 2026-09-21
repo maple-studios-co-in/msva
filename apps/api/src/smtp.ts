@@ -8,23 +8,23 @@ export type LoginCodeDelivery = {
 
 export type SmtpDeliverySettings = {
   connection: SMTPConnectionOptions;
-  /** The From header, which may carry a display name. */
-  from: string;
-  /** The bare address the SMTP envelope uses. */
-  envelopeFrom: string;
+  /** The sender: a display name (possibly empty) and the bare address the envelope uses. */
+  from: { name: string; address: string };
   auth?: { user: string; pass: string };
   deadlineMs: number;
 };
 
-/** Exactly one mailbox, as a header value and its bare envelope address. */
-function parseSender(value: string): { header: string; address: string } | null {
-  const parsed = addressparser(value, { flatten: true });
+/** Exactly one mailbox. A group, which a From header may not carry, is refused. */
+function parseSender(value: string): { name: string; address: string } | null {
+  const parsed = addressparser(value);
   const mailbox = parsed.length === 1 ? parsed[0] : undefined;
-  if (!mailbox?.address || !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(mailbox.address)) return null;
-  return { header: value, address: mailbox.address };
+  if (!mailbox || "group" in mailbox || !mailbox.address || !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(mailbox.address)) return null;
+  return { name: mailbox.name, address: mailbox.address };
 }
 
 const DELIVERY_DEADLINE_MS = 20_000;
+// How long a server may keep the connection open after answering QUIT.
+const QUIT_GRACE_MS = 2_000;
 
 /** Validated server-side SMTP settings, or null when sign-in mail is not configured. */
 export function smtpSettingsFromEnv(): SmtpDeliverySettings | null {
@@ -56,8 +56,7 @@ export function smtpSettingsFromEnv(): SmtpDeliverySettings | null {
       logger: false,
       debug: false
     },
-    from: from.header,
-    envelopeFrom: from.address,
+    from,
     auth: user && password ? { user, pass: password } : undefined,
     deadlineMs: DELIVERY_DEADLINE_MS
   };
@@ -97,7 +96,7 @@ export function smtpLoginCodeDelivery(settings: SmtpDeliverySettings): LoginCode
           fail = reject;
           timer = setTimeout(() => reject(new Error("SMTP delivery deadline exceeded")), settings.deadlineMs);
           connection.connect(() => {
-            const sendMessage = () => connection.send({ from: settings.envelopeFrom, to: [recipient] }, message, (error) => (error ? reject(error) : resolve()));
+            const sendMessage = () => connection.send({ from: settings.from.address, to: [recipient] }, message, (error) => (error ? reject(error) : resolve()));
             if (settings.auth) connection.login(settings.auth, (error) => (error ? reject(error) : sendMessage()));
             else sendMessage();
           });
@@ -108,8 +107,17 @@ export function smtpLoginCodeDelivery(settings: SmtpDeliverySettings): LoginCode
         fail = () => undefined;
         // After a failure or the deadline, close() unpipes any unfinished message
         // and sends nothing further, so a late server reply cannot complete it.
-        if (delivered) connection.quit();
-        else {
+        if (delivered) {
+          connection.quit();
+          // quit() leaves closing to the server; one that never does must not
+          // keep the socket.
+          const socket = connection._socket;
+          if (socket && !socket.destroyed) {
+            const release = setTimeout(() => socket.destroy(), QUIT_GRACE_MS);
+            release.unref();
+            socket.once("close", () => clearTimeout(release));
+          }
+        } else {
           connection.close();
           // close() only half-closes a connected socket; release it outright.
           const socket = connection._socket;

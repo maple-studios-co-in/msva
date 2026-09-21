@@ -29,8 +29,7 @@ it("requires certificate-verified TLS without opportunistic fallback", async () 
   const { smtpSettingsFromEnv } = await import("./smtp.js");
   expect(smtpSettingsFromEnv()).toMatchObject({
     connection: { host: "smtp.example.test", port: 587, secure: false, requireTLS: true, ignoreTLS: false, opportunisticTLS: false, logger: false, debug: false, tls: { rejectUnauthorized: true, minVersion: "TLSv1.2" } },
-    from: "console@example.test",
-    envelopeFrom: "console@example.test",
+    from: { name: "", address: "console@example.test" },
     auth: { user: "console-user", pass: "not-a-real-password" },
     deadlineMs: 20_000
   });
@@ -46,8 +45,8 @@ it("accepts one sender with a display name and rejects anything else", async () 
   vi.stubEnv("SMTP_PASSWORD", "not-a-real-password");
   const { smtpSettingsFromEnv } = await import("./smtp.js");
   vi.stubEnv("SMTP_FROM", "MSVA Console <console@example.test>");
-  expect(smtpSettingsFromEnv()).toMatchObject({ from: "MSVA Console <console@example.test>", envelopeFrom: "console@example.test" });
-  for (const invalid of ["a@example.test, b@example.test", "MSVA Console", "Team: a@example.test, b@example.test;", ""]) {
+  expect(smtpSettingsFromEnv()).toMatchObject({ from: { name: "MSVA Console", address: "console@example.test" } });
+  for (const invalid of ["a@example.test, b@example.test", "MSVA Console", "Team: a@example.test, b@example.test;", "Team: a@example.test;", ""]) {
     vi.stubEnv("SMTP_FROM", invalid);
     expect(smtpSettingsFromEnv()).toBeNull();
   }
@@ -55,7 +54,11 @@ it("accepts one sender with a display name and rejects anything else", async () 
 
 type FakeSmtp = { server: Server; port: number; commands: string[]; lines: string[]; bodies: string[]; closed: () => boolean; lateReplyFailed: () => boolean };
 
-/** Plain-text SMTP peer on loopback. `stallRcptMs` delays the RCPT reply. */
+/**
+ * Plain-text SMTP peer on loopback. `stallRcptMs` delays the RCPT reply;
+ * `ignoreClose` keeps the server's side open after the client half-closes, and
+ * after it answers QUIT.
+ */
 async function fakeSmtp(stallRcptMs = 0, ignoreClose = false): Promise<FakeSmtp> {
   const commands: string[] = [];
   const lines: string[] = [];
@@ -95,7 +98,17 @@ async function fakeSmtp(stallRcptMs = 0, ignoreClose = false): Promise<FakeSmtp>
           if (ignoreClose) setTimeout(() => reply("250 still waiting"), 150);
         }, stallRcptMs);
         else if (verb === "DATA") { inData = true; reply("354 go ahead"); }
-        else if (verb === "QUIT") { reply("221 bye"); socket.end(); }
+        else if (verb === "QUIT") {
+          reply("221 bye");
+          if (!ignoreClose) socket.end();
+          else {
+            // Keeps writing: once the client releases its socket, a write fails.
+            const talk = setInterval(() => reply("250 still here"), 500);
+            talk.unref();
+            socket.on("close", () => clearInterval(talk));
+            socket.on("error", () => clearInterval(talk));
+          }
+        }
         else reply("502 unsupported");
       }
     });
@@ -112,7 +125,7 @@ it("delivers one fixed text message and quits the connection", async () => {
   const smtp = await fakeSmtp();
   try {
     const { smtpLoginCodeDelivery } = await import("./smtp.js");
-    const delivery = smtpLoginCodeDelivery({ connection: plainLoopback(smtp.port), from: "MSVA Console <console@example.test>", envelopeFrom: "console@example.test", deadlineMs: 5_000 });
+    const delivery = smtpLoginCodeDelivery({ connection: plainLoopback(smtp.port), from: { name: "MSVA Console", address: "console@example.test" }, deadlineMs: 5_000 });
     await delivery.send({ recipient: "agent@example.test", code: "123456", expiresAt: new Date("2026-09-21T10:10:00.000Z") });
     await vi.waitFor(() => expect(smtp.commands).toContain("QUIT"));
     expect(smtp.commands).toEqual(["EHLO", "MAIL", "RCPT", "DATA", "QUIT"]);
@@ -130,7 +143,7 @@ it("stops the exchange at the deadline so a late server reply cannot complete de
   const smtp = await fakeSmtp(1_000);
   try {
     const { smtpLoginCodeDelivery } = await import("./smtp.js");
-    const delivery = smtpLoginCodeDelivery({ connection: plainLoopback(smtp.port), from: "console@example.test", envelopeFrom: "console@example.test", deadlineMs: 200 });
+    const delivery = smtpLoginCodeDelivery({ connection: plainLoopback(smtp.port), from: { name: "", address: "console@example.test" }, deadlineMs: 200 });
     const started = Date.now();
     await expect(delivery.send({ recipient: "agent@example.test", code: "654321", expiresAt: new Date() })).rejects.toThrow("SMTP delivery deadline exceeded");
     expect(Date.now() - started).toBeLessThan(900);
@@ -149,11 +162,25 @@ it("releases the socket at the deadline even when the server ignores the close",
   const smtp = await fakeSmtp(1_000, true);
   try {
     const { smtpLoginCodeDelivery } = await import("./smtp.js");
-    const delivery = smtpLoginCodeDelivery({ connection: plainLoopback(smtp.port), from: "console@example.test", envelopeFrom: "console@example.test", deadlineMs: 200 });
+    const delivery = smtpLoginCodeDelivery({ connection: plainLoopback(smtp.port), from: { name: "", address: "console@example.test" }, deadlineMs: 200 });
     await expect(delivery.send({ recipient: "agent@example.test", code: "111111", expiresAt: new Date() })).rejects.toThrow("SMTP delivery deadline exceeded");
     // The stalled server finally replies; a destroyed client socket answers with a reset.
     await vi.waitFor(() => expect(smtp.lateReplyFailed() || smtp.closed()).toBe(true), { timeout: 3_000 });
     expect(smtp.commands).toEqual(["EHLO", "MAIL", "RCPT"]);
+  } finally {
+    smtp.server.close();
+  }
+});
+
+it("releases the socket after a delivery even when the server never closes it", { timeout: 10_000 }, async () => {
+  const smtp = await fakeSmtp(0, true);
+  try {
+    const { smtpLoginCodeDelivery } = await import("./smtp.js");
+    const delivery = smtpLoginCodeDelivery({ connection: plainLoopback(smtp.port), from: { name: "", address: "console@example.test" }, deadlineMs: 5_000 });
+    await delivery.send({ recipient: "agent@example.test", code: "222222", expiresAt: new Date() });
+    await vi.waitFor(() => expect(smtp.commands).toContain("QUIT"));
+    await vi.waitFor(() => expect(smtp.lateReplyFailed() || smtp.closed()).toBe(true), { timeout: 5_000 });
+    expect(smtp.bodies).toHaveLength(1);
   } finally {
     smtp.server.close();
   }

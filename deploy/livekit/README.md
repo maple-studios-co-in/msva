@@ -47,7 +47,7 @@ approved DNS/TLS destinations. Raw LiveKit signaling/admin `:7880` remains priva
 
 The private Compose template disables LiveKit automatic external-IP discovery because its
 internal media network intentionally has no STUN/DNS egress. It is not a public-media topology.
-Before enabling public media, set a reviewed explicit advertised node IP in the production
+`LIVEKIT_NODE_IP` is required and passed to LiveKit's supported `--node-ip` flag. Before enabling public media, set a reviewed explicit advertised node IP in the production
 configuration and approve the corresponding UDP/TCP, TURN, and firewall policy; do not expose
 raw signaling/admin `:7880` to solve discovery.
 

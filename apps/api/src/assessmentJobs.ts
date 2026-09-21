@@ -213,19 +213,25 @@ async function releaseWork(work: ClaimedWork, data: {
   });
 }
 
-async function reserveProviderAttempt(work: ClaimedWork, expectedInputHash: string): Promise<number | "STALE" | null> {
+type ProviderReservation =
+  | { outcome: "RESERVED"; attempt: number }
+  | { outcome: "STALE" }
+  | { outcome: "LEASE_LOST" }
+  | { outcome: "EXHAUSTED" };
+
+async function reserveProviderAttempt(work: ClaimedWork, expectedInputHash: string): Promise<ProviderReservation> {
   return prisma.$transaction(async (tx) => {
     const now = new Date();
     const call = await readAssessmentSnapshot(tx, work.job.callId);
-    if (!call) return "STALE";
+    if (!call) return { outcome: "STALE" };
     const snapshot = buildAssessmentSnapshot(call);
-    if (!snapshot.eligibility.eligible || snapshot.inputHash !== expectedInputHash) return "STALE";
+    if (!snapshot.eligibility.eligible || snapshot.inputHash !== expectedInputHash) return { outcome: "STALE" };
     const expiresAt = new Date(now.getTime() + LEASE_MS);
     const slot = await tx.assessmentWorkerSlot.updateMany({
       where: { slot: work.slot, ownerToken: work.token, jobId: work.job.id, leaseExpiresAt: { gt: now } },
       data: { leaseExpiresAt: expiresAt }
     });
-    if (slot.count !== 1) return null;
+    if (slot.count !== 1) return { outcome: "LEASE_LOST" };
     const reserved = await tx.assessmentJob.updateMany({
       where: {
         id: work.job.id, state: "RUNNING", leaseToken: work.token,
@@ -234,7 +240,17 @@ async function reserveProviderAttempt(work: ClaimedWork, expectedInputHash: stri
       },
       data: { attempts: { increment: 1 }, leaseExpiresAt: expiresAt }
     });
-    return reserved.count === 1 ? work.job.attempts + 1 : null;
+    if (reserved.count === 1) return { outcome: "RESERVED", attempt: work.job.attempts + 1 };
+    const current = await tx.assessmentJob.findUnique({
+      where: { id: work.job.id },
+      select: { state: true, leaseToken: true, claimedGeneration: true, generation: true, attempts: true }
+    });
+    if (
+      current?.state === "RUNNING" && current.leaseToken === work.token &&
+      current.claimedGeneration === work.job.generation && current.generation === work.job.generation &&
+      current.attempts >= MAX_ATTEMPTS
+    ) return { outcome: "EXHAUSTED" };
+    return { outcome: "LEASE_LOST" };
   });
 }
 
@@ -278,8 +294,9 @@ async function processWork(work: ClaimedWork, now: Date): Promise<void> {
   // point is conservatively charged to the immutable snapshot's three-attempt
   // budget, so restart recovery cannot create an unbounded provider loop.
   const attempt = await reserveProviderAttempt(work, inputHash);
-  if (attempt === "STALE") return releaseWork(work, { state: "PENDING", dueAt: new Date(Date.now() + SETTLE_MS), replaceInputHash: snapshot.inputHash });
-  if (attempt === null) return releaseWork(work, { state: "FAILED", reason: "MAX_ATTEMPTS" });
+  if (attempt.outcome === "STALE") return releaseWork(work, { state: "PENDING", dueAt: new Date(Date.now() + SETTLE_MS), replaceInputHash: snapshot.inputHash });
+  if (attempt.outcome === "LEASE_LOST") return releaseWork(work, { state: "PENDING", dueAt: new Date(Date.now() + SETTLE_MS), reason: "LEASE_LOST" });
+  if (attempt.outcome === "EXHAUSTED") return releaseWork(work, { state: "FAILED", reason: "MAX_ATTEMPTS" });
   const result = await requestCallAssessment(work.job.callId, null, {
     trigger: "AUTO_POST_CALL", expectedInputHash: inputHash,
     beforeInvoke: () => renewLaunchLease(work, inputHash)
@@ -293,8 +310,8 @@ async function processWork(work: ClaimedWork, now: Date): Promise<void> {
   if (assessment?.status === "SUCCEEDED" && result.response?.current) return releaseWork(work, { state: "SUCCEEDED", reason: null, releaseReservation: !result.invoked });
   const code = assessment?.errorCode ?? "PROVIDER_UNAVAILABLE";
   if (!result.invoked) return releaseWork(work, { state: "PENDING", dueAt: new Date(now.getTime() + 30_000), reason: code, releaseReservation: true });
-  if (retryableCodes.has(code) && attempt < MAX_ATTEMPTS) {
-    const retryDelay = attempt === 1 ? 30_000 : 120_000;
+  if (retryableCodes.has(code) && attempt.attempt < MAX_ATTEMPTS) {
+    const retryDelay = attempt.attempt === 1 ? 30_000 : 120_000;
     return releaseWork(work, { state: "PENDING", dueAt: new Date(now.getTime() + retryDelay), reason: code });
   }
   return releaseWork(work, { state: "FAILED", reason: code });

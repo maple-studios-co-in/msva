@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { PrismaClient } from "@msva/db";
+import { PrismaClient, prisma } from "@msva/db";
 import { recordCallEnd } from "./calls.js";
 import { recordTurn } from "./calls.js";
 import { runAssessmentTick } from "./assessmentJobs.js";
@@ -225,6 +225,42 @@ describe("automatic post-call queue", () => {
     expect(await db.assessmentWorkerSlot.findUniqueOrThrow({ where: { slot: 0 } })).toMatchObject({ ownerToken: null, jobId: null });
   });
 
+  it("requeues an expired pre-reservation claim without spending its attempt budget", async () => {
+    const callId = await openCall();
+    await recordCallEnd(callId, {});
+    const delegate = prisma.callAssessment as unknown as { findUnique: (args: unknown) => Promise<unknown> };
+    const originalFindUnique = delegate.findUnique.bind(delegate);
+    let injected = false;
+    delegate.findUnique = async (args: any) => {
+      if (!injected && args.where?.callId_inputHash_requestedModel_rubricVersion?.callId === callId) {
+        injected = true;
+        const job = await db.assessmentJob.findUniqueOrThrow({ where: { callId_kind: { callId, kind: "POST_CALL" } } });
+        expect(job).toMatchObject({ state: "RUNNING" });
+        const expired = new Date(Date.now() - 1_000);
+        await db.$transaction(async (tx) => {
+          await tx.assessmentJob.update({ where: { id: job.id }, data: { leaseExpiresAt: expired } });
+          await tx.assessmentWorkerSlot.updateMany({ where: { jobId: job.id }, data: { leaseExpiresAt: expired } });
+        });
+      }
+      return originalFindUnique(args);
+    };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(providerPayload()), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      await runAssessmentTick(new Date(Date.now() + 6_000));
+      expect(injected).toBe(true);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(await db.assessmentJob.findUniqueOrThrow({ where: { callId_kind: { callId, kind: "POST_CALL" } } })).toMatchObject({ state: "PENDING", attempts: 0, reason: "LEASE_LOST" });
+
+      await runAssessmentTick(new Date(Date.now() + 60_000));
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(await db.assessmentJob.findUniqueOrThrow({ where: { callId_kind: { callId, kind: "POST_CALL" } } })).toMatchObject({ state: "SUCCEEDED", attempts: 1 });
+    } finally {
+      delegate.findUnique = originalFindUnique;
+    }
+  });
+
   it("rejects a literal stale worker completion after a second worker takes over", async () => {
     const callId = await openCall();
     await recordCallEnd(callId, {});
@@ -234,32 +270,38 @@ describe("automatic post-call queue", () => {
     })));
 
     const firstRunner = runAssessmentTick(new Date(Date.now() + 6_000));
-    await vi.waitFor(() => expect(releases).toHaveLength(1));
-    const staleJob = await db.assessmentJob.findUniqueOrThrow({ where: { callId_kind: { callId, kind: "POST_CALL" } } });
-    const staleAssessment = await db.callAssessment.findFirstOrThrow({ where: { callId } });
-    const expired = new Date(Date.now() - 1_000);
-    await db.$transaction(async (tx) => {
-      await tx.assessmentJob.update({ where: { id: staleJob.id }, data: { leaseExpiresAt: expired } });
-      await tx.assessmentWorkerSlot.updateMany({ where: { ownerToken: staleJob.leaseToken, jobId: staleJob.id }, data: { leaseExpiresAt: expired } });
-      await tx.callAssessment.update({ where: { id: staleAssessment.id }, data: { leaseExpiresAt: expired } });
-    });
+    let secondRunner: Promise<unknown> | undefined;
+    try {
+      await vi.waitFor(() => expect(releases).toHaveLength(1));
+      const staleJob = await db.assessmentJob.findUniqueOrThrow({ where: { callId_kind: { callId, kind: "POST_CALL" } } });
+      const staleAssessment = await db.callAssessment.findFirstOrThrow({ where: { callId } });
+      const expired = new Date(Date.now() - 1_000);
+      await db.$transaction(async (tx) => {
+        await tx.assessmentJob.update({ where: { id: staleJob.id }, data: { leaseExpiresAt: expired } });
+        await tx.assessmentWorkerSlot.updateMany({ where: { ownerToken: staleJob.leaseToken, jobId: staleJob.id }, data: { leaseExpiresAt: expired } });
+        await tx.callAssessment.update({ where: { id: staleAssessment.id }, data: { leaseExpiresAt: expired } });
+      });
 
-    const secondRunner = runAssessmentTick(new Date(Date.now() + 6_000));
-    await vi.waitFor(() => expect(releases).toHaveLength(2));
-    const replacement = await db.assessmentJob.findUniqueOrThrow({ where: { id: staleJob.id } });
-    const replacementAssessment = await db.callAssessment.findUniqueOrThrow({ where: { id: staleAssessment.id } });
-    expect(replacement).toMatchObject({ state: "RUNNING", leaseToken: expect.not.stringMatching(new RegExp(`^${staleJob.leaseToken}$`)) });
-    expect(replacementAssessment).toMatchObject({ status: "RUNNING", attemptToken: expect.not.stringMatching(new RegExp(`^${staleAssessment.attemptToken}$`)) });
+      secondRunner = runAssessmentTick(new Date(Date.now() + 6_000));
+      await vi.waitFor(() => expect(releases).toHaveLength(2));
+      const replacement = await db.assessmentJob.findUniqueOrThrow({ where: { id: staleJob.id } });
+      const replacementAssessment = await db.callAssessment.findUniqueOrThrow({ where: { id: staleAssessment.id } });
+      expect(replacement).toMatchObject({ state: "RUNNING", leaseToken: expect.not.stringMatching(new RegExp(`^${staleJob.leaseToken}$`)) });
+      expect(replacementAssessment).toMatchObject({ status: "RUNNING", attemptToken: expect.not.stringMatching(new RegExp(`^${staleAssessment.attemptToken}$`)) });
 
-    releases[0]!();
-    await vi.waitFor(async () => {
+      releases[0]!();
+      await firstRunner;
       expect(await db.callAssessment.findUniqueOrThrow({ where: { id: staleAssessment.id } })).toMatchObject({ status: "RUNNING", attemptToken: replacementAssessment.attemptToken });
       expect(await db.assessmentJob.findUniqueOrThrow({ where: { id: staleJob.id } })).toMatchObject({ state: "RUNNING", leaseToken: replacement.leaseToken });
-    });
+      expect(await db.assessmentWorkerSlot.findFirstOrThrow({ where: { ownerToken: replacement.leaseToken, jobId: staleJob.id } })).toMatchObject({ ownerToken: replacement.leaseToken });
 
-    releases[1]!();
-    await Promise.all([firstRunner, secondRunner]);
-    expect(await db.assessmentJob.findUniqueOrThrow({ where: { id: staleJob.id } })).toMatchObject({ state: "SUCCEEDED", attempts: 2 });
+      releases[1]!();
+      await secondRunner;
+      expect(await db.assessmentJob.findUniqueOrThrow({ where: { id: staleJob.id } })).toMatchObject({ state: "SUCCEEDED", attempts: 2 });
+    } finally {
+      releases.forEach((release) => release());
+      await Promise.allSettled([firstRunner, ...(secondRunner ? [secondRunner] : [])]);
+    }
   });
 
   it("keeps two slots authoritative when a delayed tick starts with an expired clock", async () => {

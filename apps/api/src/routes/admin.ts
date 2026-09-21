@@ -53,7 +53,7 @@ const dateOrUndefined = (value: unknown): Date | undefined => {
 // Auth
 // ---------------------------------------------------------------------------
 
-const emailSchema = z.object({ email: z.string().email() });
+const emailSchema = z.object({ email: z.string().max(254).email() });
 
 adminRouter.post("/auth/request-code", async (request, response, next) => {
   const parsed = emailSchema.safeParse(request.body);
@@ -68,7 +68,7 @@ adminRouter.post("/auth/request-code", async (request, response, next) => {
   }
 });
 
-const verifySchema = z.object({ email: z.string().email(), code: z.string().regex(/^\d{6}$/) });
+const verifySchema = z.object({ email: z.string().max(254).email(), code: z.string().regex(/^\d{6}$/) });
 
 adminRouter.post("/auth/verify", async (request, response, next) => {
   const parsed = verifySchema.safeParse(request.body);
@@ -432,7 +432,7 @@ adminRouter.get("/users", requireRole("ADMIN"), async (_request, response, next)
 });
 
 const userCreateSchema = z.object({
-  email: z.string().email(),
+  email: z.string().max(254).email(),
   name: z.string().min(1).max(120),
   role: z.enum(["ADMIN", "SUPERVISOR", "AGENT", "VIEWER"])
 });

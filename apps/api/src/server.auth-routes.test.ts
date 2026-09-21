@@ -64,3 +64,22 @@ it("fails closed through the mounted login route when production SMTP is unavail
     await testServer.close();
   }
 });
+
+it("refuses sign-in email addresses longer than 254 characters", async () => {
+  vi.stubEnv("NODE_ENV", "production");
+  const { createApp } = await import("./server.js");
+  const testServer = await serve(createApp());
+  const post = (path: string, body: object) => fetch(`${testServer.url}/api/admin/auth/${path}`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body)
+  });
+  const longest = `${"a".repeat(64)}@${"b".repeat(60)}.${"c".repeat(60)}.${"d".repeat(62)}.test`;
+  expect(longest).toHaveLength(254);
+  try {
+    // At the limit the address is accepted, and sign-in then fails closed without SMTP.
+    expect((await post("request-code", { email: longest })).status).toBe(503);
+    expect((await post("request-code", { email: `a${longest}` })).status).toBe(400);
+    expect((await post("verify", { email: `a${longest}`, code: "123456" })).status).toBe(400);
+  } finally {
+    await testServer.close();
+  }
+});

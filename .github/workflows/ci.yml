@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -42,8 +42,14 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Check development environment
+        run: pnpm check:dev-environment
+      - name: Test development environment checker
+        run: pnpm test:dev-environment
       - name: Apply migrations
         run: pnpm --filter @msva/db migrate
+      - name: Verify migration status
+        run: pnpm --filter @msva/db exec prisma migrate status
       - name: Build shared package declarations
         run: pnpm --filter @msva/shared --filter @msva/db build
       - name: Typecheck

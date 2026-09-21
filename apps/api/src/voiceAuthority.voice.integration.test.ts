@@ -34,6 +34,10 @@ const callerFinal = (call: Live, seq: number, text = "doodh kharab tha"): Worker
 const flushed = (call: Live, seq: number): WorkerEvent => ({ ...envelope(call, seq), type: "transcript.flushed", payload: { lastSourceSequence: seq - 1 } });
 const complaint = { journey: "CONSUMER_COMPLAINT", callerConfirmation: "NEW", fields: { product: "Oil", purchaseArea: "Indore", issueCategory: "quality", description: "Leaking", productAvailable: true }, queue: { territory: "MP", language: "hi" } };
 const tool = (call: Live, invocationId: string, args: unknown = complaint) => invokeVoiceTool({ callId: call.callId, invocationId, agentEpoch: 1, name: "create_business_request", arguments: args }, call.lease.token, db);
+/** Evidence already stored for the call, so a test can start at the ingestion limits. */
+const storedEvents = (call: Live, count: number, bodyBytes = 10) => db.voiceEvent.createMany({
+  data: Array.from({ length: count }, (_, index) => ({ sessionId: call.sessionId, eventId: `stored-${index}`, agentEpoch: 0, sourceSequence: index + 1, canonicalBody: "{}", bodyHash: "stored", bodyBytes, type: "agent.ready", occurredAt: new Date() }))
+});
 
 describe("worker authority", () => {
   it.each(["CONFIGURATION", "TRANSIENT", "FATAL", "LEASE_LOST"] as const)("fences every authority after a %s failure and keeps the call for staff", async (code) => {
@@ -77,16 +81,53 @@ describe("worker authority", () => {
     expect(await db.mediaControlIntent.findUniqueOrThrow({ where: { id: control.id } })).toMatchObject({ status: "RUNNING", attemptToken: "executor" });
   });
 
-  it("bounds how much evidence one call can ingest", async () => {
+  it("bounds how many events one call can ingest", async () => {
     const call = await liveCall();
+    await storedEvents(call, 4_999);
     const first = ready(call, 1);
     await recordVoiceEvent(first, call.lease.token, db);
-    await db.voiceSession.update({ where: { id: call.sessionId }, data: { eventCount: 5_000 } });
     await expect(recordVoiceEvent(callerFinal(call, 2), call.lease.token, db)).rejects.toMatchObject({ code: "EVENT_CAPACITY" });
     // Receipts for evidence already committed are still answered.
     await expect(recordVoiceEvent(first, call.lease.token, db)).resolves.toMatchObject({ status: "duplicate" });
-    await db.voiceSession.update({ where: { id: call.sessionId }, data: { eventCount: 1, eventBytes: 8 * 1024 * 1024 - 10 } });
-    await expect(recordVoiceEvent(callerFinal(call, 2), call.lease.token, db)).rejects.toMatchObject({ code: "EVENT_CAPACITY" });
+  });
+
+  it("bounds how many bytes of evidence one call can ingest", async () => {
+    const call = await liveCall();
+    await storedEvents(call, 1, 8 * 1024 * 1024 - 10);
+    await expect(recordVoiceEvent(ready(call, 1), call.lease.token, db)).rejects.toMatchObject({ code: "EVENT_CAPACITY" });
+  });
+
+  it("keeps renewals and tools working while events arrive back to back", async () => {
+    const call = await liveCall();
+    const failures: unknown[] = [];
+    let streaming = true;
+    const renewals = (async () => {
+      let count = 0;
+      while (streaming) {
+        await renewVoiceLease(call.callId, 1, call.lease.token, db).then(() => { count += 1; }, (error) => { failures.push(error); });
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      return count;
+    })();
+    const tools = (async () => {
+      for (let index = 0; index < 4; index += 1) {
+        await tool(call, `busy-${index}`).catch((error) => { failures.push(error); });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    })();
+    for (let seq = 1; seq <= 120; seq += 1) await recordVoiceEvent(callerFinal(call, seq, `utterance ${seq}`), call.lease.token, db);
+    await tools;
+    streaming = false;
+    expect(await renewals).toBeGreaterThan(10);
+    expect(failures).toEqual([]);
+    expect(await db.ticket.count()).toBe(4);
+  });
+
+  it("answers a repeated event sent while the first is still being stored", async () => {
+    const call = await liveCall();
+    const event = ready(call, 1);
+    const results = await Promise.all([recordVoiceEvent(event, call.lease.token, db), recordVoiceEvent(event, call.lease.token, db)]);
+    expect(results.map((result) => result.status).sort()).toEqual(["committed", "duplicate"]);
   });
 });
 

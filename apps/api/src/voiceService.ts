@@ -9,11 +9,13 @@ const CLOCK_SKEW_MS = 5_000;
 const CONNECTION_MS = 10_000;
 const STARTING_MS = 60_000;
 const MAX_ACTIVE_SESSIONS = 2;
-// Per-call ingestion bounds: a long call stays far below these, while a
-// runaway or compromised worker cannot grow the inbox without limit.
+// Per-call ingestion bounds, so a runaway or compromised worker cannot grow the
+// inbox without limit. 5,000 events over the two-hour admission window is one
+// event every 1.44 s.
 const MAX_SESSION_EVENTS = 5_000;
 const MAX_SESSION_EVENT_BYTES = 8 * 1024 * 1024;
 const CONTROL_SCAN = 20;
+const SERIALIZABLE_ATTEMPTS = 5;
 // The caller and staff stay admitted while an AI failure awaits recovery.
 const LIVE_STATES = ["ACTIVE", "RECOVERY_REQUIRED"] as const;
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -60,7 +62,9 @@ function serializationFailure(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && (error.code === "P2034" || error.meta?.code === "40001");
 }
 async function serializable<T>(db: PrismaClient, work: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  for (let attempt = 0; attempt < SERIALIZABLE_ATTEMPTS; attempt += 1) {
+    // Random, growing waits keep conflicting retries from colliding again.
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, Math.random() * 20 * 2 ** attempt));
     try { return await db.$transaction(work, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }); }
     catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") throw new VoiceError(409, "CONFLICT");
@@ -211,7 +215,10 @@ export async function recordVoiceEvent(event: WorkerEvent, token: string, db: Pr
     const watermark = await tx.voiceEvent.aggregate({ where: { sessionId: session.id, agentEpoch: event.agentEpoch }, _max: { sourceSequence: true } });
     if (event.sourceSequence !== (watermark._max.sourceSequence ?? 0) + 1) throw new VoiceError(409, "SEQUENCE_OUT_OF_ORDER");
     const bodyBytes = Buffer.byteLength(canonicalBody);
-    if (session.eventCount >= MAX_SESSION_EVENTS || session.eventBytes + bodyBytes > MAX_SESSION_EVENT_BYTES) throw new VoiceError(409, "EVENT_CAPACITY");
+    // Read from the events themselves: a counter on the session row would be
+    // written by every event and make concurrent renewals and tools retry.
+    const stored = await tx.voiceEvent.aggregate({ where: { sessionId: session.id }, _count: { _all: true }, _sum: { bodyBytes: true } });
+    if (stored._count._all >= MAX_SESSION_EVENTS || (stored._sum.bodyBytes ?? 0) + bodyBytes > MAX_SESSION_EVENT_BYTES) throw new VoiceError(409, "EVENT_CAPACITY");
     const caller = session.participants.find((p) => p.role === "CALLER"); const agent = session.participants.find((p) => p.role === "AGENT");
     if (event.type === "transcript.final") {
       const expected = event.payload.speaker === "CALLER" ? caller?.identity : event.payload.speaker === "AGENT" ? agent?.identity : undefined;
@@ -247,8 +254,7 @@ export async function recordVoiceEvent(event: WorkerEvent, token: string, db: Pr
     // names an unknown control. Browser media controls (GRANT/REMOVE) belong
     // to the gateway executor and are never changed by the worker.
     if (event.type === "control.ack") throw new VoiceError(409, "CONTROL_ACK_INVALID");
-    await tx.voiceEvent.create({ data: { sessionId: session.id, eventId: event.eventId, agentEpoch: event.agentEpoch, sourceSequence: event.sourceSequence, canonicalBody, bodyHash, type: event.type, occurredAt } });
-    await tx.voiceSession.update({ where: { id: session.id }, data: { eventCount: { increment: 1 }, eventBytes: { increment: bodyBytes } } });
+    await tx.voiceEvent.create({ data: { sessionId: session.id, eventId: event.eventId, agentEpoch: event.agentEpoch, sourceSequence: event.sourceSequence, canonicalBody, bodyHash, bodyBytes, type: event.type, occurredAt } });
     if (event.type === "transcript.flushed") {
       if (event.payload.lastSourceSequence !== event.sourceSequence - 1 || event.payload.lastSourceSequence !== (watermark._max.sourceSequence ?? 0)) throw new VoiceError(409, "FLUSH_WATERMARK_INVALID");
       await tx.voiceSession.update({ where: { id: session.id }, data: { finalWatermark: event.payload.lastSourceSequence } });

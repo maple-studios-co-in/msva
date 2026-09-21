@@ -329,7 +329,9 @@ export async function verifyLoginCode(
   // are locked, with the clock sampled after the locks are held. Every failed
   // check runs the same statements and commits the same way, whether or not the
   // address has an account, so response time does not reveal which addresses can
-  // sign in. A wrong code returns (not throws) so its attempt increment commits.
+  // sign in, except that a check for an existing address waits while another
+  // request holds that account's row (a code request being admitted, say). A wrong
+  // code returns (not throws) so its attempt increment commits.
   return prisma.$transaction(async (tx) => {
     const found = await tx.user.findFirst({ where: { email }, select: { id: true } });
     const userId = found?.id ?? NO_ROW;

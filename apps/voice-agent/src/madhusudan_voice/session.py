@@ -16,6 +16,7 @@ from livekit.plugins import anthropic, sarvam
 from .api import AUTHORITY_CODES, AuthorityLost, CallContext, ToolRejected, VoiceApiClient, VoiceApiError
 from .config import RuntimeConfig
 from .events import EventWriter
+from .request_tool_schema import TOOL_PARAMETERS
 from .spool import ToolIntentConflict
 
 logger = logging.getLogger(__name__)
@@ -191,17 +192,22 @@ class MadhusudanAgent(Agent):
         self._lease_guard = lease_guard
         self._context = context
 
-    @function_tool(
-        name="create_business_request",
-        description="Record an approved support request. It does not place orders or promise callbacks.",
-    )
-    async def create_business_request(self, ctx: RunContext, request: dict[str, Any]) -> dict[str, Any]:
+    @function_tool(raw_schema={
+        "name": "create_business_request",
+        "description": "Record an approved support request for staff follow-up. It does not place orders or promise callbacks.",
+        # The request contract itself, so the model can form a request the API accepts.
+        "parameters": TOOL_PARAMETERS,
+    })
+    async def create_business_request(self, raw_arguments: dict[str, object], ctx: RunContext) -> dict[str, Any]:
         """Call the one initially permitted business effect through MSVA's lease boundary."""
         guard = self._lease_guard
         try:
             guard.require_active()
         except LeaseLost as error:
             raise ToolError("The request cannot be recorded on this call.") from error
+        request = raw_arguments.get("request")
+        if not isinstance(request, dict):
+            raise ToolError("The request needs its journey, confirmation, fields and queue; check them with the caller.")
         if "create_business_request" not in self._context.permitted_tools:
             raise ToolError("Recording requests is not permitted on this call.")
         try:

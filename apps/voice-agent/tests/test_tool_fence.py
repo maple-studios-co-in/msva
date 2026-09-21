@@ -6,7 +6,7 @@ import time
 
 import pytest
 from livekit.agents import AgentSession, llm
-from livekit.agents.llm import ChatChunk, ChoiceDelta, FunctionToolCall
+from livekit.agents.llm import ChatChunk, ChoiceDelta, FunctionToolCall, ToolError
 from livekit.agents.types import DEFAULT_API_CONNECT_OPTIONS, NOT_GIVEN
 
 from madhusudan_voice.api import VoiceApiClient
@@ -101,6 +101,6 @@ async def test_no_new_request_can_follow_an_uncertain_one(tmp_path):
     session.run(user_input="please record my complaint")
     await wait_until(lambda: guard.lost, timeout=5)
     fake_ctx = type("Ctx", (), {"function_call": type("Call", (), {"call_id": "toolu_B"})()})()
-    with pytest.raises(Exception):
-        await session.current_agent.create_business_request(fake_ctx, {"description": "same complaint, reworded"})
+    with pytest.raises(ToolError):
+        await session.current_agent.create_business_request({"request": {"description": "same complaint, reworded"}}, fake_ctx)
     assert len(api.tool_posts) == 1

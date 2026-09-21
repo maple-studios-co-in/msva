@@ -57,9 +57,16 @@ stopped streams with `docker compose ... run --rm voice-replay uv run --frozen p
 madhusudan_voice.replay clear-faults [CALL_ID]`. Anything older than the API's replay window is
 dropped and logged as unrecoverable.
 
-A replay key that cannot read the spool stops the worker and the companion at start instead of
-stopping every stream. To rotate the key, set `VOICE_REPLAY_CREDENTIAL_KEY=new,old` (the first
-key encrypts, any decrypts) and remove the old key once the replay window has passed.
+The worker and the companion refuse to start with a replay key that cannot read every stored
+credential, instead of stopping streams. `VOICE_REPLAY_CREDENTIAL_KEY` may list several keys:
+the first encrypts and any of them decrypts. To rotate it, change both services together, one
+step at a time:
+
+1. Add the new key second (`old,new`) and restart both.
+2. Put it first (`new,old`) and restart both. Opening the spool re-encrypts every stored
+   credential under the new key.
+3. Drop the old key (`new`) and restart both. If a credential only the old key can read is
+   still stored, the services refuse to start: put the old key back and repeat step 2.
 
 The configuration renderer creates `/run/livekit/livekit.yaml` at startup from secret-store
 environment values with mode `0600`; it accepts only the documented LiveKit token alphabet

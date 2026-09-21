@@ -77,20 +77,46 @@ def test_a_key_that_cannot_read_the_spool_is_refused_and_its_evidence_kept(tmp_p
     assert reopened.stream_fault("call-1", 1) is None
 
 
-def test_the_replay_key_rotates(tmp_path):
+def test_the_replay_key_rotates_in_three_steps(tmp_path):
     path = tmp_path / "spool.sqlite3"
     old = spool_at(path)
     queue(old, "ready", 1)
     old.close()
-    # New key first: it encrypts; the old one still reads what it wrote.
-    rotating = spool_at(path, f"{OTHER_KEY},{KEY}")
-    queue(rotating, "final", 2, "transcript.final")
-    assert [event.event_id for event in rotating.ready(now=10)] == ["ready"]
-    rotating.acknowledge("ready")
-    rotating.close()
-    # Once the old key's events are gone, the old key can go too.
+    # 1. The new key is added second: nothing is re-encrypted, so a service still on the
+    # old key alone keeps working, and the new key alone reads nothing yet.
+    spool_at(path, f"{KEY},{OTHER_KEY}").close()
+    spool_at(path, KEY).close()
+    with pytest.raises(SpoolKeyMismatch):
+        spool_at(path, OTHER_KEY)
+    # 2. The new key goes first: every stored credential is re-encrypted under it.
+    promoted = spool_at(path, f"{OTHER_KEY},{KEY}")
+    queue(promoted, "final", 2, "transcript.final")
+    promoted.close()
+    with pytest.raises(SpoolKeyMismatch):
+        spool_at(path, KEY)
+    # 3. The old key goes: the new key alone reads everything stored.
     rotated = spool_at(path, OTHER_KEY)
+    assert [event.event_id for event in rotated.ready(now=10)] == ["ready"]
+    rotated.acknowledge("ready")
     assert [event.event_id for event in rotated.ready(now=10)] == ["final"]
+
+
+def test_a_key_retired_too_early_is_refused_and_its_evidence_kept(tmp_path):
+    path = tmp_path / "spool.sqlite3"
+    first = spool_at(path)
+    queue(first, "ready", 1)
+    first.close()
+    spool_at(path, f"{OTHER_KEY},{KEY}").close()
+    # The other service has not moved to step 2 yet and still writes with the old key.
+    lagging = spool_at(path, f"{KEY},{OTHER_KEY}")
+    queue(lagging, "final", 2, "transcript.final")
+    lagging.close()
+    with pytest.raises(SpoolKeyMismatch):
+        spool_at(path, OTHER_KEY)
+    # Nothing was stopped or lost: with the old key back, delivery carries on in order.
+    restored = spool_at(path, f"{OTHER_KEY},{KEY}")
+    assert [event.event_id for event in restored.ready(now=10)] == ["ready"]
+    assert restored.stream_fault("call-1", 1) is None
 
 
 def test_a_stopped_stream_is_delivered_again_once_cleared(tmp_path):

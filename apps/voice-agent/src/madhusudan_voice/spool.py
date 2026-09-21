@@ -32,8 +32,8 @@ class SpoolKeyMismatch(RuntimeError):
     """The configured replay key cannot read this spool's credentials."""
 
 
-# Encrypted once per spool, so a key that cannot read the spool is refused at start
-# instead of being discovered one faulted stream at a time.
+# Kept encrypted in every spool, so a key that cannot read it is refused at start even
+# while no credential is stored.
 KEY_CHECK = b"msva-voice-spool"
 
 
@@ -74,7 +74,8 @@ class EventSpool:
         # Several comma-separated keys rotate: the first encrypts, any of them decrypts.
         try:
             keys = [key.strip() for key in replay_key.split(",") if key.strip()]
-            self._cipher = MultiFernet([Fernet(key.encode()) for key in keys])
+            self._keys = [Fernet(key.encode()) for key in keys]
+            self._cipher = MultiFernet(self._keys)
         except (ValueError, TypeError) as exc:
             raise ValueError("VOICE_REPLAY_CREDENTIAL_KEY must be one or more Fernet keys") from exc
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -84,27 +85,40 @@ class EventSpool:
         try:
             with self._write() as db:
                 self._migrate(db)
-                self._check_key(db)
+            self._verify_keys()
         except BaseException:
             self._connection.close()
             raise
 
-    def _check_key(self, db: sqlite3.Connection) -> None:
-        row = db.execute("SELECT value FROM spool_meta WHERE key='key_check'").fetchone()
+    def _verify_keys(self) -> None:
+        """Every stored credential and the key-check value must be readable with the
+        configured keys, so a wrong or retired key is refused here instead of stopping
+        streams one at a time. Whatever the first key did not write is re-encrypted under
+        it, so an older key can be retired once no process writes with it any more."""
+        stale: list[tuple[str, bytes, bytes]] = []
         try:
-            if row is None:
-                # An existing spool from before the check: prove the key on a stored credential.
-                sample = db.execute("SELECT encrypted_token FROM event_spool LIMIT 1").fetchone()
-                if sample is not None:
-                    self._cipher.decrypt(sample[0])
-                db.execute("INSERT INTO spool_meta(key, value) VALUES ('key_check', ?)", (self._cipher.encrypt(KEY_CHECK),))
-                return
-            if self._cipher.decrypt(row[0]) != KEY_CHECK:
-                raise InvalidToken
+            for event_id, token in self._connection.execute("SELECT event_id, encrypted_token FROM event_spool").fetchall():
+                if not self._first_key_reads(token):
+                    stale.append((event_id, token, self._cipher.rotate(token)))
+            with self._write() as db:
+                row = db.execute("SELECT value FROM spool_meta WHERE key='key_check'").fetchone()
+                if row is None:
+                    db.execute("INSERT INTO spool_meta(key, value) VALUES ('key_check', ?)", (self._cipher.encrypt(KEY_CHECK),))
+                elif self._cipher.decrypt(row[0]) != KEY_CHECK:
+                    raise InvalidToken
+                elif not self._first_key_reads(row[0]):
+                    db.execute("UPDATE spool_meta SET value=? WHERE key='key_check'", (self._cipher.rotate(row[0]),))
+                for event_id, old, new in stale:
+                    db.execute("UPDATE event_spool SET encrypted_token=? WHERE event_id=? AND encrypted_token=?", (new, event_id, old))
         except InvalidToken as exc:
             raise SpoolKeyMismatch("VOICE_REPLAY_CREDENTIAL_KEY cannot read this spool; include the key it was written with") from exc
-        # Re-encrypted under the current first key, so an old key can later be retired.
-        db.execute("UPDATE spool_meta SET value=? WHERE key='key_check'", (self._cipher.rotate(row[0]),))
+
+    def _first_key_reads(self, token: bytes) -> bool:
+        try:
+            self._keys[0].decrypt(token)
+        except InvalidToken:
+            return False
+        return True
 
     @staticmethod
     def _columns(db: sqlite3.Connection, table: str) -> set[str]:

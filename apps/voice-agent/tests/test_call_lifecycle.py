@@ -3,8 +3,11 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from cryptography.fernet import Fernet
 
-from fake_voice_api import FakeCtx, FakeSession, FakeVoiceApi, install_runtime
+from madhusudan_voice.spool import SpoolKeyMismatch
+
+from fake_voice_api import FakeCtx, FakeSession, FakeVoiceApi, enabled_env, install_runtime
 
 
 def committed_types(api: FakeVoiceApi) -> list[str]:
@@ -88,3 +91,36 @@ async def test_a_caller_hangup_ends_the_job_and_checkpoints_evidence(tmp_path, m
     await runtime.finalize(ctx)
     assert committed_types(api) == ["agent.ready", "transcript.flushed"]
     assert_released(runtime)
+
+
+@pytest.mark.asyncio
+async def test_a_spool_that_cannot_open_releases_the_api_client(tmp_path, monkeypatch):
+    import madhusudan_voice.main as main
+
+    api = FakeVoiceApi()
+    api.add_call()
+    runtime = install_runtime(monkeypatch, tmp_path, api)
+
+    class UnreadableSpool:
+        def __init__(self, *args, **kwargs):
+            raise SpoolKeyMismatch("replay key cannot read this spool")
+
+    monkeypatch.setattr(main, "EventSpool", UnreadableSpool)
+    with pytest.raises(SpoolKeyMismatch):
+        await runtime.entry(FakeCtx())
+    assert runtime.clients and all(client.closed for client in runtime.clients)
+
+
+def test_the_worker_starts_only_with_a_replay_key_that_reads_its_spool(tmp_path, monkeypatch):
+    import madhusudan_voice.main as main
+
+    for name, value in enabled_env(tmp_path).items():
+        monkeypatch.setenv(name, value)
+    started: list = []
+    monkeypatch.setattr(main.cli, "run_app", started.append)
+    main.run()
+    assert len(started) == 1
+    monkeypatch.setenv("VOICE_REPLAY_CREDENTIAL_KEY", Fernet.generate_key().decode())
+    with pytest.raises(SpoolKeyMismatch):
+        main.run()
+    assert len(started) == 1, "a worker that could not record calls must not start"

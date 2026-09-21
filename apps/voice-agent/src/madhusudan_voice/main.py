@@ -133,7 +133,11 @@ def build_server(config: RuntimeConfig) -> AgentServer:
         call_id = call_id_from_dispatch_metadata(ctx.job.metadata)
         room_name = ctx.job.room.name
         client = VoiceApiClient(str(config.internal_api_url), worker_credential=str(config.worker_credential))
-        spool = EventSpool(config.spool_path, max_events=config.spool_max_events, max_bytes=config.spool_max_bytes, replay_key=str(config.replay_credential_key))
+        try:
+            spool = EventSpool(config.spool_path, max_events=config.spool_max_events, max_bytes=config.spool_max_bytes, replay_key=str(config.replay_credential_key))
+        except Exception:
+            await client.aclose()
+            raise
         runtime = CallRuntime(client, spool, ReplayDrainer(client, spool))
         runtimes[ctx.job.id] = runtime
         session: AgentSession | None = None
@@ -210,6 +214,10 @@ def build_server(config: RuntimeConfig) -> AgentServer:
 def run() -> None:
     config = RuntimeConfig.from_env(dict(os.environ))
     server = build_server(config)
+    # Opening the spool once proves the replay key can read it, so a wrong key stops the
+    # worker here instead of failing every call it accepts.
+    EventSpool(config.spool_path, max_events=config.spool_max_events, max_bytes=config.spool_max_bytes,
+        replay_key=str(config.replay_credential_key)).close()
     cli.run_app(server)
 
 

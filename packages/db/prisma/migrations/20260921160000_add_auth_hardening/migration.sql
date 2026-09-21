@@ -22,4 +22,5 @@ CREATE TABLE "AuthRateBucket" (
 CREATE UNIQUE INDEX "AuthRateBucket_scope_keyHash_windowStart_key" ON "AuthRateBucket"("scope", "keyHash", "windowStart");
 CREATE INDEX "AuthRateBucket_expiresAt_idx" ON "AuthRateBucket"("expiresAt");
 CREATE INDEX "LoginCode_userId_deliveryState_expiresAt_idx" ON "LoginCode"("userId", "deliveryState", "expiresAt");
+CREATE INDEX "LoginCode_deliveryLeaseExpiresAt_idx" ON "LoginCode"("deliveryLeaseExpiresAt");
 ALTER TABLE "AuthRateBucket" ADD CONSTRAINT "AuthRateBucket_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;

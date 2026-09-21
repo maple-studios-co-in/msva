@@ -133,6 +133,21 @@ describe("login code delivery", () => {
     expect(await auth.verifyLoginCode(user.email, code, network(14))).toMatchObject({ user: { id: user.id } });
   });
 
+  it("purges day-old codes in bounded batches and keeps recent codes and live sends", async () => {
+    const past = await db.user.create({ data: { email: "past@example.test", name: "Past", role: "AGENT" } });
+    const dayAgo = new Date(Date.now() - 25 * 3_600_000);
+    const row = (overrides: object) => ({ id: randomBytes(24).toString("hex"), userId: past.id, codeHash: "0".repeat(64), expiresAt: dayAgo, deliveryState: "DELIVERED" as const, createdAt: dayAgo, ...overrides });
+    await db.loginCode.createMany({ data: Array.from({ length: 150 }, () => row({})) });
+    const recent = await db.loginCode.create({ data: row({ createdAt: new Date(Date.now() - 3_600_000) }) });
+    const sending = await db.loginCode.create({ data: row({ deliveryState: "PENDING", deliveryLeaseExpiresAt: new Date(Date.now() + 60_000) }) });
+    await withRescanningPlans(async () => {
+      await deliveredLogin("purge@example.test");
+    });
+    expect(await db.loginCode.count({ where: { userId: past.id, createdAt: dayAgo, deliveryLeaseExpiresAt: null } })).toBe(50);
+    expect(await db.loginCode.findUnique({ where: { id: recent.id } })).not.toBeNull();
+    expect(await db.loginCode.findUnique({ where: { id: sending.id } })).not.toBeNull();
+  });
+
   it("sends at most two codes at once across concurrent requests", async () => {
     const emails = Array.from({ length: 6 }, (_, index) => `cap${index}@example.test`);
     for (const email of emails) await db.user.create({ data: { email, name: email, role: "AGENT" } });
@@ -148,7 +163,8 @@ describe("login code delivery", () => {
     });
     const results = await Promise.all(emails.map((email, index) => auth.requestLoginCode(email, network(20 + index))));
     expect(results).toEqual(emails.map(() => ({ ok: true })));
-    await settle(100);
+    await vi.waitFor(() => expect(inFlight).toBe(2));
+    await settle(200);
     expect(maxInFlight).toBe(2);
     expect(await db.loginCode.count()).toBe(2);
     release();
@@ -341,5 +357,62 @@ describe("abuse resistance", () => {
     for (let index = 0; index < 200; index += 1) await auth.requestLoginCode(`fresh${index}@example.test`, network(72));
     // 30 admitted fresh emails (minute and hour rows each), one IP row and one global row.
     expect(await db.authRateBucket.count()).toBeLessThanOrEqual(62);
+  });
+
+  it("answers before looking the address up, so timing cannot reveal it", async () => {
+    const user = await db.user.create({ data: { email: "timing@example.test", name: "Timing", role: "AGENT" } });
+    const auth = await authWithFakeDelivery(async () => undefined);
+    // Admitting a code for this user needs its row lock; the answer must not wait for it.
+    await db.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${user.id} FOR UPDATE`;
+      const started = Date.now();
+      await expect(auth.requestLoginCode(user.email, network(73))).resolves.toEqual({ ok: true });
+      await expect(auth.requestLoginCode("nobody@example.test", network(74))).resolves.toEqual({ ok: true });
+      expect(Date.now() - started).toBeLessThan(2_000);
+    }, { timeout: 15_000 });
+    await vi.waitFor(async () => expect(await db.loginCode.count({ where: { userId: user.id, deliveryState: "DELIVERED" } })).toBe(1));
+  });
+
+  it("keeps a superseded send's delivery slot until it finishes", async () => {
+    const first = await db.user.create({ data: { email: "twice@example.test", name: "Twice", role: "AGENT" } });
+    const other = await db.user.create({ data: { email: "third@example.test", name: "Third", role: "AGENT" } });
+    const releases: Array<() => void> = [];
+    let sends = 0;
+    const auth = await authWithFakeDelivery(async () => {
+      sends += 1;
+      await new Promise<void>((resolve) => releases.push(resolve));
+    });
+    await auth.requestLoginCode(first.email, network(75));
+    await vi.waitFor(() => expect(sends).toBe(1));
+    await db.authRateBucket.deleteMany();
+    await auth.requestLoginCode(first.email, network(76));
+    await vi.waitFor(() => expect(sends).toBe(2));
+    // Two sends are in flight even though the first code was superseded: no third.
+    await auth.requestLoginCode(other.email, network(77));
+    await settle(300);
+    expect(sends).toBe(2);
+    expect(await db.loginCode.count({ where: { userId: other.id } })).toBe(0);
+    releases.forEach((release) => release());
+    await vi.waitFor(async () => expect(await db.loginCode.count({ where: { deliveryLeaseExpiresAt: { not: null } } })).toBe(0));
+  });
+
+  it("echoes a code only in development with echo enabled", async () => {
+    const user = await db.user.create({ data: { email: "echo@example.test", name: "Echo", role: "AGENT" } });
+    process.env.AUTH_DEV_ECHO = "1";
+    try {
+      for (const nodeEnv of ["production", "test", undefined]) {
+        await db.authRateBucket.deleteMany();
+        if (nodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = nodeEnv;
+        const auth = await authWithFakeDelivery(async () => undefined);
+        expect(await auth.requestLoginCode(user.email, network(78))).toEqual({ ok: true });
+      }
+      await db.authRateBucket.deleteMany();
+      process.env.NODE_ENV = "development";
+      const auth = await authWithFakeDelivery(async () => undefined);
+      expect(await auth.requestLoginCode(user.email, network(79))).toMatchObject({ ok: true, devCode: expect.stringMatching(/^\d{6}$/) });
+    } finally {
+      delete process.env.AUTH_DEV_ECHO;
+      process.env.NODE_ENV = "development";
+    }
   });
 });

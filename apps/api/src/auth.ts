@@ -21,6 +21,9 @@ export const SESSION_COOKIE = "msva_session";
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const CODE_TTL_MS = 10 * 60 * 1000;
 const MAX_PENDING_DELIVERIES = 2;
+// Codes live ten minutes; finished ones are kept a day for audit, then purged.
+const CODE_RETENTION_MS = 24 * 60 * 60 * 1000;
+const CODE_PURGE_BATCH = 100;
 // Longer than the SMTP deadline, so a send that finishes in time can activate.
 const DELIVERY_LEASE_MS = 30_000;
 const isProduction = () => process.env.NODE_ENV === "production";
@@ -203,22 +206,71 @@ async function activateLoginCode(userId: string, id: string): Promise<void> {
     await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${userId} FOR UPDATE`;
     const now = new Date();
     const current = await tx.loginCode.findFirst({ where: { id, userId, deliveryState: "PENDING", deliveryLeaseExpiresAt: { gt: now } } });
-    if (!current) return;
+    if (!current) {
+      // Superseded or reclaimed: it stays unusable, but its send is over, so it
+      // no longer holds delivery capacity.
+      await tx.loginCode.updateMany({ where: { id }, data: { deliveryLeaseExpiresAt: null } });
+      return;
+    }
     await tx.loginCode.updateMany({ where: { userId, id: { not: id }, usedAt: null, deliveryState: "DELIVERED" }, data: { deliveryState: "FAILED" } });
     await tx.loginCode.update({ where: { id }, data: { deliveryState: "DELIVERED", deliveredAt: now, deliveryLeaseExpiresAt: null } });
   });
 }
 
-// Codes are mailed outside the response path, at most two at a time across
-// every API process, so response timing never reveals whether an address can
-// sign in. The raw code lives only in memory for the duration of the send.
+/**
+ * Looks the address up and, for an active user, admits and mails one code. A
+ * send holds one of the two delivery slots, shared by every API process, until
+ * it finishes, even if a newer request supersedes its code. The raw code lives
+ * only in memory. Returns the code for development echo, otherwise null.
+ */
+async function issueLoginCode(email: string, delivery: LoginCodeDelivery): Promise<string | null> {
+  const user = await prisma.user.findFirst({ where: { email, active: true } });
+  if (!user) return null;
+  const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
+  const id = randomBytes(24).toString("hex");
+  const expiresAt = new Date(Date.now() + CODE_TTL_MS);
+  const hash = codeHash(id, code);
+  if (!hash) return null;
+  const admitted = await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"auth-delivery-cap"}))`;
+    const now = new Date();
+    // A crashed process leaves sends behind; their lease bounds how long they
+    // hold capacity, and a code whose send never finished never becomes usable.
+    await tx.loginCode.updateMany({ where: { deliveryLeaseExpiresAt: { lte: now } }, data: { deliveryState: "FAILED", deliveryLeaseExpiresAt: null } });
+    if (await tx.loginCode.count({ where: { deliveryLeaseExpiresAt: { gt: now } } }) >= MAX_PENDING_DELIVERIES) return false;
+    // Old codes go in bounded batches, chosen once (see reserveRates).
+    await tx.$executeRaw`WITH doomed AS MATERIALIZED (SELECT "id" FROM "LoginCode" WHERE "createdAt" < ${new Date(now.getTime() - CODE_RETENTION_MS)} AND "deliveryLeaseExpiresAt" IS NULL LIMIT ${CODE_PURGE_BATCH} FOR UPDATE SKIP LOCKED) DELETE FROM "LoginCode" AS code USING doomed WHERE code."id" = doomed."id"`;
+    await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${user.id} FOR UPDATE`;
+    // Older codes still pending can no longer be activated; their sends keep their slots.
+    await tx.loginCode.updateMany({ where: { userId: user.id, usedAt: null, deliveryState: "PENDING" }, data: { deliveryState: "FAILED" } });
+    await tx.loginCode.create({ data: { id, userId: user.id, codeHash: hash, expiresAt, deliveryLeaseExpiresAt: new Date(now.getTime() + DELIVERY_LEASE_MS) } });
+    return true;
+  });
+  if (!admitted) return null;
+  void delivery.send({ recipient: email, code, expiresAt })
+    .then(() => activateLoginCode(user.id, id))
+    .catch(async () => {
+      console.warn("[auth] login code delivery failed");
+      await prisma.loginCode.updateMany({ where: { id, deliveryState: { in: ["PENDING", "FAILED"] } }, data: { deliveryState: "FAILED", deliveryLeaseExpiresAt: null } });
+    })
+    .catch(() => {
+      // The database is unreachable as well: the lease expires and the next
+      // request reclaims it. An uncertain send is never retried.
+    });
+  return code;
+}
+
+// Every address gets the same answer at the same point: the lookup, admission
+// and send all happen after the response, so its timing cannot reveal whether
+// an address can sign in.
 export async function requestLoginCode(
   rawEmail: string,
   network: AuthNetworkContext = { address: "unknown" }
 ): Promise<LoginCodeRequestResult> {
   const email = rawEmail.trim().toLowerCase();
   const delivery = loginCodeDelivery();
-  if (isProduction() && (!delivery || !process.env.AUTH_CODE_HASH_KEY || !process.env.AUTH_RATE_HASH_KEY)) return { ok: false, unavailable: true };
+  const configured = Boolean(delivery && process.env.AUTH_CODE_HASH_KEY && process.env.AUTH_RATE_HASH_KEY);
+  if (isProduction() && !configured) return { ok: false, unavailable: true };
   const retryAfter = await reserveRates([
     { scope: "request-email-minute", key: email, limit: 1, windowMs: 60_000 },
     { scope: "request-email-hour", key: email, limit: 5, windowMs: 3_600_000 },
@@ -226,42 +278,14 @@ export async function requestLoginCode(
     { scope: "request-global-hour", key: "global", limit: 100, windowMs: 3_600_000 }
   ]);
   if (retryAfter) return { ok: false, limited: true, retryAfter };
-  const user = await prisma.user.findFirst({ where: { email, active: true } });
-  // Always respond OK so the endpoint cannot be used to enumerate users.
-  if (!user) return { ok: true };
-
-  if (!delivery || !process.env.AUTH_CODE_HASH_KEY || !process.env.AUTH_RATE_HASH_KEY) return { ok: true };
-  const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
-  const id = randomBytes(24).toString("hex");
-  const expiresAt = new Date(Date.now() + CODE_TTL_MS);
-  const hash = codeHash(id, code);
-  if (!hash) return { ok: false, unavailable: true };
-  const admitted = await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"auth-delivery-cap"}))`;
-    const now = new Date();
-    // A crashed process leaves PENDING rows behind; their lease bounds how long
-    // they hold capacity. They never become usable.
-    await tx.loginCode.updateMany({ where: { deliveryState: "PENDING", deliveryLeaseExpiresAt: { lte: now } }, data: { deliveryState: "FAILED", deliveryLeaseExpiresAt: null } });
-    if (await tx.loginCode.count({ where: { deliveryState: "PENDING", deliveryLeaseExpiresAt: { gt: now } } }) >= MAX_PENDING_DELIVERIES) return false;
-    await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${user.id} FOR UPDATE`;
-    await tx.loginCode.updateMany({ where: { userId: user.id, usedAt: null, deliveryState: "PENDING" }, data: { deliveryState: "FAILED", deliveryLeaseExpiresAt: null } });
-    await tx.loginCode.create({ data: { id, userId: user.id, codeHash: hash, expiresAt, deliveryLeaseExpiresAt: new Date(now.getTime() + DELIVERY_LEASE_MS) } });
-    return true;
-  });
-  // At capacity the response is identical and no usable code exists.
-  if (!admitted) return { ok: true };
-  void delivery.send({ recipient: email, code, expiresAt })
-    .then(() => activateLoginCode(user.id, id))
-    .catch(async () => {
-      console.warn("[auth] login code delivery failed");
-      await prisma.loginCode.updateMany({ where: { id, deliveryState: "PENDING" }, data: { deliveryState: "FAILED", deliveryLeaseExpiresAt: null } });
-    })
-    .catch(() => {
-      // The database is unreachable as well: the PENDING lease expires and the
-      // next request reclaims it. An uncertain send is never retried.
-    });
-  const echo = process.env.NODE_ENV === "development" && process.env.AUTH_DEV_ECHO === "1";
-  return echo ? { ok: true, devCode: code } : { ok: true };
+  if (!configured) return { ok: true };
+  if (process.env.NODE_ENV === "development" && process.env.AUTH_DEV_ECHO === "1") {
+    // Development only: wait for the code so it can be shown.
+    const code = await issueLoginCode(email, delivery!);
+    return code ? { ok: true, devCode: code } : { ok: true };
+  }
+  void issueLoginCode(email, delivery!).catch(() => console.warn("[auth] login code request failed"));
+  return { ok: true };
 }
 
 export async function verifyLoginCode(

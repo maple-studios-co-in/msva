@@ -67,6 +67,7 @@ model LoginCode {
 
   @@index([userId, createdAt])
   @@index([userId, deliveryState, expiresAt])
+  @@index([deliveryLeaseExpiresAt])
 }
 
 model AuthRateBucket {

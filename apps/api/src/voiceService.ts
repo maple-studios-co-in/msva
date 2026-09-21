@@ -19,8 +19,9 @@ const MAX_SESSION_EVENT_BYTES = 8 * 1024 * 1024;
 const RECOVERY_ABANDON_MS = 15 * 60 * 1000;
 const SWEEP_BATCH = 20;
 const CONTROL_SCAN = 20;
-// A failed removal backs off exponentially to a minute and counts as degraded
-// after five attempts.
+// A grant waits for its participant's connection; a failed removal backs off
+// exponentially to a minute and counts as degraded after five attempts.
+const CONTROL_DEFER_MS = 1_000;
 const CONTROL_RETRY_MAX_MS = 60_000;
 export const CONTROL_DEGRADED_ATTEMPTS = 5;
 const SERIALIZABLE_ATTEMPTS = 5;
@@ -620,10 +621,19 @@ export async function claimMediaControlIntent(db: PrismaClient = prisma) {
       if (!claimable) continue;
       const blocked = await tx.mediaControlIntent.findFirst({ where: { admissionId: current.admissionId, id: { not: current.id }, OR: [{ status: "RUNNING", leaseExpiresAt: { gt: now } }, { status: { in: ["PENDING", "RUNNING"] }, createdAt: { lt: current.createdAt } }] }, select: { id: true } });
       if (blocked) continue;
-      const validGrant = current.kind !== "GRANT" || (current.errorCode !== "REVOKED" && current.admission.state !== "REVOKING" && current.admission.state !== "REVOKED" && current.admission.authorizationVersion === current.authorizationVersion && current.admission.voiceSession.authorizationVersion === current.authorizationVersion);
-      if (!validGrant) {
-        await tx.mediaControlIntent.update({ where: { id: current.id }, data: { status: "FAILED", errorCode: "REVOKED", attemptToken: null, leaseExpiresAt: null } });
-        continue;
+      if (current.kind === "GRANT") {
+        const admission = current.admission;
+        const valid = current.errorCode !== "REVOKED" && (admission.state === "ISSUED" || admission.state === "CONNECTING" || admission.state === "ACTIVE")
+          && admission.absoluteExpiresAt > now && admission.authorizationVersion === current.authorizationVersion && admission.voiceSession.authorizationVersion === current.authorizationVersion;
+        if (!valid) {
+          await tx.mediaControlIntent.update({ where: { id: current.id }, data: { status: "FAILED", errorCode: "REVOKED", attemptToken: null, leaseExpiresAt: null } });
+          continue;
+        }
+        // A grant is for a participant in the room: it waits for a confirmed, live connection.
+        if (admission.state !== "ACTIVE" || !admission.participantSid || !admission.connectionLeaseExpiresAt || admission.connectionLeaseExpiresAt <= now) {
+          await tx.mediaControlIntent.update({ where: { id: current.id }, data: { nextAttemptAt: new Date(now.getTime() + CONTROL_DEFER_MS) } });
+          continue;
+        }
       }
       const attemptToken = randomUUID();
       const leaseExpiresAt = new Date(now.getTime() + CONNECTION_MS);

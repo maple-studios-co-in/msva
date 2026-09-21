@@ -238,4 +238,20 @@ describe("media control execution", () => {
     expect(await db.voiceAdmission.findUniqueOrThrow({ where: { id: failingAdmission.id } })).toMatchObject({ state: "REVOKED" });
     expect(await degradedMediaControls(db)).toEqual([]);
   });
+
+  it("holds a grant until its participant's connection is confirmed and live", async () => {
+    const call = await liveCall(); const who = await staff();
+    const admission = await listener(call, who);
+    const grant = await db.mediaControlIntent.create({ data: { admissionId: admission.id, authorizationVersion: 1, kind: "GRANT" } });
+    expect(await claimMediaControlIntent(db)).toBeNull();
+    const connection = await connect(call, who, admission.participantIdentity);
+    await renewSignalConnection(connection, db);
+    await due(grant.id);
+    // Connected, but the participant's SID is not confirmed yet.
+    expect(await claimMediaControlIntent(db)).toBeNull();
+    await confirmSignalParticipant({ ...connection, participantSid: "PA_listener" }, db);
+    await due(grant.id);
+    expect(await claimMediaControlIntent(db)).toMatchObject({ id: grant.id, kind: "GRANT" });
+    expect(await db.mediaControlIntent.findUniqueOrThrow({ where: { id: grant.id } })).toMatchObject({ status: "RUNNING", attempts: 1 });
+  });
 });

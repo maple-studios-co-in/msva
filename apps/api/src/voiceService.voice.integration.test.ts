@@ -174,6 +174,8 @@ describe("voice session persistence", () => {
     await db.voiceSession.update({ where: { id: item.id }, data: { ownerUserId: user.id, ownerSessionId: browser.id } });
     await db.handoff.create({ data: { callId: item.callId, assignedUserId: user.id, state: "ASSIGNED" } });
     const admission = await prepareBrowserAdmission({ callId: item.callId, userId: user.id, sessionId: browser.id, role: "OPERATOR_LISTENER", expectedAuthorizationVersion: 1 }, db);
+    // A grant is only for a participant whose connection is confirmed and live.
+    await db.voiceAdmission.update({ where: { id: admission.id }, data: { state: "ACTIVE", participantSid: "PA_operator", connectionLeaseExpiresAt: new Date(Date.now() + 10_000) } });
     await db.mediaControlIntent.create({ data: { admissionId: admission.id, authorizationVersion: 1, kind: "GRANT" } });
     const claimed = await claimMediaControlIntent(db);
     expect(claimed).toMatchObject({ admissionId: admission.id, kind: "GRANT" });

@@ -58,7 +58,7 @@
         "properties": {
           "agentEpoch": {
             "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
+            "maximum": 2147483647,
             "type": "integer"
           },
           "agentParticipantId": {
@@ -111,6 +111,21 @@
         ],
         "type": "object"
       },
+      "VoiceError": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
       "VoiceEventReceipt": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
@@ -140,7 +155,7 @@
         "properties": {
           "agentEpoch": {
             "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
+            "maximum": 2147483647,
             "type": "integer"
           },
           "callId": {
@@ -206,7 +221,7 @@
         "properties": {
           "agentEpoch": {
             "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
+            "maximum": 2147483647,
             "type": "integer"
           }
         },
@@ -221,7 +236,7 @@
         "properties": {
           "agentEpoch": {
             "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
+            "maximum": 2147483647,
             "type": "integer"
           },
           "arguments": {},
@@ -251,7 +266,7 @@
             "properties": {
               "agentEpoch": {
                 "exclusiveMinimum": 0,
-                "maximum": 9007199254740991,
+                "maximum": 2147483647,
                 "type": "integer"
               },
               "callId": {
@@ -275,7 +290,7 @@
                   "endMs": {
                     "anyOf": [
                       {
-                        "maximum": 9007199254740991,
+                        "maximum": 2147483647,
                         "minimum": 0,
                         "type": "integer"
                       },
@@ -296,7 +311,7 @@
                   },
                   "revision": {
                     "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991,
+                    "maximum": 2147483647,
                     "type": "integer"
                   },
                   "segmentId": {
@@ -306,7 +321,7 @@
                   },
                   "sequence": {
                     "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991,
+                    "maximum": 2147483647,
                     "type": "integer"
                   },
                   "speaker": {
@@ -320,7 +335,7 @@
                   "startMs": {
                     "anyOf": [
                       {
-                        "maximum": 9007199254740991,
+                        "maximum": 2147483647,
                         "minimum": 0,
                         "type": "integer"
                       },
@@ -352,7 +367,7 @@
               },
               "sourceSequence": {
                 "exclusiveMinimum": 0,
-                "maximum": 9007199254740991,
+                "maximum": 2147483647,
                 "type": "integer"
               },
               "type": {
@@ -377,7 +392,7 @@
             "properties": {
               "agentEpoch": {
                 "exclusiveMinimum": 0,
-                "maximum": 9007199254740991,
+                "maximum": 2147483647,
                 "type": "integer"
               },
               "callId": {
@@ -415,7 +430,7 @@
               },
               "sourceSequence": {
                 "exclusiveMinimum": 0,
-                "maximum": 9007199254740991,
+                "maximum": 2147483647,
                 "type": "integer"
               },
               "type": {
@@ -440,7 +455,7 @@
             "properties": {
               "agentEpoch": {
                 "exclusiveMinimum": 0,
-                "maximum": 9007199254740991,
+                "maximum": 2147483647,
                 "type": "integer"
               },
               "callId": {
@@ -482,7 +497,7 @@
               },
               "sourceSequence": {
                 "exclusiveMinimum": 0,
-                "maximum": 9007199254740991,
+                "maximum": 2147483647,
                 "type": "integer"
               },
               "type": {
@@ -507,7 +522,7 @@
             "properties": {
               "agentEpoch": {
                 "exclusiveMinimum": 0,
-                "maximum": 9007199254740991,
+                "maximum": 2147483647,
                 "type": "integer"
               },
               "callId": {
@@ -553,7 +568,7 @@
               },
               "sourceSequence": {
                 "exclusiveMinimum": 0,
-                "maximum": 9007199254740991,
+                "maximum": 2147483647,
                 "type": "integer"
               },
               "type": {
@@ -578,7 +593,7 @@
             "properties": {
               "agentEpoch": {
                 "exclusiveMinimum": 0,
-                "maximum": 9007199254740991,
+                "maximum": 2147483647,
                 "type": "integer"
               },
               "callId": {
@@ -601,7 +616,7 @@
                 "properties": {
                   "lastSourceSequence": {
                     "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991,
+                    "maximum": 2147483647,
                     "type": "integer"
                   }
                 },
@@ -616,7 +631,7 @@
               },
               "sourceSequence": {
                 "exclusiveMinimum": 0,
-                "maximum": 9007199254740991,
+                "maximum": 2147483647,
                 "type": "integer"
               },
               "type": {
@@ -684,21 +699,63 @@
             "description": "Committed response"
           },
           "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
             "description": "Invalid request"
           },
           "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
             "description": "Invalid credential"
           },
           "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
             "description": "Credential scope denied"
           },
           "404": {
-            "description": "Unknown call or receipt"
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
+            "description": "Unknown receipt"
           },
           "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
             "description": "Fenced, stale, or conflicting operation"
           },
           "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
             "description": "Voice service unavailable"
           }
         },
@@ -745,21 +802,63 @@
             "description": "Committed response"
           },
           "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
             "description": "Invalid request"
           },
           "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
             "description": "Invalid credential"
           },
           "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
             "description": "Credential scope denied"
           },
           "404": {
-            "description": "Unknown call or receipt"
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
+            "description": "Unknown receipt"
           },
           "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
             "description": "Fenced, stale, or conflicting operation"
           },
           "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
             "description": "Voice service unavailable"
           }
         },
@@ -806,21 +905,63 @@
             "description": "Committed response"
           },
           "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
             "description": "Invalid request"
           },
           "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
             "description": "Invalid credential"
           },
           "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
             "description": "Credential scope denied"
           },
           "404": {
-            "description": "Unknown call or receipt"
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
+            "description": "Unknown receipt"
           },
           "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
             "description": "Fenced, stale, or conflicting operation"
           },
           "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
             "description": "Voice service unavailable"
           }
         },
@@ -867,21 +1008,63 @@
             "description": "Committed response"
           },
           "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
             "description": "Invalid request"
           },
           "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
             "description": "Invalid credential"
           },
           "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
             "description": "Credential scope denied"
           },
           "404": {
-            "description": "Unknown call or receipt"
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
+            "description": "Unknown receipt"
           },
           "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
             "description": "Fenced, stale, or conflicting operation"
           },
           "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
             "description": "Voice service unavailable"
           }
         },
@@ -928,21 +1111,63 @@
             "description": "Committed response"
           },
           "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
             "description": "Invalid request"
           },
           "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
             "description": "Invalid credential"
           },
           "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
             "description": "Credential scope denied"
           },
           "404": {
-            "description": "Unknown call or receipt"
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
+            "description": "Unknown receipt"
           },
           "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
             "description": "Fenced, stale, or conflicting operation"
           },
           "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
             "description": "Voice service unavailable"
           }
         },
@@ -977,21 +1202,63 @@
             "description": "Committed response"
           },
           "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
             "description": "Invalid request"
           },
           "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
             "description": "Invalid credential"
           },
           "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
             "description": "Credential scope denied"
           },
           "404": {
-            "description": "Unknown call or receipt"
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
+            "description": "Unknown receipt"
           },
           "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
             "description": "Fenced, stale, or conflicting operation"
           },
           "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceError"
+                }
+              }
+            },
             "description": "Voice service unavailable"
           }
         },
@@ -1002,5 +1269,11 @@
         ]
       }
     }
-  }
+  },
+  "servers": [
+    {
+      "description": "Private API path; never exposed to browsers.",
+      "url": "/api/internal/voice/v1"
+    }
+  ]
 }

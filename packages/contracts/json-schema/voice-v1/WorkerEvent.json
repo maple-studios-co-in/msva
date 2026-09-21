@@ -7,7 +7,7 @@
       "properties": {
         "agentEpoch": {
           "exclusiveMinimum": 0,
-          "maximum": 9007199254740991,
+          "maximum": 2147483647,
           "type": "integer"
         },
         "callId": {
@@ -31,7 +31,7 @@
             "endMs": {
               "anyOf": [
                 {
-                  "maximum": 9007199254740991,
+                  "maximum": 2147483647,
                   "minimum": 0,
                   "type": "integer"
                 },
@@ -52,7 +52,7 @@
             },
             "revision": {
               "exclusiveMinimum": 0,
-              "maximum": 9007199254740991,
+              "maximum": 2147483647,
               "type": "integer"
             },
             "segmentId": {
@@ -62,7 +62,7 @@
             },
             "sequence": {
               "exclusiveMinimum": 0,
-              "maximum": 9007199254740991,
+              "maximum": 2147483647,
               "type": "integer"
             },
             "speaker": {
@@ -76,7 +76,7 @@
             "startMs": {
               "anyOf": [
                 {
-                  "maximum": 9007199254740991,
+                  "maximum": 2147483647,
                   "minimum": 0,
                   "type": "integer"
                 },
@@ -108,7 +108,7 @@
         },
         "sourceSequence": {
           "exclusiveMinimum": 0,
-          "maximum": 9007199254740991,
+          "maximum": 2147483647,
           "type": "integer"
         },
         "type": {
@@ -133,7 +133,7 @@
       "properties": {
         "agentEpoch": {
           "exclusiveMinimum": 0,
-          "maximum": 9007199254740991,
+          "maximum": 2147483647,
           "type": "integer"
         },
         "callId": {
@@ -171,7 +171,7 @@
         },
         "sourceSequence": {
           "exclusiveMinimum": 0,
-          "maximum": 9007199254740991,
+          "maximum": 2147483647,
           "type": "integer"
         },
         "type": {
@@ -196,7 +196,7 @@
       "properties": {
         "agentEpoch": {
           "exclusiveMinimum": 0,
-          "maximum": 9007199254740991,
+          "maximum": 2147483647,
           "type": "integer"
         },
         "callId": {
@@ -238,7 +238,7 @@
         },
         "sourceSequence": {
           "exclusiveMinimum": 0,
-          "maximum": 9007199254740991,
+          "maximum": 2147483647,
           "type": "integer"
         },
         "type": {
@@ -263,7 +263,7 @@
       "properties": {
         "agentEpoch": {
           "exclusiveMinimum": 0,
-          "maximum": 9007199254740991,
+          "maximum": 2147483647,
           "type": "integer"
         },
         "callId": {
@@ -309,7 +309,7 @@
         },
         "sourceSequence": {
           "exclusiveMinimum": 0,
-          "maximum": 9007199254740991,
+          "maximum": 2147483647,
           "type": "integer"
         },
         "type": {
@@ -334,7 +334,7 @@
       "properties": {
         "agentEpoch": {
           "exclusiveMinimum": 0,
-          "maximum": 9007199254740991,
+          "maximum": 2147483647,
           "type": "integer"
         },
         "callId": {
@@ -357,7 +357,7 @@
           "properties": {
             "lastSourceSequence": {
               "exclusiveMinimum": 0,
-              "maximum": 9007199254740991,
+              "maximum": 2147483647,
               "type": "integer"
             }
           },
@@ -372,7 +372,7 @@
         },
         "sourceSequence": {
           "exclusiveMinimum": 0,
-          "maximum": 9007199254740991,
+          "maximum": 2147483647,
           "type": "integer"
         },
         "type": {

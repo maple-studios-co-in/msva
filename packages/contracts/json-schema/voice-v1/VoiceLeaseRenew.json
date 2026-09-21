@@ -5,7 +5,7 @@
   "properties": {
     "agentEpoch": {
       "exclusiveMinimum": 0,
-      "maximum": 9007199254740991,
+      "maximum": 2147483647,
       "type": "integer"
     }
   },

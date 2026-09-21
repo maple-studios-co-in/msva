@@ -14,6 +14,10 @@ const MAX_ACTIVE_SESSIONS = 2;
 // event every 1.44 s.
 const MAX_SESSION_EVENTS = 5_000;
 const MAX_SESSION_EVENT_BYTES = 8 * 1024 * 1024;
+// A call that lost its AI and that nobody ended is closed once it has waited
+// this long with nobody still admitted to it.
+const RECOVERY_ABANDON_MS = 15 * 60 * 1000;
+const SWEEP_BATCH = 20;
 const CONTROL_SCAN = 20;
 const SERIALIZABLE_ATTEMPTS = 5;
 // The caller and staff stay admitted while an AI failure awaits recovery.
@@ -119,6 +123,16 @@ async function failStartedCall(tx: Prisma.TransactionClient, session: { id: stri
   await revokeAdmissions(tx, { callId: session.callId, reason: "CALL_ENDED" }, now);
 }
 
+/**
+ * Ends startups that never got a worker and hands calls whose AI worker
+ * stopped renewing to staff recovery. A human-owned call is not the AI's to
+ * give up.
+ */
+async function reclaimExpiredAuthority(tx: Prisma.TransactionClient, now: Date): Promise<void> {
+  for (const stale of await tx.voiceSession.findMany({ where: { state: "STARTING", expiresAt: { lte: now } }, select: { id: true, callId: true }, take: SWEEP_BATCH })) await failStartedCall(tx, stale, now);
+  await tx.voiceSession.updateMany({ where: { state: "ACTIVE", ownershipMode: "AI", lease: { expiresAt: { lte: now } } }, data: { state: "RECOVERY_REQUIRED" } });
+}
+
 export async function createVoiceSession(input: { requestId: string; callId: string; ownerUserId?: string; ownerSessionId?: string; language?: string; callerParticipantId: string }, db: PrismaClient = prisma) {
   // Hash the request with its defaults applied, so an explicit default and an
   // omitted field are the same request.
@@ -130,10 +144,8 @@ export async function createVoiceSession(input: { requestId: string; callId: str
     const call = await tx.call.findUnique({ where: { id: input.callId }, select: { id: true } }); if (!call) throw new VoiceError(404, "CALL_NOT_FOUND");
     if (await tx.voiceSession.findFirst({ where: { callId: input.callId }, select: { id: true } })) throw new VoiceError(409, "CALL_SESSION_EXISTS");
     const now = new Date();
-    for (const stale of await tx.voiceSession.findMany({ where: { state: "STARTING", expiresAt: { lte: now } }, select: { id: true, callId: true } })) await failStartedCall(tx, stale, now);
-    // A crashed worker stops renewing; its call waits for staff instead of
-    // holding AI capacity forever.
-    await tx.voiceSession.updateMany({ where: { state: "ACTIVE", lease: { expiresAt: { lte: now } } }, data: { state: "RECOVERY_REQUIRED" } });
+    // Stale startups and crashed workers must not hold AI capacity forever.
+    await reclaimExpiredAuthority(tx, now);
     const count = await tx.voiceSession.count({ where: { state: { in: ["STARTING", "ACTIVE"] } } }); if (count >= MAX_ACTIVE_SESSIONS) throw new VoiceError(409, "ACTIVE_CAPACITY");
     return tx.voiceSession.create({ data: { callId: input.callId, roomName, ownerUserId: request.ownerUserId, ownerSessionId: request.ownerSessionId, createRequestId: input.requestId, createRequestHash: requestHash, dispatchIntentId, state: "STARTING", expiresAt: new Date(now.getTime() + STARTING_MS), language: request.language, prompt: prompt(request.language), participants: { create: [{ identity: input.callerParticipantId, role: "CALLER" }, { identity: workerParticipantIdentity(input.callId), role: "AGENT" }] } } });
   });
@@ -355,6 +367,37 @@ export async function endVoiceCall(input: { callId: string; userId: string; sess
     if (session.state === "ENDED" || session.state === "FAILED") return;
     await endSession(tx, session, now, "COMPLETED");
   });
+}
+
+/** A call in recovery that has waited long enough with nobody still admitted. */
+const abandonedWhere = (now: Date): Prisma.VoiceSessionWhereInput => ({
+  state: "RECOVERY_REQUIRED",
+  lease: { expiresAt: { lte: new Date(now.getTime() - RECOVERY_ABANDON_MS) } },
+  admissions: { none: { absoluteExpiresAt: { gt: now }, OR: [{ state: { in: ["CONNECTING", "ACTIVE"] } }, { state: "ISSUED", firstJoinExpiresAt: { gt: now } }] } }
+});
+
+/**
+ * Upkeep for calls nobody ends explicitly, bounded per run: expired startups
+ * fail, calls whose AI worker stopped renewing go to staff recovery, and a
+ * recovery call that was abandoned is closed as failed. Returns how many calls
+ * it closed.
+ */
+export async function sweepVoiceSessions(db: PrismaClient = prisma): Promise<number> {
+  await serializable(db, async (tx) => reclaimExpiredAuthority(tx, new Date()));
+  const candidates = await db.voiceSession.findMany({ where: abandonedWhere(new Date()), orderBy: { startedAt: "asc" }, take: SWEEP_BATCH, select: { callId: true } });
+  let closed = 0;
+  for (const { callId } of candidates) {
+    // Rechecked under the lock: someone may have ended or joined the call since.
+    const ended = await serializable(db, async (tx) => {
+      const session = await lockedSession(tx, callId);
+      const now = new Date();
+      if (await tx.voiceSession.count({ where: { id: session.id, ...abandonedWhere(now) } }) === 0) return false;
+      await endSession(tx, session, now, "FAILED");
+      return true;
+    });
+    if (ended) closed += 1;
+  }
+  return closed;
 }
 
 const TOOL_ERROR_STATUS: Record<string, number> = { INVALID_REQUEST: 400, CALL_NOT_FOUND: 404, IDENTITY_REQUIRED: 403, PARENT_NOT_ACCESSIBLE: 403, IDEMPOTENCY_CONFLICT: 409 };

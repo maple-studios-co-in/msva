@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { PrismaClient } from "@msva/db";
 import type { WorkerEvent } from "@msva/contracts";
-import { claimVoiceLease, createVoiceSession, endVoiceCall, finalizeVoiceSession, invokeVoiceTool, prepareBrowserAdmission, recordVoiceDispatch, recordVoiceEvent, renewVoiceLease, voiceContext, workerParticipantIdentity } from "./voiceService.js";
+import { claimVoiceLease, createVoiceSession, endVoiceCall, finalizeVoiceSession, invokeVoiceTool, prepareBrowserAdmission, recordVoiceDispatch, recordVoiceEvent, renewVoiceLease, sweepVoiceSessions, voiceContext, workerParticipantIdentity } from "./voiceService.js";
 
 const databaseUrl = process.env.MSVA_VOICE_TEST_DATABASE_URL;
 if (!databaseUrl) throw new Error("MSVA_VOICE_TEST_DATABASE_URL is required");
@@ -251,6 +251,45 @@ describe("ending calls without complete evidence", () => {
     const supervisedCall = await liveCall("supervised");
     await endVoiceCall({ callId: supervisedCall.callId, ...(await signedIn("SUPERVISOR")) }, db);
     expect(await db.voiceSession.findUniqueOrThrow({ where: { id: supervisedCall.sessionId } })).toMatchObject({ state: "ENDED" });
+  });
+});
+
+describe("abandoned calls", () => {
+  it("closes a recovery call that waited with nobody admitted, and only that one", async () => {
+    const abandoned = await liveCall("abandoned");
+    await recordVoiceEvent(callerFinal(abandoned, 1), abandoned.lease.token, db);
+    await recordVoiceEvent(failed(abandoned, 2), abandoned.lease.token, db);
+    await crash(abandoned, 16 * 60_000);
+    const recent = await liveCall("recent");
+    await recordVoiceEvent(failed(recent, 1), recent.lease.token, db);
+    await crash(recent, 5 * 60_000);
+    expect(await sweepVoiceSessions(db)).toBe(1);
+    const closed = await db.call.findUniqueOrThrow({ where: { id: abandoned.callId } });
+    expect(closed).toMatchObject({ status: "FAILED", outcome: "IN_PROGRESS" });
+    expect(closed.endedAt).not.toBeNull();
+    expect(await db.voiceSession.findUniqueOrThrow({ where: { id: abandoned.sessionId } })).toMatchObject({ state: "FAILED", transcriptComplete: false });
+    expect(await db.voiceSession.findUniqueOrThrow({ where: { id: recent.sessionId } })).toMatchObject({ state: "RECOVERY_REQUIRED" });
+    expect(await sweepVoiceSessions(db)).toBe(0);
+  });
+
+  it("keeps a recovery call open while someone is still admitted to it", async () => {
+    const call = await liveCall();
+    await admittedCaller(call);
+    await recordVoiceEvent(failed(call, 1), call.lease.token, db);
+    await crash(call, 16 * 60_000);
+    expect(await sweepVoiceSessions(db)).toBe(0);
+    expect(await db.voiceSession.findUniqueOrThrow({ where: { id: call.sessionId } })).toMatchObject({ state: "RECOVERY_REQUIRED" });
+  });
+
+  it("hands a crashed AI worker's call to recovery but leaves a human-owned call alone", async () => {
+    const crashed = await liveCall("crashed");
+    await crash(crashed);
+    const human = await liveCall("human");
+    await db.voiceSession.update({ where: { id: human.sessionId }, data: { ownershipMode: "HUMAN" } });
+    await crash(human);
+    await sweepVoiceSessions(db);
+    expect(await db.voiceSession.findUniqueOrThrow({ where: { id: crashed.sessionId } })).toMatchObject({ state: "RECOVERY_REQUIRED" });
+    expect(await db.voiceSession.findUniqueOrThrow({ where: { id: human.sessionId } })).toMatchObject({ state: "ACTIVE", ownershipMode: "HUMAN" });
   });
 });
 

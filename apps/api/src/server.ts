@@ -15,6 +15,7 @@ import { createLiveCallsHandler } from "./liveCalls.js";
 import { voiceRouter } from "./voiceRoutes.js";
 import { apiErrorHandler } from "./httpErrors.js";
 import { startAssessmentWorker } from "./assessmentWorker.js";
+import { startVoiceSweeper } from "./voiceSweeper.js";
 
 const app = express();
 const port = Number(process.env.PORT ?? 4100);
@@ -199,8 +200,9 @@ const server = app.listen(port, () => {
 });
 
 const assessmentWorker = startAssessmentWorker();
+const voiceSweeper = startVoiceSweeper();
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => {
-    void assessmentWorker.stop().finally(() => server.close());
+    void Promise.all([assessmentWorker.stop(), voiceSweeper.stop()]).finally(() => server.close());
   });
 }

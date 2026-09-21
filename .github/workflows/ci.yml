@@ -32,6 +32,7 @@ jobs:
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/msva_jev_test?schema=public
       JEV_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/msva_jev_test?schema=public
+      MSVA_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/msva_jev_test?application_name=msva-foundation-integration
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -50,6 +51,8 @@ jobs:
         run: pnpm check:dev-environment
       - name: Test development environment checker
         run: pnpm test:dev-environment
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install --yes postgresql-client
       - name: Apply migrations
         run: pnpm --filter @msva/db migrate
       - name: Verify migration status
@@ -69,5 +72,7 @@ jobs:
         run: pnpm test
       - name: Jev database integration test
         run: pnpm test:jev-db
+      - name: Test PostgreSQL integration gate
+        run: pnpm test:db
       - name: Build
         run: pnpm -r build

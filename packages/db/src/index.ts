@@ -34,3 +34,4 @@ export async function databaseReady(): Promise<boolean> {
 }
 
 export * from "@prisma/client";
+export * from "./demoRequests.js";

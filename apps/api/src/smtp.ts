@@ -1,13 +1,21 @@
-import nodemailer from "nodemailer";
+import MailComposer from "nodemailer/lib/mail-composer";
+import SMTPConnection, { type SMTPConnectionOptions } from "nodemailer/lib/smtp-connection";
 
 export type LoginCodeDelivery = {
   send(input: { recipient: string; code: string; expiresAt: Date }): Promise<void>;
 };
 
+export type SmtpDeliverySettings = {
+  connection: SMTPConnectionOptions;
+  from: string;
+  auth?: { user: string; pass: string };
+  deadlineMs: number;
+};
+
 const DELIVERY_DEADLINE_MS = 20_000;
 
-/** Creates the narrowly configured server-side login-code transport, or null. */
-export function createSmtpLoginCodeDelivery(): LoginCodeDelivery | null {
+/** Validated server-side SMTP settings, or null when sign-in mail is not configured. */
+export function smtpSettingsFromEnv(): SmtpDeliverySettings | null {
   const host = process.env.SMTP_HOST?.trim();
   const from = process.env.SMTP_FROM?.trim();
   const port = Number(process.env.SMTP_PORT);
@@ -18,41 +26,75 @@ export function createSmtpLoginCodeDelivery(): LoginCodeDelivery | null {
   if (tlsMode !== "implicit" && tlsMode !== "starttls") return null;
   if (Boolean(user) !== Boolean(password)) return null;
   if (process.env.NODE_ENV === "production" && (!user || !password)) return null;
-
-  const transport = nodemailer.createTransport({
-    host,
-    port,
-    secure: tlsMode === "implicit",
-    requireTLS: tlsMode === "starttls",
+  return {
+    connection: {
+      host,
+      port,
+      // Certificate-verified TLS only: implicit TLS or mandatory STARTTLS, never
+      // an opportunistic fallback to plaintext.
+      secure: tlsMode === "implicit",
+      requireTLS: tlsMode === "starttls",
+      ignoreTLS: false,
+      opportunisticTLS: false,
+      connectionTimeout: 10_000,
+      greetingTimeout: 10_000,
+      socketTimeout: 15_000,
+      logger: false,
+      debug: false
+    },
+    from,
     auth: user && password ? { user, pass: password } : undefined,
-    logger: false,
-    debug: false,
-    disableFileAccess: true,
-    disableUrlAccess: true,
-    connectionTimeout: 10_000,
-    greetingTimeout: 10_000,
-    socketTimeout: 15_000
-  });
+    deadlineMs: DELIVERY_DEADLINE_MS
+  };
+}
 
+/** Creates the narrowly configured server-side login-code transport, or null. */
+export function createSmtpLoginCodeDelivery(): LoginCodeDelivery | null {
+  const settings = smtpSettingsFromEnv();
+  return settings ? smtpLoginCodeDelivery(settings) : null;
+}
+
+/**
+ * Sends each code over its own SMTP connection. A pooled or shared transport
+ * cannot interrupt a message already in flight, so the deadline would only
+ * stop waiting; owning the connection lets it stop the exchange itself.
+ */
+export function smtpLoginCodeDelivery(settings: SmtpDeliverySettings): LoginCodeDelivery {
   return {
     async send({ recipient, code, expiresAt }) {
-      const timeout = new Promise<never>((_resolve, reject) => {
-        setTimeout(() => reject(new Error("SMTP delivery deadline exceeded")), DELIVERY_DEADLINE_MS).unref();
-      });
+      const message = await new MailComposer({
+        from: settings.from,
+        to: recipient,
+        subject: "Your MSVA sign-in code",
+        text: `Your sign-in code is ${code}. It expires at ${expiresAt.toISOString()}.`,
+        disableFileAccess: true,
+        disableUrlAccess: true
+      }).compile().build();
+      const connection = new SMTPConnection(settings.connection);
+      // Errors can still be emitted after the outcome is decided; an unhandled
+      // "error" event would crash the process.
+      let fail: (error: Error) => void = () => undefined;
+      connection.on("error", (error: Error) => fail(error));
+      let timer: NodeJS.Timeout | undefined;
+      let delivered = false;
       try {
-        await Promise.race([
-          transport.sendMail({
-            from,
-            to: recipient,
-            subject: "Your MSVA sign-in code",
-            text: `Your sign-in code is ${code}. It expires at ${expiresAt.toISOString()}.`,
-            disableFileAccess: true,
-            disableUrlAccess: true
-          }),
-          timeout
-        ]);
+        await new Promise<void>((resolve, reject) => {
+          fail = reject;
+          timer = setTimeout(() => reject(new Error("SMTP delivery deadline exceeded")), settings.deadlineMs);
+          connection.connect(() => {
+            const sendMessage = () => connection.send({ from: settings.from, to: [recipient] }, message, (error) => (error ? reject(error) : resolve()));
+            if (settings.auth) connection.login(settings.auth, (error) => (error ? reject(error) : sendMessage()));
+            else sendMessage();
+          });
+        });
+        delivered = true;
       } finally {
-        transport.close();
+        clearTimeout(timer);
+        fail = () => undefined;
+        // After a failure or the deadline, close() unpipes any unfinished message
+        // and sends nothing further, so a late server reply cannot complete it.
+        if (delivered) connection.quit();
+        else connection.close();
       }
     }
   };

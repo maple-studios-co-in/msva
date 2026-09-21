@@ -10,6 +10,7 @@ import { BULBUL_V3_VOICES, previewVoice } from "./sarvamPreview.js";
 import { getActiveModel, getLlmEnabled, handleChat, initialState, setLlmEnabled } from "./voiceAgent.js";
 import { DEMO_FAILSAFE_AUDIO_PATH, demoFailsafeAvailable, loadDemoFailsafe } from "./demoFailsafe.js";
 import { databaseReady } from "@msva/db";
+import { authenticate, requireRole } from "./auth.js";
 import { adminRouter } from "./routes/admin.js";
 import { internalRouter } from "./routes/internal.js";
 import { internalAgentRouter } from "./routes/internalAgent.js";
@@ -65,7 +66,9 @@ const chatSchema = z.object({
   sessionId: z.string().optional()
 });
 
-app.post("/api/voice-agent/chat", async (request, response) => {
+// The demo's chat and voice preview spend provider credits, so they need a console
+// sign-in (the session cookie the console sets on this origin).
+app.post("/api/voice-agent/chat", authenticate, requireRole("VIEWER"), async (request, response) => {
   const parsed = chatSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ error: "Invalid request", details: parsed.error.flatten() });
@@ -99,7 +102,7 @@ const previewSchema = z.object({
   language: z.string().optional()
 });
 
-app.post("/api/voice-agent/tts-preview", async (request, response) => {
+app.post("/api/voice-agent/tts-preview", authenticate, requireRole("VIEWER"), async (request, response) => {
   const parsed = previewSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ error: "Invalid request", details: parsed.error.flatten() });
@@ -115,8 +118,9 @@ app.post("/api/voice-agent/tts-preview", async (request, response) => {
 
 // ---------------------------------------------------------------------------
 // AI brain mode — flip between the real LLM and instant deterministic replies
-// at runtime, so a presenter can switch from the app without SSH. In-memory:
-// resets to the AGENT_LLM env default on restart.
+// at runtime, so a supervisor can switch from the app without SSH. It changes how
+// every call is answered, live ones included, so switching needs a supervisor's
+// sign-in. In-memory: resets to the AGENT_LLM env default on restart.
 // ---------------------------------------------------------------------------
 
 app.get("/api/voice-agent/llm-mode", (_request, response) => {
@@ -125,7 +129,7 @@ app.get("/api/voice-agent/llm-mode", (_request, response) => {
 
 const llmModeSchema = z.object({ enabled: z.boolean() });
 
-app.post("/api/voice-agent/llm-mode", (request, response) => {
+app.post("/api/voice-agent/llm-mode", authenticate, requireRole("SUPERVISOR"), (request, response) => {
   const parsed = llmModeSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ error: "Invalid request", details: parsed.error.flatten() });

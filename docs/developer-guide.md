@@ -105,6 +105,8 @@ Returns a seeded conversation state for one dummy call.
 POST /api/voice-agent/chat
 ```
 
+Needs a console sign-in: the request must carry the `msva_session` cookie.
+
 Body:
 
 ```json

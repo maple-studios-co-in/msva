@@ -526,9 +526,10 @@ pnpm dev:all      # api(4100) + web(5173) + telephony(4200)</code></pre>
         <tr><td><code>POST /api/analytics/reload</code></td><td>Re-read the CSV.</td></tr>
         <tr><td><code>GET /api/demo-calls</code></td><td>Demo caller personas.</td></tr>
         <tr><td><code>GET /api/demo-calls/:id/state</code></td><td>Initial conversation state.</td></tr>
-        <tr><td><code>POST /api/voice-agent/chat</code></td><td>One turn → full reply (REST).</td></tr>
+        <tr><td><code>POST /api/voice-agent/chat</code></td><td>One turn → full reply (REST). Needs a console sign-in.</td></tr>
         <tr><td><code>GET /api/voice-agent/voices</code></td><td>Sarvam voice catalog.</td></tr>
-        <tr><td><code>POST /api/voice-agent/tts-preview</code></td><td>Synthesize a phrase → audio.</td></tr>
+        <tr><td><code>POST /api/voice-agent/tts-preview</code></td><td>Synthesize a phrase → audio. Needs a console sign-in.</td></tr>
+        <tr><td><code>POST /api/voice-agent/llm-mode</code></td><td>Switch the model on or off for every call. Needs a supervisor's sign-in.</td></tr>
         <tr><td><code>GET /api/voice-agent/demo-failsafe</code></td><td>Failsafe metadata.</td></tr>
         <tr><td><code>GET /api/voice-agent/demo-failsafe/audio</code></td><td>Failsafe audio stream.</td></tr>
       </table>

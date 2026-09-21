@@ -15,6 +15,7 @@ async function serve(app: import("express").Express) {
 afterEach(() => {
   vi.resetModules();
   vi.doUnmock("./voiceAgent.js");
+  vi.doUnmock("./sarvamPreview.js");
   vi.unstubAllEnvs();
 });
 
@@ -66,6 +67,36 @@ it("has no public agent stream route", async () => {
     });
     expect(response.status).toBe(404);
     expect(streamChat).not.toHaveBeenCalled();
+  } finally {
+    await testServer.close();
+  }
+});
+
+it("refuses the demo's provider routes without a console sign-in", async () => {
+  const handleChat = vi.fn();
+  const setLlmEnabled = vi.fn();
+  const previewVoice = vi.fn();
+  vi.doMock("./voiceAgent.js", () => ({
+    streamChat: vi.fn(),
+    getActiveModel: () => "test",
+    getLlmEnabled: () => true,
+    handleChat,
+    initialState: vi.fn(),
+    setLlmEnabled
+  }));
+  vi.doMock("./sarvamPreview.js", () => ({ BULBUL_V3_VOICES: {}, previewVoice }));
+  const { createApp } = await import("./server.js");
+  const testServer = await serve(createApp());
+  const post = (path: string, body: object) => fetch(`${testServer.url}${path}`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body)
+  });
+  try {
+    expect((await post("/api/voice-agent/chat", { callId: "call-123456", message: "hello" })).status).toBe(401);
+    expect((await post("/api/voice-agent/tts-preview", { voice: "anushka", text: "Namaste" })).status).toBe(401);
+    expect((await post("/api/voice-agent/llm-mode", { enabled: false })).status).toBe(401);
+    expect(handleChat).not.toHaveBeenCalled();
+    expect(previewVoice).not.toHaveBeenCalled();
+    expect(setLlmEnabled).not.toHaveBeenCalled();
   } finally {
     await testServer.close();
   }

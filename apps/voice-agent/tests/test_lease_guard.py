@@ -11,9 +11,13 @@ from fake_voice_api import lease_expiring_in, wait_until
 class Spool:
     def __init__(self) -> None:
         self.fault: str | None = None
+        self.waiting = 0.0
 
     def stream_fault(self, call_id: str, agent_epoch: int) -> str | None:
         return self.fault
+
+    def waiting_seconds(self, call_id: str, agent_epoch: int) -> float:
+        return self.waiting
 
 
 class Writer:
@@ -120,6 +124,32 @@ async def test_a_stopped_evidence_stream_ends_authority():
     guard.start()
     await wait_until(lambda: bool(fenced))
     assert fenced == ["FATAL"] and writer.failures == [] and not guard.active
+    await guard.stop()
+
+
+@pytest.mark.asyncio
+async def test_evidence_that_stops_moving_ends_authority():
+    # The companion is down, or a proxy refuses the events: the API hears nothing of the call.
+    writer = Writer(lease_expiring_in(30))
+    writer.spool.waiting = 16.0
+    fenced: list[str] = []
+    guard = LeaseGuard(Api(), writer, renew_seconds=0.02, lease_seconds=30, on_lost=fenced.append, stall_seconds=15)
+    guard.start()
+    await wait_until(lambda: bool(fenced))
+    # Recorded: the failure waits behind the rest of the stream and arrives with it.
+    assert fenced == ["FATAL"] and writer.failures == ["FATAL"] and not guard.active
+    await guard.stop()
+
+
+@pytest.mark.asyncio
+async def test_evidence_still_within_the_limit_keeps_authority():
+    writer = Writer(lease_expiring_in(30))
+    writer.spool.waiting = 14.0
+    api = Api()
+    guard = LeaseGuard(api, writer, renew_seconds=0.02, lease_seconds=30, stall_seconds=15)
+    guard.start()
+    await wait_until(lambda: api.calls >= 3)
+    assert guard.active and writer.failures == []
     await guard.stop()
 
 

@@ -285,6 +285,12 @@ class EventSpool:
         """Events of one stream not yet delivered."""
         return int(self._connection.execute("SELECT COUNT(*) FROM event_spool WHERE call_id=? AND agent_epoch=?", (call_id, agent_epoch)).fetchone()[0])
 
+    def waiting_seconds(self, call_id: str, agent_epoch: int, *, now: float | None = None) -> float:
+        """How long the stream's oldest undelivered event has waited; 0 when none is waiting."""
+        now = time.time() if now is None else now
+        row = self._connection.execute("SELECT MIN(created_at) FROM event_spool WHERE call_id=? AND agent_epoch=?", (call_id, agent_epoch)).fetchone()
+        return 0.0 if row[0] is None else max(0.0, now - float(row[0]))
+
     def clear_faults(self, call_id: str | None = None, *, now: float | None = None) -> int:
         """Lets stopped streams be delivered again, once their cause is fixed."""
         now = time.time() if now is None else now

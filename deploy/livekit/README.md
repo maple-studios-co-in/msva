@@ -44,7 +44,9 @@ during a call and after it (an API outage, a worker restart), using only each ev
 per-call credential. It sends every call's next event in turn, so one call's backlog never holds
 up another's. A call only appends; when it ends it waits briefly for its evidence to be
 delivered. The companion needs `VOICE_INTERNAL_API_URL` and `VOICE_REPLAY_CREDENTIAL_KEY`, not
-LiveKit or provider secrets, and keeps running when `VOICE_RUNTIME_ENABLED=false`.
+LiveKit or provider secrets, and keeps running when `VOICE_RUNTIME_ENABLED=false`. If a live
+call's oldest undelivered event has waited 15 s (the companion down, a proxy refusing it), the
+worker ends that call's AI authority; the evidence stays in the spool.
 
 Evidence the API refuses for one of its own reasons stops that call's stream; the call's worker
 then ends AI authority, and the stop is logged. An event stamped just ahead of the API's clock,

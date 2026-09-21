@@ -14,7 +14,7 @@ from livekit.agents.voice import ConversationItemAddedEvent, RunContext, SpeechC
 from livekit.plugins import anthropic, sarvam
 
 from .api import AUTHORITY_CODES, AuthorityLost, CallContext, ToolRejected, VoiceApiClient, VoiceApiError
-from .config import RuntimeConfig
+from .config import EVIDENCE_STALL_SECONDS, RuntimeConfig
 from .events import EventWriter
 from .request_tool_schema import TOOL_PARAMETERS
 from .spool import ToolIntentConflict
@@ -48,6 +48,7 @@ class LeaseGuard:
         lease_seconds: float,
         on_lost: Callable[[FailureCode], None] | None = None,
         retry_seconds: float = 2.0,
+        stall_seconds: float = EVIDENCE_STALL_SECONDS,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.client = client
@@ -55,6 +56,7 @@ class LeaseGuard:
         self.renew_seconds = renew_seconds
         self.lease_seconds = lease_seconds
         self.retry_seconds = retry_seconds
+        self.stall_seconds = stall_seconds
         self.on_lost = on_lost
         self._clock = clock
         self.active = False
@@ -136,13 +138,16 @@ class LeaseGuard:
             # A renewal may have moved the deadline; look again when this one passes.
             await asyncio.sleep(remaining)
 
-    def _stream_fault(self) -> str | None:
+    def _evidence_state(self) -> tuple[str | None, float]:
+        """Why the call's evidence stream stopped, if it did, and how long its oldest
+        undelivered event has waited."""
         lease = self.writer.lease
         try:
-            return self.writer.spool.stream_fault(lease.call_id, lease.agent_epoch)
+            spool = self.writer.spool
+            return spool.stream_fault(lease.call_id, lease.agent_epoch), spool.waiting_seconds(lease.call_id, lease.agent_epoch)
         except Exception as error:  # noqa: BLE001 - an unreadable spool also fails the next append
             logger.warning("voice evidence stream state was not read: %s", type(error).__name__)
-            return None
+            return None, 0.0
 
     async def _renew(self) -> None:
         delay = max(0.0, min(self.renew_seconds, self.remaining - self._margin))
@@ -150,12 +155,17 @@ class LeaseGuard:
             await asyncio.sleep(delay)
             if self.lost or self.remaining <= 0:
                 return
-            # Evidence the API refused for good leaves every later event undeliverable,
-            # so the call cannot go on as if it were being recorded.
-            fault = self._stream_fault()
+            # Evidence the API refused for good leaves every later event undeliverable, and
+            # evidence that stops moving leaves the API blind to the call: either way the
+            # call cannot go on as if it were being recorded.
+            fault, waiting = self._evidence_state()
             if fault is not None:
                 logger.warning("voice evidence stream stopped (%s); ending AI authority", fault)
                 self.fail_closed("FATAL", record=False)
+                return
+            if waiting > self.stall_seconds:
+                logger.warning("voice evidence has waited %.0f s for delivery; ending AI authority", waiting)
+                self.fail_closed("FATAL")
                 return
             try:
                 async with asyncio.timeout(self.remaining):

@@ -47,3 +47,17 @@ def test_stream_heads_are_found_quickly_in_a_large_backlog(tmp_path):
     elapsed = time.perf_counter() - started
     assert sorted(event.event_id for event in heads) == ["call-a-1", "call-b-1"]
     assert elapsed < 0.25, f"finding two heads among 10,000 events took {elapsed:.3f} s"
+
+
+def test_a_streams_wait_is_measured_from_its_oldest_undelivered_event(tmp_path):
+    from madhusudan_voice.spool import ReplayCredential
+
+    spool = spool_at(tmp_path / "spool.sqlite3")
+    credential = ReplayCredential("call-1", 1, "lease-token", "2030-01-01T00:00:00Z")
+    assert spool.waiting_seconds("call-1", 1, now=100.0) == 0.0
+    for event_id, sequence, written in (("ready", 1, 10.0), ("final", 2, 40.0)):
+        spool.enqueue(event_id=event_id, call_id="call-1", payload={"eventId": event_id, "sourceSequence": sequence}, credential=credential, now=written)
+    assert spool.waiting_seconds("call-1", 1, now=100.0) == 90.0
+    spool.acknowledge("ready")
+    assert spool.waiting_seconds("call-1", 1, now=100.0) == 60.0
+    assert spool.waiting_seconds("call-2", 1, now=100.0) == 0.0

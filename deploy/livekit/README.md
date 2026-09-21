@@ -34,9 +34,17 @@ set every required value and use `VOICE_STT_MODE=realtime` only after the entitl
 ```sh
 docker compose --env-file .env -f deploy/livekit/compose.yaml config
 docker compose --env-file deploy/livekit/.env -f deploy/livekit/compose.yaml up -d redis livekit
-# Worker remains opt-in and requires live service contracts:
-docker compose --env-file deploy/livekit/.env -f deploy/livekit/compose.yaml --profile voice up -d voice-agent
+# Worker remains opt-in and requires live service contracts. Always run the replay
+# companion with it: it delivers retained call evidence when no call is running.
+docker compose --env-file deploy/livekit/.env -f deploy/livekit/compose.yaml --profile voice up -d voice-agent voice-replay
 ```
+
+`voice-replay` shares the worker's spool volume and sends evidence the worker persisted but
+could not deliver (for example after an API outage or a worker restart), using only each
+event's retained per-call credential. It needs `VOICE_INTERNAL_API_URL` and
+`VOICE_REPLAY_CREDENTIAL_KEY`, not LiveKit or provider secrets, and keeps running when
+`VOICE_RUNTIME_ENABLED=false`. Evidence the API permanently refuses stops that call's stream
+and is logged; anything older than the API's replay window is dropped and logged as unrecoverable.
 
 The configuration renderer creates `/run/livekit/livekit.yaml` at startup from secret-store
 environment values with mode `0600`; it accepts only the documented LiveKit token alphabet
@@ -64,7 +72,8 @@ by this operations slice.
 `voice-agent` exposes the Agents framework health endpoint on its private `8081`; it returns
 healthy only after the worker has connected to LiveKit. Readiness for a release also requires
 the API health, a sanitized provider capability probe, and spool headroom. A `SIGTERM` causes
-the server to drain existing jobs for up to 120 seconds; the worker stops new admission through
+the server to drain existing jobs for up to 120 seconds (Compose allows 130 seconds before
+killing the container); the worker stops new admission through
 LiveKit and loses speech/tool authority immediately when lease renewal fails.
 
 To roll back a worker release: stop new browser admission in the Node service, send the worker

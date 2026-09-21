@@ -412,6 +412,19 @@ describe("shared throttles", () => {
     expect(await db.loginCode.findUnique({ where: { id: old.id } })).toBeNull();
   });
 
+  it("tells a refused client exactly when its window ends", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-09-22T10:00:15.000Z"));
+      const auth = await authWithFakeDelivery(async () => undefined);
+      expect(await auth.requestLoginCode("patient@example.test", network(95))).toEqual({ ok: true });
+      vi.setSystemTime(new Date("2026-09-22T10:00:20.000Z"));
+      expect(await auth.requestLoginCode("patient@example.test", network(95))).toEqual({ ok: false, limited: true, retryAfter: 40 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("answers a reserved request even when expired-bucket cleanup fails", async () => {
     await db.authRateBucket.create({ data: { scope: "old", keyHash: "expired", windowStart: new Date(0), count: 1, expiresAt: new Date(Date.now() - 60_000) } });
     await db.$executeRawUnsafe(`CREATE FUNCTION fail_rate_bucket_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'auth test cleanup failure'; END; $$`);
@@ -455,6 +468,21 @@ describe("abuse resistance", () => {
       expect(await auth.requestLoginCode("bystander@example.test", network(83))).toEqual({ ok: true });
     }, { timeout: 15_000 });
     expect(await contended).toEqual({ ok: true });
+  });
+
+  it("takes the shared hourly bucket last, so a reservation waiting on its client's bucket does not hold it", async () => {
+    const auth = await authWithFakeDelivery(async () => undefined);
+    expect(await auth.requestLoginCode("first@example.test", network(93))).toEqual({ ok: true });
+    let waiting!: ReturnType<typeof auth.requestLoginCode>;
+    await db.$transaction(async (tx) => {
+      // Another request from the same client holds its address bucket, so this one waits there.
+      await tx.$queryRaw`SELECT "id" FROM "AuthRateBucket" WHERE "scope" = 'request-ip-hour' FOR UPDATE`;
+      waiting = auth.requestLoginCode("second@example.test", network(93));
+      await lockWaiters(1);
+      // It has not taken the shared bucket yet, so everyone else is still admitted.
+      expect(await auth.requestLoginCode("bystander@example.test", network(94))).toEqual({ ok: true });
+    }, { timeout: 15_000 });
+    expect(await waiting).toEqual({ ok: true });
   });
 
   it("writes nothing for a request some bucket has no room for", async () => {

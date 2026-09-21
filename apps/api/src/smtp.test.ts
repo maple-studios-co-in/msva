@@ -139,6 +139,19 @@ it("delivers one fixed text message and quits the connection", async () => {
   }
 });
 
+it("quotes the display name, so it can never change the sender's address", async () => {
+  const smtp = await fakeSmtp();
+  try {
+    const { smtpLoginCodeDelivery } = await import("./smtp.js");
+    const delivery = smtpLoginCodeDelivery({ connection: plainLoopback(smtp.port), from: { name: "Support <no-reply@elsewhere.test>", address: "console@example.test" }, deadlineMs: 5_000 });
+    await delivery.send({ recipient: "agent@example.test", code: "123456", expiresAt: new Date("2026-09-21T10:10:00.000Z") });
+    await vi.waitFor(() => expect(smtp.commands).toContain("QUIT"));
+    expect(smtp.bodies[0]).toMatch(/^From: "Support <no-reply@elsewhere\.test>" <console@example\.test>\r?$/m);
+  } finally {
+    smtp.server.close();
+  }
+});
+
 it("stops the exchange at the deadline so a late server reply cannot complete delivery", async () => {
   const smtp = await fakeSmtp(1_000);
   try {

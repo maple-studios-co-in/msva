@@ -13,6 +13,7 @@ vi.mock("@msva/db", () => {
       statements.push(sql.join("?"));
       return sql.join("").includes('INSERT INTO "AuthRateBucket"') ? [{ id: "reserved" }] : [];
     },
+    $executeRaw: async (sql: TemplateStringsArray) => { statements.push(sql.join("?")); return 0; },
     user: {
       findFirst: async () => { statements.push("user.findFirst"); return rows.user; },
       findUnique: async () => { statements.push("user.findUnique"); return rows.currentUser; }
@@ -149,5 +150,7 @@ it("runs the same statements for every failed verification, known address or not
     runs[name] = [...statements];
   }
   expect(runs.unknown).toContain("loginCode.updateMany");
+  // An existing address's row lock writes WAL; no failed check waits for it at commit.
+  expect(runs.unknown).toContain("SET LOCAL synchronous_commit = off");
   for (const name of ["disabled", "withoutCode", "wrongCode"]) expect(runs[name]).toEqual(runs.unknown);
 });

@@ -318,8 +318,8 @@ export async function verifyLoginCode(
   const token = randomBytes(32).toString("hex");
   // Everything that authorizes the login is read after the user and code rows
   // are locked, with the clock sampled after the locks are held. Every failed
-  // check runs the same statements, whether or not the address has an account,
-  // so neither response time nor the database work reveals which addresses can
+  // check runs the same statements and commits the same way, whether or not the
+  // address has an account, so response time does not reveal which addresses can
   // sign in. A wrong code returns (not throws) so its attempt increment commits.
   return prisma.$transaction(async (tx) => {
     const found = await tx.user.findFirst({ where: { email }, select: { id: true } });
@@ -336,6 +336,11 @@ export async function verifyLoginCode(
     const given = givenHash ? Buffer.from(givenHash, "hex") : Buffer.alloc(0);
     const matches = expected.length === given.length && timingSafeEqual(expected, given);
     if (!currentUser?.active || !candidate || !matches) {
+      // Locking an account's row writes WAL, and waiting for that to reach disk at
+      // commit would make a failed check slower for an existing address, so no failed
+      // check waits for it. A crash can then lose the last few attempt counts; the
+      // verification throttle was reserved in its own transaction.
+      await tx.$executeRaw`SET LOCAL synchronous_commit = off`;
       // A wrong code counts against it; without one the statement changes nothing.
       await tx.loginCode.updateMany({ where: { id: candidate?.id ?? NO_ROW }, data: { attempts: { increment: 1 } } });
       return null;

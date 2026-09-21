@@ -228,6 +228,27 @@ async def test_every_delivery_round_is_reported(tmp_path):
     assert len(rounds) == 3
 
 
+@pytest.mark.asyncio
+async def test_the_companion_beats_during_a_long_delivery_pass(tmp_path):
+    spool = spool_at(tmp_path)
+    for sequence in range(1, 6):
+        queue(spool, "call-a", sequence)
+    sent: list[str] = []
+
+    async def slow(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.15)
+        event_id = json.loads(request.content)["eventId"]
+        sent.append(event_id)
+        return httpx.Response(200, json={"eventId": event_id, "status": "committed"})
+
+    heartbeat = tmp_path / "replay.heartbeat"
+    drainer = ReplayDrainer(VoiceApiClient(BASE, client=httpx.AsyncClient(transport=httpx.MockTransport(slow))), spool, interval_seconds=0.01, heartbeat=heartbeat)
+    drainer.start()
+    await wait_until(lambda: len(sent) >= 2)
+    assert heartbeat.exists() and len(sent) < 5, "each round, not only the whole pass, refreshes the heartbeat"
+    await drainer.stop()
+
+
 def test_an_unreadable_credential_stops_its_whole_stream_and_stays_stopped(tmp_path):
     from cryptography.fernet import Fernet
 

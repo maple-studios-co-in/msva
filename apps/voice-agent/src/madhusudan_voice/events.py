@@ -19,6 +19,10 @@ class EventWriter:
         self.agent_participant_id = agent_participant_id
 
     async def emit(self, event_type: str, payload: dict[str, Any]) -> str:
+        return self.append(event_type, payload)
+
+    def append(self, event_type: str, payload: dict[str, Any]) -> str:
+        """Persist one event now, stamped with the current time; delivery happens later."""
         event_id = str(uuid4())
         def build(source_sequence: int) -> dict[str, Any]:
             return {"schemaVersion": 1, "eventId": event_id, "callId": self.lease.call_id,
@@ -29,6 +33,17 @@ class EventWriter:
         _, self._source_sequence = self.spool.append_event(call_id=self.lease.call_id, agent_epoch=self.lease.agent_epoch,
             credential=self.client.replay_credential(self.lease), build=build)
         return event_id
+
+    def record_failure(self, code: str) -> str:
+        """Failure evidence is written when authority ends, not at shutdown: the API only
+        accepts it within seconds of the lease cutoff."""
+        return self.append("agent.failed", {"code": code})
+
+    def record_flush(self) -> str | None:
+        """Checkpoint exactly the prefix persisted so far (nothing to checkpoint before ready)."""
+        if self._source_sequence < 1:
+            return None
+        return self.append("transcript.flushed", {"lastSourceSequence": self._source_sequence})
 
     @property
     def last_source_sequence(self) -> int:

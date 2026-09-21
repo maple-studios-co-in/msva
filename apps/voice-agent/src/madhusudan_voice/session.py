@@ -3,17 +3,25 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
-from typing import Any
-from datetime import UTC, datetime
+import logging
+import time
+from collections.abc import Callable
+from typing import Any, Literal
 
 from livekit.agents import Agent, AgentSession, function_tool
+from livekit.agents.llm import ToolError
 from livekit.agents.voice import ConversationItemAddedEvent, RunContext, SpeechCreatedEvent, UserInputTranscribedEvent
 from livekit.plugins import anthropic, sarvam
 
-from .api import CallContext, Lease, VoiceApiClient
+from .api import AuthorityLost, CallContext, ToolRejected, VoiceApiClient, VoiceApiError
 from .config import RuntimeConfig
 from .events import EventWriter
+from .spool import ToolIntentConflict
+
+logger = logging.getLogger(__name__)
+
+MAX_TRANSCRIPT_CHARS = 4000
+FailureCode = Literal["CONFIGURATION", "TRANSIENT", "FATAL", "LEASE_LOST"]
 
 
 class LeaseLost(RuntimeError):
@@ -21,83 +29,130 @@ class LeaseLost(RuntimeError):
 
 
 class LeaseGuard:
+    """Holds speech and tool authority only while the lease is certainly valid.
+
+    The deadline runs on the monotonic clock from when the claim or renewal request
+    was sent, so wall-clock skew cannot stretch it, and it never exceeds the configured
+    lease length whatever expiry the server reports. When authority ends the guard
+    records why at that moment and fences synchronously: it never waits for the
+    session to close, because it may be running inside a tool the close waits for.
+    """
+
     def __init__(
         self,
         client: VoiceApiClient,
         writer: EventWriter,
         *,
-        renew_seconds: int,
-        on_lost: Callable[[], Awaitable[None]] | None = None,
+        renew_seconds: float,
+        lease_seconds: float,
+        on_lost: Callable[[FailureCode], None] | None = None,
+        retry_seconds: float = 2.0,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.client = client
         self.writer = writer
         self.renew_seconds = renew_seconds
-        self.active = True
-        self.lost = False
+        self.lease_seconds = lease_seconds
+        self.retry_seconds = retry_seconds
         self.on_lost = on_lost
-        self._task: asyncio.Task[None] | None = None
-        self._expiry_task: asyncio.Task[None] | None = None
-
-    def start(self) -> None:
-        if datetime.now(UTC) >= self._expiry():
-            self.active = False
-            self.lost = True
-            return
-        self._task = asyncio.create_task(self._run(), name="voice-lease-renewal")
-        self._arm_expiry()
-
-    def _expiry(self) -> datetime:
-        return datetime.fromisoformat(self.writer.lease.expires_at.replace("Z", "+00:00"))
-
-    def _arm_expiry(self) -> None:
-        if self._expiry_task:
-            self._expiry_task.cancel()
-        self._expiry_task = asyncio.create_task(self._expire_at_deadline(), name="voice-lease-expiry")
-
-    async def _expire_at_deadline(self) -> None:
-        await asyncio.sleep(max(0, (self._expiry() - datetime.now(UTC)).total_seconds()))
-        await self.fail_closed()
-
-    async def stop(self) -> None:
+        self._clock = clock
         self.active = False
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-        if self._expiry_task:
-            self._expiry_task.cancel()
+        self.lost = False
+        self.failure: FailureCode | None = None
+        self._deadline = writer.lease.local_deadline(lease_seconds)
+        self._tasks: list[asyncio.Task[None]] = []
+
+    @property
+    def remaining(self) -> float:
+        return max(0.0, self._deadline - self._clock())
+
+    def start(self) -> bool:
+        """Begins renewing; a lease that has already lapsed never grants authority."""
+        if self.remaining <= 0:
+            self.fail_closed("LEASE_LOST")
+            return False
+        self.active = True
+        self._tasks = [
+            asyncio.create_task(self._renew(), name="voice-lease-renewal"),
+            asyncio.create_task(self._watch_deadline(), name="voice-lease-expiry"),
+        ]
+        return True
 
     def require_active(self) -> None:
-        expires_at = self._expiry()
-        if not self.active or datetime.now(UTC) >= expires_at:
+        if not self.active or self.remaining <= 0:
             raise LeaseLost("lease renewal failed; business tools are disabled")
 
-    async def fail_closed(self) -> None:
+    def fail_closed(self, code: FailureCode = "LEASE_LOST") -> None:
+        """Ends authority now. Idempotent, never raises and never awaits."""
         if self.lost:
             return
         self.active = False
         self.lost = True
+        self.failure = code
+        try:
+            current = asyncio.current_task()
+        except RuntimeError:
+            current = None
+        for task in self._tasks:
+            if task is not current:
+                task.cancel()
+        try:
+            self.writer.record_failure(code)
+        except Exception as error:  # noqa: BLE001 - the fence below must still run
+            logger.warning("voice failure evidence was not recorded: %s", type(error).__name__)
         if self.on_lost is not None:
-            await self.on_lost()
-
-    async def _run(self) -> None:
-        while self.active:
-            expires_at = self._expiry()
-            wait = min(self.renew_seconds, max(0, (expires_at - datetime.now(UTC)).total_seconds()))
-            if wait == 0:
-                await self.fail_closed()
-                return
-            await asyncio.sleep(wait)
             try:
-                async with asyncio.timeout(max(0.001, (expires_at - datetime.now(UTC)).total_seconds())):
-                    renewed = await self.client.renew(self.writer.lease)
-            except Exception:
-                await self.fail_closed()
+                self.on_lost(code)
+            except Exception as error:  # noqa: BLE001 - authority is already withdrawn
+                logger.warning("voice fence callback failed: %s", type(error).__name__)
+
+    async def stop(self) -> None:
+        """Stops renewing at the end of a call without reporting a failure."""
+        self.active = False
+        current = asyncio.current_task()
+        for task in self._tasks:
+            if task is not current:
+                task.cancel()
+        for task in self._tasks:
+            if task is not current:
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001 - stopping is best effort
+                    pass
+
+    async def _watch_deadline(self) -> None:
+        while not self.lost:
+            remaining = self.remaining
+            if remaining <= 0:
+                self.fail_closed("LEASE_LOST")
                 return
+            # A renewal may have moved the deadline; look again when this one passes.
+            await asyncio.sleep(remaining)
+
+    async def _renew(self) -> None:
+        wait = self.renew_seconds
+        while not self.lost:
+            await asyncio.sleep(min(wait, self.remaining))
+            if self.lost or self.remaining <= 0:
+                return
+            try:
+                async with asyncio.timeout(self.remaining):
+                    renewed = await self.client.renew(self.writer.lease)
+            except VoiceApiError as error:
+                if error.permanent:
+                    # The API withdrew authority: expired, ended or taken over by staff.
+                    self.fail_closed("LEASE_LOST")
+                    return
+                wait = self.retry_seconds
+                continue
+            except TimeoutError:
+                continue
+            except Exception:  # noqa: BLE001 - an unreadable reply is retried; the deadline still fences
+                wait = self.retry_seconds
+                continue
             self.writer.update_lease(renewed)
-            self._arm_expiry()
+            self._deadline = renewed.local_deadline(self.lease_seconds)
+            wait = self.renew_seconds
 
 
 class MadhusudanAgent(Agent):
@@ -117,36 +172,56 @@ class MadhusudanAgent(Agent):
     )
     async def create_business_request(self, ctx: RunContext, request: dict[str, Any]) -> dict[str, Any]:
         """Call the one initially permitted business effect through MSVA's lease boundary."""
-        self._lease_guard.require_active()
+        guard = self._lease_guard
+        try:
+            guard.require_active()
+        except LeaseLost as error:
+            raise ToolError("The request cannot be recorded on this call.") from error
         if "create_business_request" not in self._context.permitted_tools:
-            raise LeaseLost("create_business_request is not permitted for this call")
-        invocation_id, committed = self._client.record_tool_intent(
-            self._lease_guard.writer.spool,
-            self._lease_guard.writer.lease,
-            logical_id=ctx.function_call.call_id,
-            name="create_business_request",
-            arguments=request,
-        )
+            raise ToolError("Recording requests is not permitted on this call.")
+        try:
+            invocation_id, committed = self._client.record_tool_intent(
+                guard.writer.spool,
+                guard.writer.lease,
+                logical_id=ctx.function_call.call_id,
+                name="create_business_request",
+                arguments=request,
+            )
+        except ToolIntentConflict as error:
+            raise ToolError("That request conflicts with one already made; ask the caller to confirm the details.") from error
+        except Exception as error:
+            # Without a durable intent a later retry could duplicate the effect.
+            guard.fail_closed("FATAL")
+            raise ToolError("The request cannot be recorded on this call.") from error
         if committed is not None:
             return committed
         try:
             result = await self._client.invoke_tool(
-                self._lease_guard.writer.lease, invocation_id=invocation_id,
+                guard.writer.lease, invocation_id=invocation_id,
                 name="create_business_request", arguments=request,
             )
-            self._lease_guard.writer.spool.complete_tool_intent(invocation_id, result)
-            return result
-        except Exception:
-            # A lost write may already have committed. The pilot fences all further effects
-            # until a human or a future safe receipt reconciliation resolves this intent.
-            await self._lease_guard.fail_closed()
-            raise
+        except ToolRejected as error:
+            # Refused before any business effect; the model may correct and retry.
+            raise ToolError(f"The request was not recorded ({error.code or 'rejected'}); check the details with the caller.") from error
+        except AuthorityLost as error:
+            guard.fail_closed("LEASE_LOST")
+            raise ToolError("The request cannot be recorded on this call.") from error
+        except Exception as error:
+            # A lost response may already have committed. Fence all further effects until
+            # staff reconcile this intent; never issue a second request for it.
+            guard.fail_closed("TRANSIENT")
+            raise ToolError("The request's status is unknown; staff will follow up.") from error
+        try:
+            guard.writer.spool.complete_tool_intent(invocation_id, result)
+        except Exception as error:  # noqa: BLE001 - a retry reuses the invocation ID and gets this receipt
+            logger.warning("voice tool receipt was not stored locally: %s", type(error).__name__)
+        return result
 
 
 class TranscriptObserver:
     """Admits only final caller text and gives revisions a stable per-session identity."""
 
-    def __init__(self, writer: EventWriter, context: CallContext, on_failure: Callable[[], Awaitable[None]]) -> None:
+    def __init__(self, writer: EventWriter, context: CallContext, on_failure: Callable[[], None]) -> None:
         self.writer = writer
         self.context = context
         self.on_failure = on_failure
@@ -191,18 +266,18 @@ class TranscriptObserver:
                 revision=revision,
                 participant_id=self.context.caller_participant_id,
                 sequence=sequence,
-                text=event.transcript,
-                language=str(event.language or self.context.language),
+                text=event.transcript.strip()[:MAX_TRANSCRIPT_CHARS],
+                language=canonical_language(str(event.language or self.context.language)),
             )
         except Exception:
             # A failed final-evidence write makes further AI speech/business effects unsafe.
-            await self.on_failure()
+            self.on_failure()
 
 
 class AgentSpeechObserver:
     """Records assistant text only after its corresponding LiveKit speech playout completes."""
 
-    def __init__(self, writer: EventWriter, language: str, on_failure: Callable[[], Awaitable[None]]) -> None:
+    def __init__(self, writer: EventWriter, language: str, on_failure: Callable[[], None]) -> None:
         self.writer, self.language, self.on_failure = writer, language, on_failure
         self._tasks: set[asyncio.Task[None]] = set()
 
@@ -222,13 +297,13 @@ class AgentSpeechObserver:
             for item in event.speech_handle.chat_items:
                 if getattr(item, "role", None) != "assistant":
                     continue
-                text = getattr(item, "raw_text_content", None)
+                text = (getattr(item, "raw_text_content", None) or "").strip()
                 if text:
                     await self.writer.emit_agent_transcript(
-                        text=text, language=self.language, segment_id=str(getattr(item, "id", "agent-item")), sequence=0
+                        text=text[:MAX_TRANSCRIPT_CHARS], language=self.language, segment_id=str(getattr(item, "id", "agent-item")), sequence=0
                     )
         except Exception:
-            await self.on_failure()
+            self.on_failure()
 
     async def drain(self, timeout_seconds: float) -> None:
         if self._tasks:

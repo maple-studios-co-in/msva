@@ -12,6 +12,8 @@ from madhusudan_voice.main import agent_identity_for_call
 from madhusudan_voice.session import LeaseGuard, canonical_language
 from madhusudan_voice.spool import EventSpool, ToolIntentConflict
 
+from fake_voice_api import lease_expiring_in, wait_until
+
 KEY = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
 
 
@@ -39,17 +41,18 @@ async def test_expiry_fences_while_renewal_is_hung(tmp_path: Path):
             await asyncio.sleep(1)
             return lease
     class Writer:
-        lease = Lease("call", 1, (datetime.now(UTC) + timedelta(milliseconds=30)).isoformat(), "token")
-    fenced = asyncio.Event()
-    guard = LeaseGuard(SlowApi(), Writer(), renew_seconds=1, on_lost=lambda: _set(fenced))
-    guard.start()
-    await asyncio.wait_for(fenced.wait(), timeout=0.2)
+        lease = lease_expiring_in(0.03)
+        failures: list[str] = []
+        def record_failure(self, code):
+            self.failures.append(code)
+    fenced: list[str] = []
+    writer = Writer()
+    guard = LeaseGuard(SlowApi(), writer, renew_seconds=1, lease_seconds=30, on_lost=fenced.append)
+    assert guard.start()
+    await wait_until(lambda: bool(fenced), timeout=0.2)
     assert guard.lost and not guard.active
+    assert fenced == ["LEASE_LOST"] and writer.failures == ["LEASE_LOST"]
     await guard.stop()
-
-
-async def _set(event: asyncio.Event) -> None:
-    event.set()
 
 
 def test_identity_and_language_are_deterministic_and_canonical():

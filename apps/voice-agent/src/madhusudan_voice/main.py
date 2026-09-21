@@ -3,19 +3,23 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import asyncio
 import hashlib
 from collections.abc import Mapping
+from dataclasses import dataclass
 
-from livekit.agents import AgentServer, JobContext, JobRequest, cli
+from livekit.agents import AgentServer, AgentSession, JobContext, JobRequest, cli
 from livekit.agents.voice.room_io.types import RoomOptions
 
 from .api import DispatchPending, ReplayDrainer, VoiceApiClient, VoiceApiError
 from .config import RuntimeConfig, RuntimeDisabled
 from .events import EventWriter
-from .session import AgentSpeechObserver, LeaseGuard, MadhusudanAgent, TranscriptObserver, canonical_language, create_session
+from .session import AgentSpeechObserver, FailureCode, LeaseGuard, MadhusudanAgent, TranscriptObserver, canonical_language, create_session
 from .spool import EventSpool
+
+logger = logging.getLogger(__name__)
 
 
 def call_id_from_dispatch_metadata(metadata: str) -> str:
@@ -43,6 +47,56 @@ def configure_livekit_environment(config: RuntimeConfig) -> None:
     os.environ["LIVEKIT_API_SECRET"] = str(config.livekit_api_secret)
 
 
+@dataclass
+class CallRuntime:
+    """Everything one call owns. It exists before the first await, so every exit path
+    (success, early failure or shutdown) finalizes the same resources exactly once."""
+
+    client: VoiceApiClient
+    spool: EventSpool
+    drainer: ReplayDrainer
+    writer: EventWriter | None = None
+    guard: LeaseGuard | None = None
+    observer: TranscriptObserver | None = None
+    agent_speech: AgentSpeechObserver | None = None
+    finalized: bool = False
+
+    def fail(self, code: FailureCode) -> None:
+        """Records a failure that happens now; after ready it is always evidence."""
+        if self.guard is not None:
+            self.guard.fail_closed(code)
+        elif self.writer is not None:
+            try:
+                self.writer.record_failure(code)
+            except Exception as error:  # noqa: BLE001 - finalization still runs
+                logger.warning("voice failure evidence was not recorded: %s", type(error).__name__)
+
+    async def finalize(self, budget_seconds: float) -> None:
+        """One bounded budget: final SDK evidence, the checkpoint, delivery, then close."""
+        if self.finalized:
+            return
+        self.finalized = True
+        try:
+            async with asyncio.timeout(min(10, budget_seconds)):
+                if self.guard is not None:
+                    await self.guard.stop()
+                if self.observer is not None:
+                    await self.observer.drain(min(10, budget_seconds))
+                if self.agent_speech is not None:
+                    await self.agent_speech.drain(min(10, budget_seconds))
+                if self.writer is not None:
+                    self.writer.record_flush()
+                await self.drainer.drain(min(10, budget_seconds))
+        except (TimeoutError, VoiceApiError):
+            pass
+        except Exception as error:  # noqa: BLE001 - closing below must still happen
+            logger.warning("voice call finalization failed: %s", type(error).__name__)
+        finally:
+            await self.drainer.stop()
+            self.spool.close()
+            await self.client.aclose()
+
+
 def build_server(config: RuntimeConfig) -> AgentServer:
     config.require_enabled()
     configure_livekit_environment(config)
@@ -52,30 +106,14 @@ def build_server(config: RuntimeConfig) -> AgentServer:
         num_idle_processes=1,
     )
     server.load_fnc = lambda worker: min(len(worker.active_jobs) / config.call_limit, 1.0)
-    runtimes: dict[str, tuple] = {}
+    runtimes: dict[str, CallRuntime] = {}
 
     async def finalize_runtime(ctx: JobContext) -> None:
+        # AgentServer invokes this only after AgentSession.aclose, so final SDK callbacks
+        # have already run; the flush checkpoint covers everything persisted.
         runtime = runtimes.pop(ctx.job.id, None)
-        if runtime is None:
-            return
-        client, spool, drainer, writer, guard, observer, agent_speech = runtime
-        # AgentServer invokes this only after AgentSession.aclose. One bounded budget keeps
-        # final SDK callbacks, checkpoint persistence and resource close ordered.
-        try:
-            async with asyncio.timeout(min(10, config.drain_timeout_seconds)):
-                await guard.stop()
-                await observer.drain(min(10, config.drain_timeout_seconds))
-                await agent_speech.drain(min(10, config.drain_timeout_seconds))
-                if guard.lost:
-                    await writer.emit("agent.failed", {"code": "LEASE_LOST"})
-                await writer.emit("transcript.flushed", {"lastSourceSequence": writer.last_source_sequence})
-                await drainer.drain(min(10, config.drain_timeout_seconds))
-        except (TimeoutError, VoiceApiError):
-            pass
-        finally:
-            await drainer.stop()
-            spool.close()
-            await client.aclose()
+        if runtime is not None:
+            await runtime.finalize(config.drain_timeout_seconds)
 
     async def on_request(request: JobRequest) -> None:
         # Explicit dispatch is the first admission gate. The MSVA API repeats room/dispatch
@@ -94,12 +132,22 @@ def build_server(config: RuntimeConfig) -> AgentServer:
     async def run_call(ctx: JobContext) -> None:
         call_id = call_id_from_dispatch_metadata(ctx.job.metadata)
         room_name = ctx.job.room.name
-        await ctx.connect()
         client = VoiceApiClient(str(config.internal_api_url), worker_credential=str(config.worker_credential))
         spool = EventSpool(config.spool_path, max_events=config.spool_max_events, max_bytes=config.spool_max_bytes, replay_key=str(config.replay_credential_key))
-        drainer = ReplayDrainer(client, spool)
-        drainer.start()
+        runtime = CallRuntime(client, spool, ReplayDrainer(client, spool))
+        runtimes[ctx.job.id] = runtime
+        session: AgentSession | None = None
+
+        def fence(code: FailureCode) -> None:
+            # Never awaits: closing from inside a running tool would wait for that tool.
+            # Ending the job runs finalization promptly instead of when the room closes.
+            if session is not None:
+                session.shutdown(drain=False)
+            ctx.shutdown(reason=f"voice authority ended: {code}")
+
+        runtime.drainer.start()
         try:
+            await ctx.connect()
             # Dispatch persistence can lag LiveKit's accepted job. Retry only the explicit,
             # non-authorising DISPATCH_PENDING 503; mismatches remain terminal.
             for attempt in range(4):
@@ -115,26 +163,25 @@ def build_server(config: RuntimeConfig) -> AgentServer:
             if context.room_name != room_name or context.agent_participant_id != ctx.local_participant_identity:
                 raise RuntimeDisabled("MSVA context does not match the dispatched LiveKit participant")
             writer = EventWriter(spool, client, lease, agent_participant_id=context.agent_participant_id)
-            await writer.emit("agent.ready", {"participantId": ctx.local_participant_identity})
+            runtime.writer = writer
+            writer.append("agent.ready", {"participantId": ctx.local_participant_identity})
+            guard = LeaseGuard(client, writer, renew_seconds=config.lease_renew_seconds, lease_seconds=config.lease_seconds, on_lost=fence)
+            runtime.guard = guard
+            if not guard.start():
+                # The claim had already lapsed: never start a speaking session.
+                runtimes.pop(ctx.job.id, None)
+                await runtime.finalize(config.drain_timeout_seconds)
+                return
             session = create_session(config, canonical_language(context.language))
-            stopped = asyncio.Event()
-            async def stop_speech() -> None:
-                await session.interrupt(force=True)
-                await session.aclose()
-                stopped.set()
-
-            guard = LeaseGuard(
-                client, writer, renew_seconds=config.lease_renew_seconds, on_lost=stop_speech
-            )
-            guard.start()
-            observer = TranscriptObserver(writer, context, on_failure=guard.fail_closed)
-            agent_speech = AgentSpeechObserver(writer, canonical_language(context.language), on_failure=guard.fail_closed)
+            observer = TranscriptObserver(writer, context, on_failure=lambda: guard.fail_closed("FATAL"))
+            agent_speech = AgentSpeechObserver(writer, canonical_language(context.language), on_failure=lambda: guard.fail_closed("FATAL"))
+            runtime.observer, runtime.agent_speech = observer, agent_speech
             session.on("user_input_transcribed", observer.handle)
             session.on("conversation_item_added", agent_speech.conversation)
             session.on("speech_created", agent_speech.speech)
-            session.on("error", lambda *_: asyncio.create_task(guard.fail_closed(), name="voice-provider-fence"))
-            session.on("close", lambda *_: stopped.set())
-            runtimes[ctx.job.id] = (client, spool, drainer, writer, guard, observer, agent_speech)
+            # Recoverable provider errors are retried by the SDK; only a lost pipeline ends authority.
+            session.on("error", lambda event: None if getattr(event.error, "recoverable", False) else guard.fail_closed("TRANSIENT"))
+            session.on("close", lambda _event: ctx.shutdown(reason="voice session closed"))
             await session.start(
                     room=ctx.room,
                     agent=MadhusudanAgent(client, guard, context),
@@ -145,11 +192,16 @@ def build_server(config: RuntimeConfig) -> AgentServer:
                     ),
                     record=False,
                 )
+            if guard.lost:
+                # Authority ended while starting, before the session could be closed.
+                session.shutdown(drain=False)
             # Return after start. Session termination triggers the supported on_session_end
             # callback after SDK aclose, avoiding the framework's 15-second entrypoint wait.
             return
         except Exception:
-            await finalize_runtime(ctx)
+            runtime.fail("FATAL")
+            runtimes.pop(ctx.job.id, None)
+            await runtime.finalize(config.drain_timeout_seconds)
             raise
 
     return server

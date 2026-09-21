@@ -10,6 +10,7 @@ import {
   type BrowserCallPipeline,
   type BrowserClientMessage
 } from "./browserPipeline.js";
+import { browserCallDecision } from "./consoleSession.js";
 
 const port = Number(process.env.TELEPHONY_PORT ?? 4200);
 const publicHost = process.env.PUBLIC_WS_HOST ?? `127.0.0.1:${port}`;
@@ -40,7 +41,7 @@ app.post("/exotel/incoming", (request, response) => {
   );
 });
 
-const server = http.createServer(app);
+export const server = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 
 server.on("upgrade", (request, socket, head) => {
@@ -49,8 +50,24 @@ server.on("upgrade", (request, socket, head) => {
     socket.destroy();
     return;
   }
-  wss.handleUpgrade(request, socket, head, (ws) => {
+  const open = () => wss.handleUpgrade(request, socket, head, (ws) => {
     wss.emit("connection", ws, request);
+  });
+  // The carrier's media stream (/voice) cannot carry a console session; a browser
+  // call must, so it opens only once the API accepts the caller's sign-in.
+  if (!url.startsWith("/browser")) {
+    open();
+    return;
+  }
+  const onError = () => socket.destroy();
+  socket.on("error", onError);
+  void browserCallDecision(request.headers.cookie).then((decision) => {
+    socket.removeListener("error", onError);
+    if (decision === "open") {
+      open();
+      return;
+    }
+    socket.end(`HTTP/1.1 ${decision} ${decision === 401 ? "Unauthorized" : "Service Unavailable"}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
   });
 });
 

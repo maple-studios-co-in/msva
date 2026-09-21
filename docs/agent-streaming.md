@@ -29,19 +29,22 @@ Guarantees:
 - Tool calls and their matching results come as adjacent pairs (`tool_call` then `tool_result`).
 - If Ollama is unavailable, the generator emits the deterministic fallback as a single `token` event before the `final`.
 
-## Three consumers, one generator
+## Two routes, one generator
 
 ```
-                  apps/api / voiceAgent.ts
-                      streamChat()
-                          │
-        ┌─────────────────┼──────────────────────┐
-        ▼                 ▼                      ▼
-  handleChat()      POST /chat/stream      apps/telephony
-   (REST, drain     (SSE, forward             (in-process call
-    into single      each event as              via SSE; pipes
-    ChatResponse)    `data: <json>\n\n`)        token deltas into
-                                                streaming TTS)
+                    apps/api / voiceAgent.ts
+                        streamChat()
+                            │
+            ┌───────────────┴────────────────┐
+            ▼                                ▼
+      handleChat()                 POST /api/internal/agent/chat/stream
+       (REST, drain into            (SSE, service token; forwards each
+        a single ChatResponse)       event as `data: <json>\n\n`)
+                                             │
+                                             ▼
+                                       apps/telephony
+                                       (pipes token deltas
+                                        into streaming TTS)
 ```
 
 The browser demo today uses `handleChat()` via `POST /api/voice-agent/chat`. The SSE stream is served only to services: the telephony service calls `POST /api/internal/agent/chat/stream` with the `x-internal-token` header (see `apps/telephony/src/agentClient.ts`), which keeps the two services independently deployable. There is no public stream route; token-by-token replies in the dashboard would need one behind the console's sign-in.

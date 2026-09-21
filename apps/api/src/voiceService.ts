@@ -72,18 +72,32 @@ function prompt(language: string): string {
 function serializationFailure(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && (error.code === "P2034" || error.meta?.code === "40001");
 }
-async function serializable<T>(db: PrismaClient, work: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+async function retried<T>(db: PrismaClient, work: (tx: Prisma.TransactionClient) => Promise<T>, isolationLevel: Prisma.TransactionIsolationLevel): Promise<T> {
+  let conflicted = false;
   for (let attempt = 0; attempt < SERIALIZABLE_ATTEMPTS; attempt += 1) {
     // Random, growing waits keep conflicting retries from colliding again.
     if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, Math.random() * 20 * 2 ** attempt));
-    try { return await db.$transaction(work, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }); }
+    try { return await db.$transaction(work, { isolationLevel }); }
     catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") throw new VoiceError(409, "CONFLICT");
-      if (!serializationFailure(error)) throw error;
+      // A unique conflict with a commit this snapshot could not see is retried
+      // like a serialization failure: the retry sees the committed row and takes
+      // its path (a duplicate event, a replayed create). Only a conflict that
+      // persists is refused.
+      conflicted = error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
+      if (!conflicted && !serializationFailure(error)) throw error;
     }
   }
-  throw new VoiceError(503, "VOICE_RETRY_EXHAUSTED");
+  throw conflicted ? new VoiceError(409, "CONFLICT") : new VoiceError(503, "VOICE_RETRY_EXHAUSTED");
 }
+const serializable = <T>(db: PrismaClient, work: (tx: Prisma.TransactionClient) => Promise<T>) => retried(db, work, Prisma.TransactionIsolationLevel.Serializable);
+/**
+ * For work that holds the call's session row lock throughout: evidence ingest
+ * and ending a call. The lock serializes everything that touches a call's
+ * evidence, and at READ COMMITTED each read after it sees what earlier holders
+ * committed. Serializable isolation would add predicate locks on index pages
+ * that concurrent calls share, and abort one call's work because of another's.
+ */
+const sessionLocked = <T>(db: PrismaClient, work: (tx: Prisma.TransactionClient) => Promise<T>) => retried(db, work, Prisma.TransactionIsolationLevel.ReadCommitted);
 /** Runs `work`; a returned denial commits the transaction's writes and is thrown afterwards. */
 async function committed<T>(db: PrismaClient, work: (tx: Prisma.TransactionClient) => Promise<T | Denied>): Promise<T> {
   const outcome = await serializable(db, work);
@@ -212,7 +226,7 @@ export async function renewVoiceLease(callId: string, epoch: number, token: stri
 }
 
 export async function recordVoiceEvent(event: WorkerEvent, token: string, db: PrismaClient = prisma) {
-  return serializable(db, async (tx) => {
+  return sessionLocked(db, async (tx) => {
     const session = await authenticatedSession(tx, event.callId, token);
     const now = new Date();
     const lease = session.lease;
@@ -234,10 +248,12 @@ export async function recordVoiceEvent(event: WorkerEvent, token: string, db: Pr
     const watermark = await tx.voiceEvent.aggregate({ where: { sessionId: session.id, agentEpoch: event.agentEpoch }, _max: { sourceSequence: true } });
     if (event.sourceSequence !== (watermark._max.sourceSequence ?? 0) + 1) throw new VoiceError(409, "SEQUENCE_OUT_OF_ORDER");
     const bodyBytes = Buffer.byteLength(canonicalBody);
-    // Read from the events themselves: a counter on the session row would be
-    // written by every event and make concurrent renewals and tools retry.
-    const stored = await tx.voiceEvent.aggregate({ where: { sessionId: session.id }, _count: { _all: true }, _sum: { bodyBytes: true } });
-    if (stored._count._all >= MAX_SESSION_EVENTS || (stored._sum.bodyBytes ?? 0) + bodyBytes > MAX_SESSION_EVENT_BYTES) {
+    // Counted on the call's usage row, which only ingestion writes: renewals and
+    // tools never wait on it, and reading it touches no other call's evidence.
+    const [usage] = await tx.$queryRaw<{ events: number; bytes: number }[]>`INSERT INTO "VoiceSessionUsage" ("sessionId", "events", "bytes") VALUES (${session.id}, 1, ${bodyBytes})
+      ON CONFLICT ("sessionId") DO UPDATE SET "events" = "VoiceSessionUsage"."events" + 1, "bytes" = "VoiceSessionUsage"."bytes" + EXCLUDED."bytes"
+      RETURNING "events", "bytes"`;
+    if (usage!.events > MAX_SESSION_EVENTS || usage!.bytes > MAX_SESSION_EVENT_BYTES) {
       // One checkpoint may still follow the last accepted event, so a stream
       // that reaches the limit can still be complete.
       const previous = isFlush ? await tx.voiceEvent.findUnique({ where: { sessionId_agentEpoch_sourceSequence: { sessionId: session.id, agentEpoch: event.agentEpoch, sourceSequence: event.sourceSequence - 1 } }, select: { type: true } }) : null;
@@ -278,7 +294,7 @@ export async function recordVoiceEvent(event: WorkerEvent, token: string, db: Pr
     // names an unknown control. Browser media controls (GRANT/REMOVE) belong
     // to the gateway executor and are never changed by the worker.
     if (event.type === "control.ack") throw new VoiceError(409, "CONTROL_ACK_INVALID");
-    await tx.voiceEvent.create({ data: { sessionId: session.id, eventId: event.eventId, agentEpoch: event.agentEpoch, sourceSequence: event.sourceSequence, canonicalBody, bodyHash, bodyBytes, type: event.type, occurredAt } });
+    await tx.voiceEvent.create({ data: { sessionId: session.id, eventId: event.eventId, agentEpoch: event.agentEpoch, sourceSequence: event.sourceSequence, canonicalBody, bodyHash, type: event.type, occurredAt } });
     if (event.type === "transcript.flushed") {
       if (event.payload.lastSourceSequence !== event.sourceSequence - 1 || event.payload.lastSourceSequence !== (watermark._max.sourceSequence ?? 0)) throw new VoiceError(409, "FLUSH_WATERMARK_INVALID");
       await tx.voiceSession.update({ where: { id: session.id }, data: { finalWatermark: event.payload.lastSourceSequence } });
@@ -323,7 +339,7 @@ async function endSession(tx: Prisma.TransactionClient, session: LockedSession, 
   const call = await tx.call.findUniqueOrThrow({ where: { id: session.callId }, select: { startedAt: true, endedAt: true, outcome: true } });
   if (!call.endedAt) {
     const outcome = await evidencedOutcome(tx, session.callId, session.id, call.outcome);
-    await tx.call.update({ where: { id: session.callId }, data: { status, endedAt: now, durationMs: now.getTime() - call.startedAt.getTime(), outcome } });
+    await tx.call.updateMany({ where: { id: session.callId, endedAt: null }, data: { status, endedAt: now, durationMs: now.getTime() - call.startedAt.getTime(), outcome } });
   }
   await revokeAdmissions(tx, { callId: session.callId, reason: "CALL_ENDED" }, now);
   await markPostCallAssessmentDirty(tx, session.callId, now);
@@ -341,7 +357,7 @@ async function recordLateEvidence(tx: Prisma.TransactionClient, session: LockedS
   if (call.outcome !== "ABANDONED" && call.outcome !== "IN_PROGRESS") return;
   const outcome = await evidencedOutcome(tx, session.callId, session.id, "IN_PROGRESS");
   if (outcome === call.outcome) return;
-  await tx.call.update({ where: { id: session.callId }, data: { outcome } });
+  await tx.call.updateMany({ where: { id: session.callId, outcome: call.outcome }, data: { outcome } });
   await markPostCallAssessmentDirty(tx, session.callId, now);
 }
 
@@ -350,7 +366,7 @@ async function recordLateEvidence(tx: Prisma.TransactionClient, session: LockedS
  * not need a complete transcript: completeness is recorded, not required.
  */
 export async function finalizeVoiceSession(callId: string, db: PrismaClient = prisma): Promise<void> {
-  await serializable(db, async (tx) => {
+  await sessionLocked(db, async (tx) => {
     const session = await lockedSession(tx, callId);
     if (session.state === "ENDED" || session.state === "FAILED") return;
     await endSession(tx, session, new Date(), "COMPLETED");
@@ -363,7 +379,7 @@ export async function finalizeVoiceSession(callId: string, db: PrismaClient = pr
  * staff recovery is closed. Ending an ended call changes nothing.
  */
 export async function endVoiceCall(input: { callId: string; userId: string; sessionId: string }, db: PrismaClient = prisma): Promise<void> {
-  await serializable(db, async (tx) => {
+  await sessionLocked(db, async (tx) => {
     const session = await lockedSession(tx, input.callId);
     const now = new Date();
     const browser = await tx.session.findFirst({ where: { id: input.sessionId, userId: input.userId, expiresAt: { gt: now }, user: { active: true } }, include: { user: true } });
@@ -395,7 +411,7 @@ export async function sweepVoiceSessions(db: PrismaClient = prisma): Promise<num
   let closed = 0;
   for (const { callId } of candidates) {
     // Rechecked under the lock: someone may have ended or joined the call since.
-    const ended = await serializable(db, async (tx) => {
+    const ended = await sessionLocked(db, async (tx) => {
       const session = await lockedSession(tx, callId);
       const now = new Date();
       if (await tx.voiceSession.count({ where: { id: session.id, ...abandonedWhere(now) } }) === 0) return false;

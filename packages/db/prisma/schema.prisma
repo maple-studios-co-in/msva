@@ -644,6 +644,7 @@ model VoiceSession {
   prompt                String             @default("")
   participants          VoiceParticipant[]
   lease                 VoiceLease?
+  usage                 VoiceSessionUsage?
   events                VoiceEvent[]
   segments              TranscriptSegment[]
   admissions            VoiceAdmission[]
@@ -677,6 +678,13 @@ model VoiceLease {
   @@index([expiresAt])
 }
 
+/// What one call has ingested, written only by evidence ingestion.
+model VoiceSessionUsage {
+  sessionId String       @id
+  session   VoiceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  events    Int          @default(0)
+  bytes     Int          @default(0)
+}
 model VoiceEvent {
   id              String       @id @default(cuid())
   sessionId       String
@@ -686,7 +694,6 @@ model VoiceEvent {
   sourceSequence  Int
   canonicalBody   String
   bodyHash        String
-  bodyBytes       Int
   type            String
   occurredAt      DateTime
   createdAt       DateTime     @default(now())

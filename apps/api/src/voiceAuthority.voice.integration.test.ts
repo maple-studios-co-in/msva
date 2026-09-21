@@ -35,10 +35,24 @@ const flushed = (call: Live, seq: number): WorkerEvent => ({ ...envelope(call, s
 const complaint = { journey: "CONSUMER_COMPLAINT", callerConfirmation: "NEW", fields: { product: "Oil", purchaseArea: "Indore", issueCategory: "quality", description: "Leaking", productAvailable: true }, queue: { territory: "MP", language: "hi" } };
 const tool = (call: Live, invocationId: string, args: unknown = complaint) => invokeVoiceTool({ callId: call.callId, invocationId, agentEpoch: 1, name: "create_business_request", arguments: args }, call.lease.token, db);
 const failed = (call: Live, seq: number, code: "FATAL" | "TRANSIENT" = "FATAL"): WorkerEvent => ({ ...envelope(call, seq), type: "agent.failed", payload: { code } });
-/** Evidence already stored for the call, so a test can start at the ingestion limits. */
-const storedEvents = (call: Live, count: number, bodyBytes = 10) => db.voiceEvent.createMany({
-  data: Array.from({ length: count }, (_, index) => ({ sessionId: call.sessionId, eventId: `stored-${index}`, agentEpoch: 0, sourceSequence: index + 1, canonicalBody: "{}", bodyHash: "stored", bodyBytes, type: "agent.ready", occurredAt: new Date() }))
-});
+/** Records that the call has already ingested this much, so a test can start at the limits. */
+const alreadyIngested = (call: Live, events: number, bytes = 0) => db.voiceSessionUsage.upsert({ where: { sessionId: call.sessionId }, create: { sessionId: call.sessionId, events, bytes }, update: { events, bytes } });
+const lockWaiters = (count: number) => vi.waitFor(async () => {
+  const [row] = await db.$queryRaw<{ waiting: bigint }[]>`SELECT count(*) AS waiting FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`;
+  expect(Number(row!.waiting)).toBe(count);
+}, { timeout: 5_000, interval: 20 });
+/**
+ * Statistics from an ingestion history like a live database's (300 ended calls
+ * of 30 events), left behind on emptied tables. They change how Postgres looks
+ * an event up, and with it how a concurrent duplicate surfaces.
+ */
+async function withHistory() {
+  await db.$executeRawUnsafe(`INSERT INTO "Call" ("id", "provider", "isTest", "fromNumber", "status", "outcome", "endedAt") SELECT 'history-' || g, 'BROWSER', true, 'browser', 'COMPLETED', 'ABANDONED', now() FROM generate_series(1, 300) AS g`);
+  await db.$executeRawUnsafe(`INSERT INTO "VoiceSession" ("id", "callId", "roomName", "createRequestId", "createRequestHash", "dispatchIntentId", "state", "endedAt", "currentEpoch") SELECT 'history-' || g, 'history-' || g, 'room-history-' || g, 'request-history-' || g, 'h', 'dispatch-history-' || g, 'ENDED', now(), 1 FROM generate_series(1, 300) AS g`);
+  await db.$executeRawUnsafe(`INSERT INTO "VoiceEvent" ("id", "sessionId", "eventId", "agentEpoch", "sourceSequence", "canonicalBody", "bodyHash", "type", "occurredAt") SELECT 'history-' || g || '-' || n, 'history-' || g, 'event-' || n, 1, n, repeat('x', 400), 'h', 'transcript.final', now() FROM generate_series(1, 300) AS g, generate_series(1, 30) AS n`);
+  await db.$executeRawUnsafe(`ANALYZE "VoiceEvent", "VoiceSession", "Call"`);
+  await db.$executeRawUnsafe('TRUNCATE TABLE "VoiceEvent", "VoiceSession", "Call" CASCADE');
+}
 async function signedIn(role: "ADMIN" | "SUPERVISOR" | "AGENT" | "VIEWER" = "AGENT") {
   const user = await db.user.create({ data: { email: `${randomUUID()}@test.invalid`, name: "Person", role } });
   const browser = await db.session.create({ data: { userId: user.id, tokenHash: randomUUID(), expiresAt: new Date(Date.now() + 3_600_000) } });
@@ -97,7 +111,7 @@ describe("worker authority", () => {
 
   it("bounds how many events one call can ingest, leaving room for one checkpoint", async () => {
     const call = await liveCall();
-    await storedEvents(call, 4_999);
+    await alreadyIngested(call, 4_999);
     const first = ready(call, 1);
     await recordVoiceEvent(first, call.lease.token, db);
     await expect(recordVoiceEvent(callerFinal(call, 2), call.lease.token, db)).rejects.toMatchObject({ code: "EVENT_CAPACITY" });
@@ -110,7 +124,7 @@ describe("worker authority", () => {
 
   it("bounds how many bytes of evidence one call can ingest", async () => {
     const call = await liveCall();
-    await storedEvents(call, 1, 8 * 1024 * 1024 - 10);
+    await alreadyIngested(call, 1, 8 * 1024 * 1024 - 10);
     await expect(recordVoiceEvent(ready(call, 1), call.lease.token, db)).rejects.toMatchObject({ code: "EVENT_CAPACITY" });
   });
 
@@ -140,11 +154,39 @@ describe("worker authority", () => {
     expect(await db.ticket.count()).toBe(4);
   });
 
+  it("never lets one call's evidence make another call's ingestion fail", async () => {
+    const first = await liveCall("first");
+    const second = await liveCall("second");
+    const failures: unknown[] = [];
+    const stream = async (call: Live) => {
+      for (let seq = 1; seq <= 150; seq += 1) await recordVoiceEvent(callerFinal(call, seq, `utterance ${seq}`), call.lease.token, db).catch((error) => { failures.push(error); });
+    };
+    let streaming = true;
+    const renewals = (async () => {
+      while (streaming) {
+        for (const call of [first, second]) await renewVoiceLease(call.callId, 1, call.lease.token, db).catch((error) => { failures.push(error); });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    })();
+    await Promise.all([stream(first), stream(second)]);
+    streaming = false;
+    await renewals;
+    expect(failures).toEqual([]);
+    expect(await db.voiceEvent.count()).toBe(300);
+  });
+
   it("answers a repeated event sent while the first is still being stored", async () => {
+    await withHistory();
     const call = await liveCall();
     const event = ready(call, 1);
-    const results = await Promise.all([recordVoiceEvent(event, call.lease.token, db), recordVoiceEvent(event, call.lease.token, db)]);
-    expect(results.map((result) => result.status).sort()).toEqual(["committed", "duplicate"]);
+    let copies!: Array<ReturnType<typeof recordVoiceEvent>>;
+    // Both copies wait for the session, so the second reads from before the first commits.
+    await db.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "VoiceSession" WHERE "id" = ${call.sessionId} FOR UPDATE`;
+      copies = [recordVoiceEvent(event, call.lease.token, db), recordVoiceEvent(event, call.lease.token, db)];
+      await lockWaiters(2);
+    }, { timeout: 15_000 });
+    expect((await Promise.all(copies)).map((result) => result.status).sort()).toEqual(["committed", "duplicate"]);
   });
 });
 
@@ -219,7 +261,7 @@ describe("ending calls without complete evidence", () => {
 
   it("ends a call whose evidence reached the ingestion limit", async () => {
     const call = await liveCall();
-    await storedEvents(call, 4_999);
+    await alreadyIngested(call, 4_999);
     await recordVoiceEvent(ready(call, 1), call.lease.token, db);
     await expect(recordVoiceEvent(callerFinal(call, 2), call.lease.token, db)).rejects.toMatchObject({ code: "EVENT_CAPACITY" });
     await finalizeVoiceSession(call.callId, db);

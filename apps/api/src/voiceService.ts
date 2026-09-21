@@ -6,6 +6,7 @@ const LEASE_MS = 30_000;
 const REPLAY_MS = 24 * 60 * 60 * 1000;
 const CONNECTION_MS = 10_000;
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+export const workerParticipantIdentity = (callId: string) => `msva-agent-${hash(callId).slice(0, 32)}`;
 const stable = (value: unknown): string => value === null || typeof value !== "object" ? JSON.stringify(value) : Array.isArray(value) ? `[${value.map(stable).join(",")}]` : `{${Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${JSON.stringify(k)}:${stable(v)}`).join(",")}}`;
 
 export class VoiceError extends Error { constructor(readonly status: number, readonly code: string, message = "Voice service request denied") { super(message); } }
@@ -56,7 +57,7 @@ function activeLease(session: Awaited<ReturnType<typeof lockedSession>>, token: 
   throw new VoiceError(409, "LEASE_EXPIRED");
 }
 
-export async function createVoiceSession(input: { requestId: string; callId: string; ownerUserId?: string; ownerSessionId?: string; language?: string; callerParticipantId: string; agentParticipantId: string }, db: PrismaClient = prisma) {
+export async function createVoiceSession(input: { requestId: string; callId: string; ownerUserId?: string; ownerSessionId?: string; language?: string; callerParticipantId: string }, db: PrismaClient = prisma) {
   const canonicalInput = stable(input); const requestHash = hash(canonicalInput); const roomName = `msva-${hash(`${input.callId}:${input.requestId}`).slice(0, 24)}`; const dispatchIntentId = randomUUID();
   return serializable(db, async (tx) => {
     const replay = await tx.voiceSession.findUnique({ where: { createRequestId: input.requestId } });
@@ -64,7 +65,7 @@ export async function createVoiceSession(input: { requestId: string; callId: str
     const call = await tx.call.findUnique({ where: { id: input.callId }, select: { id: true } }); if (!call) throw new VoiceError(404, "CALL_NOT_FOUND");
     await tx.voiceSession.updateMany({ where: { state: "STARTING", expiresAt: { lte: new Date() } }, data: { state: "FAILED", endedAt: new Date() } });
     const count = await tx.voiceSession.count({ where: { state: { in: ["STARTING", "ACTIVE"] } } }); if (count >= 2) throw new VoiceError(409, "ACTIVE_CAPACITY");
-    return tx.voiceSession.create({ data: { callId: input.callId, roomName, ownerUserId: input.ownerUserId, ownerSessionId: input.ownerSessionId, createRequestId: input.requestId, createRequestHash: requestHash, dispatchIntentId, state: "STARTING", expiresAt: new Date(Date.now() + 60_000), language: input.language ?? "hi", prompt: prompt(input.language ?? "hi"), participants: { create: [{ identity: input.callerParticipantId, role: "CALLER" }, { identity: input.agentParticipantId, role: "AGENT" }] } } });
+    return tx.voiceSession.create({ data: { callId: input.callId, roomName, ownerUserId: input.ownerUserId, ownerSessionId: input.ownerSessionId, createRequestId: input.requestId, createRequestHash: requestHash, dispatchIntentId, state: "STARTING", expiresAt: new Date(Date.now() + 60_000), language: input.language ?? "hi", prompt: prompt(input.language ?? "hi"), participants: { create: [{ identity: input.callerParticipantId, role: "CALLER" }, { identity: workerParticipantIdentity(input.callId), role: "AGENT" }] } } });
   });
 }
 

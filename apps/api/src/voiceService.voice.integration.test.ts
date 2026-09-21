@@ -55,6 +55,18 @@ describe("voice session persistence", () => {
     await expect(createVoiceSession({ ...input, language: "en" }, db)).rejects.toMatchObject({ code: "CREATE_REQUEST_CONFLICT" } satisfies Partial<VoiceError>);
     expect(await db.voiceSession.count({ where: { callId } })).toBe(1);
   });
+  it("reclaims expired startup capacity before rejecting a new create", async () => {
+    const createStarting = async (suffix: string) => {
+      const callId = `voice-${suffix}-${randomUUID()}`;
+      await db.call.create({ data: { id: callId, provider: "BROWSER", isTest: true, fromNumber: "browser" } });
+      return createVoiceSession({ requestId: `request-${callId}`, callId, callerParticipantId: `caller-${suffix}` }, db);
+    };
+    const first = await createStarting("one");
+    await createStarting("two");
+    await expect(createStarting("three")).rejects.toMatchObject({ code: "ACTIVE_CAPACITY" } satisfies Partial<VoiceError>);
+    await db.voiceSession.update({ where: { id: first.id }, data: { expiresAt: new Date(Date.now() - 1) } });
+    await expect(createStarting("three-retry")).resolves.toMatchObject({ state: "STARTING" });
+  });
   it("persists a fatal terminal state and fences renewal", async () => {
     const item = await session(); const row = await db.voiceSession.findUniqueOrThrow({ where: { id: item.id } }); const lease = await claimVoiceLease({ callId: item.callId, roomName: row.roomName, dispatchId: "dispatch", participantId: workerParticipantIdentity(item.callId) }, worker, db);
     await recordVoiceEvent({ schemaVersion: 1, eventId: "fatal", callId: item.callId, agentEpoch: 1, sourceSequence: 1, occurredAt: new Date().toISOString(), type: "agent.failed", payload: { code: "FATAL" } }, lease.token, db);

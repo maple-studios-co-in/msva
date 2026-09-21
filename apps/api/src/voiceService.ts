@@ -109,10 +109,15 @@ export async function claimVoiceLease(input: { callId: string; roomName: string;
 }
 
 export async function voiceContext(callId: string, token: string, db: PrismaClient = prisma, now = new Date()) {
-  const session = await db.voiceSession.findFirst({ where: { callId }, include: { participants: true, lease: true } }); if (!session) throw new VoiceError(404, "CALL_NOT_FOUND");
-  const lease = activeLease(session, token, now); if (session.state !== "ACTIVE" || session.ownershipMode !== "AI") throw new VoiceError(409, "SESSION_UNAVAILABLE");
-  const caller = session.participants.find((p) => p.role === "CALLER"); const agent = session.participants.find((p) => p.role === "AGENT"); if (!caller || !agent) throw new VoiceError(503, "SESSION_INCOMPLETE");
-  return { callId, roomName: session.roomName, agentEpoch: lease.agentEpoch, callerParticipantId: caller.identity, agentParticipantId: agent.identity, language: session.language, permittedTools: ["create_business_request"] as const, prompt: session.prompt };
+  return serializable(db, async (tx) => {
+    const session = await lockedSession(tx, callId);
+    const lease = activeLease(session, token, new Date());
+    if (session.state !== "ACTIVE" || session.ownershipMode !== "AI") throw new VoiceError(409, "SESSION_UNAVAILABLE");
+    const caller = session.participants.find((participant) => participant.role === "CALLER");
+    const agent = session.participants.find((participant) => participant.role === "AGENT");
+    if (!caller || !agent) throw new VoiceError(503, "SESSION_INCOMPLETE");
+    return { callId, roomName: session.roomName, agentEpoch: lease.agentEpoch, callerParticipantId: caller.identity, agentParticipantId: agent.identity, language: session.language, permittedTools: ["create_business_request"] as const, prompt: session.prompt };
+  });
 }
 
 export async function renewVoiceLease(callId: string, epoch: number, token: string, db: PrismaClient = prisma, now = new Date()): Promise<VoiceLease> {
@@ -237,11 +242,14 @@ export async function invokeVoiceTool(input: { callId: string; invocationId: str
 }
 
 export async function voiceToolReceipt(callId: string, invocationId: string, token: string, db: PrismaClient = prisma, now = new Date()): Promise<CreateRequestResult> {
-  const session = await db.voiceSession.findFirst({ where: { callId }, include: { participants: true, lease: true } }); if (!session) throw new VoiceError(404, "CALL_NOT_FOUND");
-  if (!session.lease || !tokenEquals(`Bearer ${token}`, leaseToken(session.id, session.lease.agentEpoch)) || hash(token) !== session.lease.tokenHash || now.getTime() > session.lease.expiresAt.getTime() + REPLAY_MS) throw new VoiceError(409, "LEASE_EXPIRED");
-  const invocation = await db.toolInvocation.findUnique({ where: { sessionId_invocationId: { sessionId: session.id, invocationId } } });
-  if (!invocation || invocation.status !== "COMMITTED" || !invocation.result) throw new VoiceError(404, "TOOL_RECEIPT_NOT_FOUND");
-  return invocation.result as unknown as CreateRequestResult;
+  return serializable(db, async (tx) => {
+    const session = await lockedSession(tx, callId);
+    const checkedAt = new Date();
+    if (!session.lease || !tokenEquals(`Bearer ${token}`, leaseToken(session.id, session.lease.agentEpoch)) || hash(token) !== session.lease.tokenHash || checkedAt.getTime() > session.lease.expiresAt.getTime() + REPLAY_MS) throw new VoiceError(409, "LEASE_EXPIRED");
+    const invocation = await tx.toolInvocation.findUnique({ where: { sessionId_invocationId: { sessionId: session.id, invocationId } } });
+    if (!invocation || invocation.status !== "COMMITTED" || !invocation.result) throw new VoiceError(404, "TOOL_RECEIPT_NOT_FOUND");
+    return invocation.result as unknown as CreateRequestResult;
+  });
 }
 
 export async function prepareBrowserAdmission(input: { callId: string; userId: string; sessionId: string; role: "CALLER" | "OPERATOR_LISTENER" | "OPERATOR_SPEAKER"; expectedAuthorizationVersion: number }, db: PrismaClient = prisma, now = new Date()) {

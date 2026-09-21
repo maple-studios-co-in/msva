@@ -7,7 +7,7 @@ LEASE = ReplayCredential("call-1", 1, "historical-token", "2030-01-01T00:00:00Z"
 
 
 def event(event_id: str = "event-1") -> dict:
-    return {"schemaVersion": 1, "eventId": event_id, "callId": "call-1", "type": "agent.ready"}
+    return {"schemaVersion": 1, "eventId": event_id, "callId": "call-1", "sourceSequence": int(event_id.rsplit("-", 1)[1]), "type": "agent.ready"}
 
 
 def test_spool_survives_restart_and_deletes_only_after_ack(tmp_path):

@@ -87,6 +87,12 @@ class EventSpool:
             next_attempt_at REAL NOT NULL, created_at REAL NOT NULL, fault TEXT)""")
         if "fault" not in self._columns(db, "event_spool"):
             db.execute("ALTER TABLE event_spool ADD COLUMN fault TEXT")
+        if "source_sequence" not in self._columns(db, "event_spool"):
+            db.execute("ALTER TABLE event_spool ADD COLUMN source_sequence INTEGER")
+            db.execute("UPDATE event_spool SET source_sequence=CAST(json_extract(payload, '$.sourceSequence') AS INTEGER)")
+        # Each stream's head is found through this index, never by reading every payload.
+        db.execute("CREATE INDEX IF NOT EXISTS event_spool_stream ON event_spool(call_id, agent_epoch, source_sequence)")
+        db.execute("CREATE INDEX IF NOT EXISTS event_spool_created ON event_spool(created_at)")
         db.execute("""CREATE TABLE IF NOT EXISTS source_sequence (
             call_id TEXT NOT NULL, agent_epoch INTEGER NOT NULL, next_value INTEGER NOT NULL,
             updated_at REAL NOT NULL DEFAULT 0, PRIMARY KEY(call_id, agent_epoch))""")
@@ -176,8 +182,8 @@ class EventSpool:
                 return False
             if not self._has_room(db, stored_bytes):
                 raise SpoolCapacityError("durable event spool is at capacity")
-            db.execute("""INSERT INTO event_spool(event_id,call_id,agent_epoch,payload,payload_bytes,encrypted_token,expires_at,next_attempt_at,created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", (event_id, call_id, credential.agent_epoch, serialized, stored_bytes,
+            db.execute("""INSERT INTO event_spool(event_id,call_id,agent_epoch,source_sequence,payload,payload_bytes,encrypted_token,expires_at,next_attempt_at,created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (event_id, call_id, credential.agent_epoch, int(payload["sourceSequence"]), serialized, stored_bytes,
                 encrypted, credential.expires_at, now, now))
         return True
 
@@ -198,8 +204,8 @@ class EventSpool:
             if not event_id or not self._has_room(db, stored_bytes):
                 raise SpoolCapacityError("durable event spool is at capacity")
             db.execute("INSERT OR REPLACE INTO source_sequence(call_id,agent_epoch,next_value,updated_at) VALUES (?, ?, ?, ?)", (call_id, agent_epoch, sequence + 1, now))
-            db.execute("""INSERT INTO event_spool(event_id,call_id,agent_epoch,payload,payload_bytes,encrypted_token,expires_at,next_attempt_at,created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", (event_id, call_id, agent_epoch, serialized, stored_bytes,
+            db.execute("""INSERT INTO event_spool(event_id,call_id,agent_epoch,source_sequence,payload,payload_bytes,encrypted_token,expires_at,next_attempt_at,created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (event_id, call_id, agent_epoch, sequence, serialized, stored_bytes,
                 encrypted, credential.expires_at, now, now))
         return event_id, sequence
 
@@ -208,9 +214,9 @@ class EventSpool:
         event still blocks everything after it, so no stream ever skips an event."""
         now = time.time() if now is None else now
         rows = self._connection.execute("""SELECT e.event_id,e.call_id,e.agent_epoch,e.payload,e.attempts,e.encrypted_token,e.expires_at
-            FROM event_spool e WHERE e.fault IS NULL AND e.next_attempt_at<=? AND NOT EXISTS (
-              SELECT 1 FROM event_spool earlier WHERE earlier.call_id=e.call_id AND earlier.agent_epoch=e.agent_epoch
-              AND CAST(json_extract(earlier.payload, '$.sourceSequence') AS INTEGER) < CAST(json_extract(e.payload, '$.sourceSequence') AS INTEGER))
+            FROM (SELECT call_id, agent_epoch, MIN(source_sequence) AS head FROM event_spool GROUP BY call_id, agent_epoch) AS stream
+            JOIN event_spool e ON e.call_id=stream.call_id AND e.agent_epoch=stream.agent_epoch AND e.source_sequence=stream.head
+            WHERE e.fault IS NULL AND e.next_attempt_at<=?
             ORDER BY e.created_at LIMIT ?""", (now, limit)).fetchall()
         result = []
         for row in rows:

@@ -197,8 +197,11 @@ class EventSpool:
             return ordering
 
     def _has_room(self, db: sqlite3.Connection, stored_bytes: int) -> bool:
-        row = db.execute("SELECT COUNT(*), COALESCE(SUM(payload_bytes), 0) FROM event_spool").fetchone()
-        return int(row[0]) < self.max_events and int(row[1]) + stored_bytes <= self.max_bytes
+        # Tool intents and their receipts are pending local state too, so they share the bound.
+        events, event_bytes = db.execute("SELECT COUNT(*), COALESCE(SUM(payload_bytes), 0) FROM event_spool").fetchone()
+        intents, intent_bytes = db.execute("""SELECT COUNT(*), COALESCE(SUM(LENGTH(CAST(arguments AS BLOB))
+            + COALESCE(LENGTH(CAST(receipt AS BLOB)), 0)), 0) FROM tool_intent""").fetchone()
+        return int(events) + int(intents) < self.max_events and int(event_bytes) + int(intent_bytes) + stored_bytes <= self.max_bytes
 
     def enqueue(self, *, event_id: str, call_id: str, payload: dict[str, Any], credential: ReplayCredential, now: float | None = None) -> bool:
         if credential.call_id != call_id:
@@ -333,6 +336,8 @@ class EventSpool:
                 if row[1] != name or row[2] != body:
                     raise ToolIntentConflict("logical tool call was reused with different content")
                 return str(row[0]), json.loads(row[4]) if row[3] == "COMMITTED" and row[4] else None
+            if not self._has_room(db, len(body.encode())):
+                raise SpoolCapacityError("durable event spool is at capacity")
             invocation_id = str(uuid4())
             db.execute("INSERT INTO tool_intent(call_id,agent_epoch,logical_id,name,arguments,invocation_id,state,created_at) VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?)", (call_id, agent_epoch, logical_id, name, body, invocation_id, time.time()))
             return invocation_id, None

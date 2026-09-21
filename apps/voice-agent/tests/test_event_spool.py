@@ -61,3 +61,23 @@ def test_sequences_and_encrypted_replay_credential_survive_restart(tmp_path):
     assert queued.credential.token == "historical-lease"
     assert queued.credential.agent_epoch == 3
     assert reopened.next_sequence(call_id="call-1", agent_epoch=3) == 3
+
+
+def test_tool_intents_count_toward_the_spool_bound(tmp_path):
+    spool = EventSpool(tmp_path / "spool.sqlite3", max_events=2, max_bytes=4096, replay_key=KEY)
+    intent = {"call_id": "call-1", "agent_epoch": 1, "name": "create_business_request", "arguments": {"journey": "SALES_LEAD"}}
+    first, _ = spool.tool_intent(logical_id="toolu_A", **intent)
+    assert spool.enqueue(event_id="event-1", call_id="call-1", payload=event(), credential=LEASE) is True
+    with pytest.raises(SpoolCapacityError):
+        spool.enqueue(event_id="event-2", call_id="call-1", payload=event("event-2"), credential=LEASE)
+    with pytest.raises(SpoolCapacityError):
+        spool.tool_intent(logical_id="toolu_B", **intent)
+    # A logical call already recorded is still answered from its stored intent.
+    assert spool.tool_intent(logical_id="toolu_A", **intent) == (first, None)
+
+
+def test_tool_intent_bytes_count_toward_the_spool_bound(tmp_path):
+    spool = EventSpool(tmp_path / "spool.sqlite3", max_events=100, max_bytes=1024, replay_key=KEY)
+    spool.tool_intent(call_id="call-1", agent_epoch=1, logical_id="toolu_A", name="create_business_request", arguments={"description": "x" * 900})
+    with pytest.raises(SpoolCapacityError):
+        spool.enqueue(event_id="event-1", call_id="call-1", payload=event(), credential=LEASE)

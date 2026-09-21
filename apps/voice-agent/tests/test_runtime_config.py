@@ -39,7 +39,7 @@ def test_enabled_runtime_uses_bounded_lease_and_spool(tmp_path: Path):
     assert config.lease_seconds == 30
     # Inside the API's 5 s evidence tolerance, so an end the API decides is noticed in time.
     assert config.lease_renew_seconds == 3
-    assert config.spool_max_events == 10_000
+    assert config.spool_max_events == 10_100
 
 
 @pytest.mark.parametrize("seconds", ["30", "5"])
@@ -76,14 +76,18 @@ def enabled_env(tmp_path: Path) -> dict[str, str]:
 
 
 def test_default_spool_holds_the_default_calls_at_the_api_limits():
-    # The API's per-call ingestion limits (MAX_SESSION_EVENTS and MAX_SESSION_EVENT_BYTES).
-    api_max_events, api_max_bytes = 5_000, 8 * 1024 * 1024
+    # The API's per-call limits (MAX_SESSION_EVENTS, MAX_SESSION_EVENT_BYTES and
+    # MAX_SESSION_TOOL_CALLS).
+    api_max_events, api_max_bytes, api_max_tool_calls = 5_000, 8 * 1024 * 1024, 5
     # A Fernet-encrypted lease credential is stored with every event; 256 bytes bounds it.
     credential_bytes = 256
+    # The largest valid request is about 37 KB as UTF-8; 64 KiB bounds it with its receipt.
+    intent_bytes = 64 * 1024
     config = RuntimeConfig.from_env({})
 
-    assert config.spool_max_events >= config.call_limit * api_max_events
-    assert config.spool_max_bytes >= config.call_limit * (api_max_bytes + api_max_events * credential_bytes)
+    assert config.spool_max_events >= config.call_limit * (api_max_events + api_max_tool_calls)
+    assert config.spool_max_bytes >= config.call_limit * (
+        api_max_bytes + api_max_events * credential_bytes + api_max_tool_calls * intent_bytes)
 
 
 def test_the_deploy_template_spells_out_settings_an_enabled_worker_accepts(tmp_path: Path):

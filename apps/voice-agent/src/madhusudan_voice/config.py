@@ -47,8 +47,9 @@ DEFAULT_SPOOL_PATH = "/var/lib/msva-voice-agent/spool.sqlite3"
 # The spool is this host's backlog of undelivered evidence, shared by all its calls.
 # The API accepts at most 5,000 events and 8 MiB of event bodies per call, so the
 # defaults hold two such calls (the default call limit) through an API outage,
-# with room for each event's encrypted replay credential.
-DEFAULT_SPOOL_MAX_EVENTS = 10_000
+# with room for each event's encrypted replay credential and for the calls' tool
+# intents, which count toward the same bound.
+DEFAULT_SPOOL_MAX_EVENTS = 10_100
 DEFAULT_SPOOL_MAX_BYTES = 52_428_800
 DEFAULT_CALL_LIMIT = 2
 # The API's lease lasts 30 s, and it accepts evidence stamped at most 5 s after a

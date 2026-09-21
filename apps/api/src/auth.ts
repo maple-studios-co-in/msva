@@ -307,7 +307,10 @@ export async function verifyLoginCode(
     const user = await tx.user.findFirst({ where: { email } });
     if (!user) return null;
     await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${user.id} FOR UPDATE`;
-    await tx.$queryRaw`SELECT "id" FROM "LoginCode" WHERE "userId" = ${user.id} FOR UPDATE`;
+    // Only codes that could authorize are locked. Pending ones are left alone, so
+    // this never waits on a code whose delivery is being reclaimed (which would
+    // take the user lock in the opposite order).
+    await tx.$queryRaw`SELECT "id" FROM "LoginCode" WHERE "userId" = ${user.id} AND "deliveryState" = 'DELIVERED' AND "usedAt" IS NULL FOR UPDATE`;
     const now = new Date();
     const currentUser = await tx.user.findUnique({ where: { id: user.id } });
     if (!currentUser?.active) return null;

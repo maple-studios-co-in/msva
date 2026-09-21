@@ -237,6 +237,28 @@ describe("login code verification", () => {
     expect(await db.session.count()).toBe(0);
   });
 
+  it("does not deadlock with a request that reclaims the same user's abandoned send", async () => {
+    const { user, auth, code } = await deliveredLogin("reclaim@example.test");
+    // A send abandoned by a crashed process.
+    await db.loginCode.create({ data: { id: randomBytes(24).toString("hex"), userId: user.id, codeHash: "0".repeat(64), expiresAt: new Date(Date.now() + 600_000), deliveryLeaseExpiresAt: new Date(Date.now() - 1_000) } });
+    const waiters = async (count: number) => vi.waitFor(async () => {
+      const [row] = await db.$queryRaw<{ waiting: bigint }[]>`SELECT count(*) AS waiting FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`;
+      expect(Number(row!.waiting)).toBe(count);
+    }, { timeout: 5_000, interval: 20 });
+    let verifying!: ReturnType<typeof auth.verifyLoginCode>;
+    // Both wait for the user lock, verification first. The request has already
+    // claimed the abandoned send, which verification must not then wait for.
+    await db.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${user.id} FOR UPDATE`;
+      verifying = auth.verifyLoginCode(user.email, code, network(42));
+      await waiters(1);
+      await auth.requestLoginCode(user.email, network(43));
+      await waiters(2);
+    }, { timeout: 15_000 });
+    expect(await verifying).toMatchObject({ token: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    await vi.waitFor(async () => expect(await db.loginCode.count({ where: { userId: user.id, deliveryState: "DELIVERED", usedAt: null } })).toBe(1), { timeout: 5_000 });
+  });
+
   it("rechecks the attempt count after waiting for the code lock", async () => {
     const { user, auth, code } = await deliveredLogin("exhausted@example.test");
     let verifying!: ReturnType<typeof auth.verifyLoginCode>;

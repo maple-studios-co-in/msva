@@ -8,7 +8,8 @@ const db = vi.hoisted(() => ({
   ready: vi.fn(),
   call: { findUnique: vi.fn(), update: vi.fn() },
   caller: { findUnique: vi.fn(), create: vi.fn(), update: vi.fn() },
-  ticket: { create: vi.fn() }
+  ticket: { create: vi.fn() },
+  $transaction: vi.fn()
 }));
 vi.mock("@msva/db", () => ({ databaseReady: db.ready, prisma: db }));
 import { createTicket, checkInventory, sendWhatsappConfirmation } from "./tools/crm.js";
@@ -34,6 +35,7 @@ beforeEach(() => {
   db.call.findUnique.mockResolvedValue({ id: "session-1", fromNumber: profile.phone, callerName: "Test caller", callerType: "CUSTOMER", callerId: "caller-1" });
   db.call.update.mockResolvedValue({ id: "session-1" });
   db.ticket.create.mockResolvedValue({ id: "ticket-row", number: 418 });
+  db.$transaction.mockImplementation((work: (tx: typeof db) => Promise<unknown>) => work(db));
   setLlmEnabled(false);
   vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("unexpected network request")));
 });

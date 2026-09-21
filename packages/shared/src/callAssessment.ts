@@ -49,4 +49,14 @@ export type CallAssessmentResponse = {
   eligibility: CallAssessmentEligibility;
   assessment: CallAssessmentDto | null;
   current: boolean;
+  automaticJob?: AutomaticAssessmentJobDto | null;
+};
+
+export type AutomaticAssessmentJobDto = {
+  state: "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "SKIPPED";
+  dueAt: string;
+  attempts: number;
+  reason: string | null;
+  leaseExpiresAt: string | null;
+  stalled: boolean;
 };

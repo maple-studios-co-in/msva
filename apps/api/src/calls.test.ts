@@ -10,7 +10,7 @@ vi.mock("@msva/db", () => ({ prisma: db }));
 import { recordCallStart, recordCallEnd, recordTurn } from "./calls.js";
 beforeEach(() => {
   vi.resetAllMocks();
-  db.$transaction.mockImplementation((writes: unknown[]) => Promise.all(writes));
+  db.$transaction.mockImplementation((work: unknown) => Array.isArray(work) ? Promise.all(work) : (work as (tx: typeof db) => Promise<unknown>)(db));
   db.call.update.mockResolvedValue({ id: "call-1" });
 });
 function savedCall(overrides: Record<string, unknown> = {}) {

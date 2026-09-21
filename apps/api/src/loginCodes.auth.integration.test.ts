@@ -96,6 +96,19 @@ async function withRescanningPlans(work: () => Promise<void>) {
   }
 }
 
+/** Runs `work` with the app's database sessions in a time zone other than UTC. */
+async function withDatabaseTimeZone(zone: string, work: () => Promise<void>) {
+  const { prisma } = await import("@msva/db");
+  await db.$executeRawUnsafe(`ALTER DATABASE msva_auth_test SET timezone = '${zone}'`);
+  await prisma.$disconnect();
+  try {
+    await work();
+  } finally {
+    await db.$executeRawUnsafe("ALTER DATABASE msva_auth_test RESET timezone");
+    await prisma.$disconnect();
+  }
+}
+
 const settle = (ms = 300) => new Promise((resolve) => setTimeout(resolve, ms));
 const wrongCode = (code: string) => (code === "000000" ? "111111" : "000000");
 
@@ -372,6 +385,30 @@ describe("shared throttles", () => {
     expect((limited as { retryAfter: number }).retryAfter).toBeGreaterThan(0);
   });
 
+  it("keeps windows and expiry in UTC whatever the database's time zone", async () => {
+    const user = await db.user.create({ data: { email: "zone@example.test", name: "Zone", role: "AGENT" } });
+    const code = (hoursAgo: number) => ({ id: randomBytes(24).toString("hex"), userId: user.id, codeHash: "0".repeat(64), deliveryState: "DELIVERED" as const, expiresAt: new Date(Date.now() - hoursAgo * 3_600_000), createdAt: new Date(Date.now() - hoursAgo * 3_600_000) });
+    const recent = code(20);
+    const old = code(25);
+    await db.loginCode.createMany({ data: [recent, old] });
+    await db.authRateBucket.createMany({ data: [
+      { scope: "old", keyHash: "live", windowStart: new Date(0), count: 1, expiresAt: new Date(Date.now() + 3_600_000) },
+      { scope: "old", keyHash: "expired", windowStart: new Date(0), count: 1, expiresAt: new Date(Date.now() - 3_600_000) }
+    ] });
+    await withDatabaseTimeZone("Asia/Kolkata", async () => {
+      const auth = await authWithFakeDelivery(async () => undefined);
+      const before = Date.now();
+      expect(await auth.requestLoginCode(user.email, network(84))).toEqual({ ok: true });
+      const after = Date.now();
+      await vi.waitFor(async () => expect(await db.loginCode.count({ where: { userId: user.id, id: { notIn: [recent.id, old.id] }, deliveryState: "DELIVERED" } })).toBe(1));
+      const minute = await db.authRateBucket.findFirstOrThrow({ where: { scope: "request-email-minute" } });
+      expect([before, after].map((at) => Math.floor(at / 60_000) * 60_000)).toContain(minute.windowStart.getTime());
+    });
+    expect((await db.authRateBucket.findMany({ where: { scope: "old" } })).map((bucket) => bucket.keyHash)).toEqual(["live"]);
+    expect(await db.loginCode.findUnique({ where: { id: recent.id } })).not.toBeNull();
+    expect(await db.loginCode.findUnique({ where: { id: old.id } })).toBeNull();
+  });
+
   it("removes expired buckets in bounded batches", async () => {
     const expired = new Date(Date.now() - 60_000);
     await db.authRateBucket.createMany({
@@ -386,6 +423,22 @@ describe("shared throttles", () => {
 });
 
 describe("abuse resistance", () => {
+  it("never holds the shared hourly bucket while a client waits on its own limits", async () => {
+    const auth = await authWithFakeDelivery(async () => undefined);
+    await auth.requestLoginCode("contended@example.test", network(82));
+    await db.authRateBucket.deleteMany({ where: { scope: "request-email-minute" } });
+    let contended!: ReturnType<typeof auth.requestLoginCode>;
+    await db.$transaction(async (tx) => {
+      // The contended client's own hourly bucket is busy, so its reservation waits.
+      await tx.$queryRaw`SELECT "id" FROM "AuthRateBucket" WHERE "scope" = 'request-email-hour' FOR UPDATE`;
+      contended = auth.requestLoginCode("contended@example.test", network(82));
+      await lockWaiters(1);
+      // Meanwhile anyone else is still admitted.
+      expect(await auth.requestLoginCode("bystander@example.test", network(83))).toEqual({ ok: true });
+    }, { timeout: 15_000 });
+    expect(await contended).toEqual({ ok: true });
+  });
+
   it("does not let one client's flood lock everyone else out", async () => {
     const auth = await authWithFakeDelivery(async () => undefined);
     for (let index = 0; index < 120; index += 1) await auth.requestLoginCode("victim@example.test", network(70));

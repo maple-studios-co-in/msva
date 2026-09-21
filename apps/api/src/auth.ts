@@ -1,4 +1,4 @@
-import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
 import { BlockList, isIPv4, isIPv6 } from "node:net";
 import type express from "express";
 import { prisma, type User, type UserRole } from "@msva/db";
@@ -138,40 +138,50 @@ export function rateAddress(address: string): string {
 
 const RATE_CLEANUP_BATCH = 100;
 const windowStart = (now: Date, ms: number) => new Date(Math.floor(now.getTime() / ms) * ms);
-type RateLimit = { scope: string; key: string; limit: number; windowMs: number };
+/** Attempts allowed per window. A shared limit counts every client's attempts. */
+type RateLimit = { scope: string; key: string; limit: number; windowMs: number; shared?: true };
+class RateRefused extends Error {}
+
+/**
+ * Counts one attempt against every limit, or against none. Each bucket is
+ * reserved by a conditional upsert whose row lock serializes that bucket, in
+ * one order for every caller so reservations cannot deadlock. The shared
+ * bucket comes last: it is held only for its own statement and the commit, and
+ * an attempt another limit refuses never reaches it. A refusal rolls the whole
+ * reservation back, so it counts nowhere and creates no rows.
+ */
 async function reserveRates(limits: RateLimit[], now = new Date()): Promise<number | null> {
   const prepared = limits.map((limit) => ({ ...limit, keyHash: rateHash(limit.key), start: windowStart(now, limit.windowMs) }));
   if (prepared.some((limit) => !limit.keyHash)) return null;
-  return prisma.$transaction(async (tx) => {
-    // Stable lock order across keys, so concurrent multi-bucket reservations
-    // cannot deadlock and every counter in the group moves together.
-    for (const limit of [...prepared].sort((a, b) => `${a.scope}:${a.keyHash}`.localeCompare(`${b.scope}:${b.keyHash}`))) {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${limit.scope}:${limit.keyHash}`}))`;
-    }
-    // All or nothing: an attempt is counted only if every bucket has room, so a
-    // client hammering one limit cannot also use up a shared one (such as the
-    // global hourly cap), and a denied attempt creates no rows.
-    let retryAfter: number | null = null;
-    for (const limit of prepared) {
-      const bucket = await tx.authRateBucket.findUnique({ where: { scope_keyHash_windowStart: { scope: limit.scope, keyHash: limit.keyHash!, windowStart: limit.start } }, select: { count: true } });
-      if ((bucket?.count ?? 0) >= limit.limit) retryAfter = Math.max(retryAfter ?? 0, Math.max(1, Math.ceil((limit.start.getTime() + limit.windowMs - now.getTime()) / 1000)));
-    }
-    if (retryAfter === null) {
-      for (const limit of prepared) {
-        await tx.authRateBucket.upsert({
-          where: { scope_keyHash_windowStart: { scope: limit.scope, keyHash: limit.keyHash!, windowStart: limit.start } },
-          create: { scope: limit.scope, keyHash: limit.keyHash!, windowStart: limit.start, count: 1, expiresAt: new Date(limit.start.getTime() + limit.windowMs + 86_400_000) },
-          update: { count: { increment: 1 } }
-        });
+  const ordered = [...prepared].sort((a, b) => Number(Boolean(a.shared)) - Number(Boolean(b.shared)) || `${a.scope}:${a.keyHash}`.localeCompare(`${b.scope}:${b.keyHash}`));
+  let refused = false;
+  try {
+    await prisma.$transaction(async (tx) => {
+      for (const limit of ordered) {
+        // A raw Date parameter is timestamptz; the columns hold UTC, as Prisma writes them.
+        const reserved = await tx.$queryRaw<unknown[]>`INSERT INTO "AuthRateBucket" ("id", "scope", "keyHash", "windowStart", "count", "expiresAt", "updatedAt")
+          VALUES (${randomUUID()}, ${limit.scope}, ${limit.keyHash}, ${limit.start}::timestamptz AT TIME ZONE 'UTC', 1, ${new Date(limit.start.getTime() + limit.windowMs + 86_400_000)}::timestamptz AT TIME ZONE 'UTC', ${now}::timestamptz AT TIME ZONE 'UTC')
+          ON CONFLICT ("scope", "keyHash", "windowStart") DO UPDATE SET "count" = "AuthRateBucket"."count" + 1, "updatedAt" = EXCLUDED."updatedAt"
+          WHERE "AuthRateBucket"."count" < ${limit.limit}
+          RETURNING "id"`;
+        if (reserved.length === 0) throw new RateRefused();
       }
-    }
-    // Expired buckets (a day past their window) are removed in small batches
-    // rather than all at once on a hot path. The batch is chosen once: as an
-    // IN subquery, Postgres may re-run it for every candidate row, and each run
-    // skips the rows already deleted, so the whole table can go in one call.
-    await tx.$executeRaw`WITH doomed AS MATERIALIZED (SELECT "id" FROM "AuthRateBucket" WHERE "expiresAt" < ${now} LIMIT ${RATE_CLEANUP_BATCH} FOR UPDATE SKIP LOCKED) DELETE FROM "AuthRateBucket" AS bucket USING doomed WHERE bucket."id" = doomed."id"`;
-    return retryAfter;
-  });
+    });
+  } catch (error) {
+    if (!(error instanceof RateRefused)) throw error;
+    refused = true;
+  }
+  // Expired buckets (a day past their window) are removed in small batches,
+  // outside the reservation so it holds no bucket meanwhile. The batch is
+  // chosen once: as an IN subquery, Postgres may re-run it for every candidate
+  // row, and each run skips the rows already deleted.
+  await prisma.$executeRaw`WITH doomed AS MATERIALIZED (SELECT "id" FROM "AuthRateBucket" WHERE "expiresAt" < ${now}::timestamptz AT TIME ZONE 'UTC' LIMIT ${RATE_CLEANUP_BATCH} FOR UPDATE SKIP LOCKED) DELETE FROM "AuthRateBucket" AS bucket USING doomed WHERE bucket."id" = doomed."id"`;
+  if (!refused) return null;
+  // Retry after the longest wait among the limits that are full.
+  const buckets = await prisma.authRateBucket.findMany({ where: { OR: prepared.map((limit) => ({ scope: limit.scope, keyHash: limit.keyHash!, windowStart: limit.start })) }, select: { scope: true, count: true } });
+  return prepared.reduce((wait, limit) => (buckets.find((bucket) => bucket.scope === limit.scope)?.count ?? 0) >= limit.limit
+    ? Math.max(wait, Math.ceil((limit.start.getTime() + limit.windowMs - now.getTime()) / 1000))
+    : wait, 1);
 }
 
 /**
@@ -242,7 +252,7 @@ async function issueLoginCode(email: string, delivery: LoginCodeDelivery): Promi
     await tx.loginCode.updateMany({ where: { deliveryLeaseExpiresAt: { lte: now } }, data: { deliveryState: "FAILED", deliveryLeaseExpiresAt: null } });
     if (await tx.loginCode.count({ where: { deliveryLeaseExpiresAt: { gt: now } } }) >= MAX_PENDING_DELIVERIES) return false;
     // Old codes go in bounded batches, chosen once (see reserveRates).
-    await tx.$executeRaw`WITH doomed AS MATERIALIZED (SELECT "id" FROM "LoginCode" WHERE "createdAt" < ${new Date(now.getTime() - CODE_RETENTION_MS)} AND "deliveryLeaseExpiresAt" IS NULL LIMIT ${CODE_PURGE_BATCH} FOR UPDATE SKIP LOCKED) DELETE FROM "LoginCode" AS code USING doomed WHERE code."id" = doomed."id"`;
+    await tx.$executeRaw`WITH doomed AS MATERIALIZED (SELECT "id" FROM "LoginCode" WHERE "createdAt" < ${new Date(now.getTime() - CODE_RETENTION_MS)}::timestamptz AT TIME ZONE 'UTC' AND "deliveryLeaseExpiresAt" IS NULL LIMIT ${CODE_PURGE_BATCH} FOR UPDATE SKIP LOCKED) DELETE FROM "LoginCode" AS code USING doomed WHERE code."id" = doomed."id"`;
     // Older codes still pending can no longer be activated; their sends keep their slots.
     await tx.loginCode.updateMany({ where: { userId: user.id, usedAt: null, deliveryState: "PENDING" }, data: { deliveryState: "FAILED" } });
     await tx.loginCode.create({ data: { id, userId: user.id, codeHash: hash, expiresAt, deliveryLeaseExpiresAt: new Date(now.getTime() + DELIVERY_LEASE_MS) } });
@@ -277,7 +287,7 @@ export async function requestLoginCode(
     { scope: "request-email-minute", key: email, limit: 1, windowMs: 60_000 },
     { scope: "request-email-hour", key: email, limit: 5, windowMs: 3_600_000 },
     { scope: "request-ip-hour", key: rateAddress(network.address), limit: 30, windowMs: 3_600_000 },
-    { scope: "request-global-hour", key: "global", limit: 100, windowMs: 3_600_000 }
+    { scope: "request-global-hour", key: "global", limit: 100, windowMs: 3_600_000, shared: true }
   ]);
   if (retryAfter) return { ok: false, limited: true, retryAfter };
   if (!configured) return { ok: true };

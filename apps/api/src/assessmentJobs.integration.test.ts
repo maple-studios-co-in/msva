@@ -126,6 +126,54 @@ describe("automatic post-call queue", () => {
     expect(await db.callAssessment.findFirstOrThrow({ where: { callId } })).toMatchObject({ status: "SUCCEEDED" });
   });
 
+  it("does not launch a provider snapshot that changed while its assessment claim was blocked", async () => {
+    const callId = await openCall();
+    await recordCallEnd(callId, {});
+    let releaseLock!: () => void;
+    let lockAcquired!: () => void;
+    const holdLock = new Promise<void>((resolve) => { releaseLock = resolve; });
+    const lockReady = new Promise<void>((resolve) => { lockAcquired = resolve; });
+    const blocker = db.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe("SELECT pg_advisory_xact_lock(913421)");
+      lockAcquired();
+      await holdLock;
+    }, { timeout: 15_000 });
+    await lockReady;
+    await db.$executeRawUnsafe(`
+      CREATE FUNCTION auto_assessment_preinvoke_wait() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.meta->>'callId' = '${callId}' THEN PERFORM pg_advisory_xact_lock(913421); END IF;
+        RETURN NEW;
+      END;
+      $$;
+    `);
+    await db.$executeRawUnsafe('CREATE TRIGGER auto_assessment_preinvoke_wait_trigger BEFORE INSERT ON "AuditLog" FOR EACH ROW EXECUTE FUNCTION auto_assessment_preinvoke_wait();');
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const tick = runAssessmentTick(new Date(Date.now() + 6_000));
+      await vi.waitFor(async () => {
+        const waiting = await db.$queryRawUnsafe<Array<{ wait_event: string | null }>>("SELECT wait_event FROM pg_stat_activity WHERE wait_event = 'advisory'");
+        expect(waiting.length).toBeGreaterThan(0);
+      });
+      await recordTurn(callId, { index: 2, callerText: "A newer final message before provider invocation." });
+
+      releaseLock();
+      await blocker;
+      await tick;
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(await db.assessmentJob.findUniqueOrThrow({ where: { callId_kind: { callId, kind: "POST_CALL" } } })).toMatchObject({ state: "PENDING", generation: 2, attempts: 0 });
+      expect(await db.callAssessment.findFirstOrThrow({ where: { callId } })).toMatchObject({ status: "FAILED", errorCode: "INPUT_CHANGED" });
+    } finally {
+      releaseLock();
+      await blocker.catch(() => undefined);
+      await db.$executeRawUnsafe('DROP TRIGGER IF EXISTS auto_assessment_preinvoke_wait_trigger ON "AuditLog";');
+      await db.$executeRawUnsafe('DROP FUNCTION IF EXISTS auto_assessment_preinvoke_wait();');
+    }
+  });
+
   it("creates a new queued generation when a late linked ticket changes assessment input", async () => {
     const callId = await openCall();
     await recordCallEnd(callId, {});

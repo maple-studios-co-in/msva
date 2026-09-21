@@ -649,7 +649,14 @@ export async function releaseSignalConnection(input: ConnectionRef, db: PrismaCl
 export async function claimMediaControlIntent(db: PrismaClient = prisma) {
   return serializable(db, async (tx) => {
     const now = new Date();
-    const candidates = await tx.mediaControlIntent.findMany({ where: { OR: [{ status: "PENDING", nextAttemptAt: { lte: now } }, { status: "RUNNING", leaseExpiresAt: { lte: now } }] }, orderBy: [{ nextAttemptAt: "asc" }, { createdAt: "asc" }], take: CONTROL_SCAN, select: { id: true } });
+    // Only intents nothing earlier for their admission is waiting on, so blocked
+    // ones can never fill the scan. A raw Date parameter is timestamptz; the
+    // columns hold UTC.
+    const candidates = await tx.$queryRaw<{ id: string }[]>`SELECT intent."id" FROM "MediaControlIntent" AS intent
+      WHERE ((intent."status" = 'PENDING' AND intent."nextAttemptAt" <= ${now}::timestamptz AT TIME ZONE 'UTC') OR (intent."status" = 'RUNNING' AND intent."leaseExpiresAt" <= ${now}::timestamptz AT TIME ZONE 'UTC'))
+        AND NOT EXISTS (SELECT 1 FROM "MediaControlIntent" AS other WHERE other."admissionId" = intent."admissionId" AND other."id" <> intent."id"
+          AND ((other."status" = 'RUNNING' AND other."leaseExpiresAt" > ${now}::timestamptz AT TIME ZONE 'UTC') OR (other."status" IN ('PENDING', 'RUNNING') AND other."createdAt" < intent."createdAt")))
+      ORDER BY intent."nextAttemptAt", intent."createdAt" LIMIT ${CONTROL_SCAN}`;
     for (const { id } of candidates) {
       await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "MediaControlIntent" WHERE "id" = ${id} FOR UPDATE`);
       const current = await tx.mediaControlIntent.findUniqueOrThrow({ where: { id }, include: { admission: { include: { voiceSession: true } } } });
@@ -659,8 +666,9 @@ export async function claimMediaControlIntent(db: PrismaClient = prisma) {
       if (blocked) continue;
       if (current.kind === "GRANT") {
         const admission = current.admission;
+        // An admission past its first-join deadline without joining never will.
         const valid = current.errorCode !== "REVOKED" && (admission.state === "ISSUED" || admission.state === "CONNECTING" || admission.state === "ACTIVE")
-          && admission.absoluteExpiresAt > now && admission.authorizationVersion === current.authorizationVersion && admission.voiceSession.authorizationVersion === current.authorizationVersion;
+          && !(admission.state === "ISSUED" && admission.firstJoinExpiresAt <= now) && admission.absoluteExpiresAt > now && admission.authorizationVersion === current.authorizationVersion && admission.voiceSession.authorizationVersion === current.authorizationVersion;
         if (!valid) {
           await tx.mediaControlIntent.update({ where: { id: current.id }, data: { status: "FAILED", errorCode: "REVOKED", attemptToken: null, leaseExpiresAt: null } });
           continue;
@@ -701,13 +709,13 @@ export async function finishMediaControlIntent(input: { id: string; attemptToken
     if (!input.success) {
       const retryAt = new Date(Date.now() + Math.min(CONTROL_RETRY_MAX_MS, 1_000 * 2 ** Math.max(0, intent.attempts - 1)));
       await tx.mediaControlIntent.update({ where: { id: intent.id }, data: { status: "PENDING", errorCode: input.errorCode ?? "ADAPTER_FAILED", nextAttemptAt: retryAt, ...done } });
-      return intent.attempts === CONTROL_DEGRADED_ATTEMPTS;
+      return intent.attempts >= CONTROL_DEGRADED_ATTEMPTS;
     }
     await tx.mediaControlIntent.update({ where: { id: intent.id }, data: { status: "CONFIRMED", errorCode: null, ...done } });
     await tx.voiceAdmission.updateMany({ where: { id: intent.admissionId, state: "REVOKING", authorizationVersion: intent.authorizationVersion }, data: { state: "REVOKED" } });
     return false;
   });
-  if (degraded) console.warn(`[voice] media removal ${input.id} has failed ${CONTROL_DEGRADED_ATTEMPTS} times; still retrying`);
+  if (degraded) console.warn(`[voice] media removal ${input.id} keeps failing; still retrying`);
 }
 
 /**

@@ -293,4 +293,46 @@ describe("media control execution", () => {
     expect(await claimMediaControlIntent(db)).toMatchObject({ id: grant.id, kind: "GRANT" });
     expect(await db.mediaControlIntent.findUniqueOrThrow({ where: { id: grant.id } })).toMatchObject({ status: "RUNNING", attempts: 1 });
   });
+
+  it("claims a due removal even when many admissions have intents waiting behind others", async () => {
+    const call = await liveCall(); const who = await staff();
+    const until = new Date(Date.now() + 10_000);
+    // Twenty connected admissions, each with a grant in flight and another behind it.
+    for (let index = 0; index < 20; index += 1) {
+      const busy = await db.voiceAdmission.create({ data: { callId: call.callId, voiceSessionId: call.sessionId, sessionId: who.browser.id, userId: who.user.id, participantIdentity: `adm_busy_${index}`, role: "OPERATOR_LISTENER", authorizationVersion: 1, state: "ACTIVE", participantSid: `PA_busy_${index}`, connectionLeaseExpiresAt: until, firstJoinExpiresAt: until, absoluteExpiresAt: new Date(Date.now() + 3_600_000) } });
+      await db.mediaControlIntent.create({ data: { admissionId: busy.id, authorizationVersion: 1, kind: "GRANT", status: "RUNNING", attemptToken: `busy-${index}`, leaseExpiresAt: until } });
+      await db.mediaControlIntent.create({ data: { admissionId: busy.id, authorizationVersion: 1, kind: "GRANT" } });
+    }
+    const other = await staff();
+    const revoked = await listener(await liveCall(), other);
+    await revokeSession(other.token);
+    expect(await claimMediaControlIntent(db)).toMatchObject({ admissionId: revoked.id, kind: "REMOVE" });
+  });
+
+  it("fails a grant whose admission can no longer join", async () => {
+    const call = await liveCall(); const who = await staff();
+    const admission = await listener(call, who);
+    await db.voiceAdmission.update({ where: { id: admission.id }, data: { firstJoinExpiresAt: new Date(Date.now() - 1) } });
+    const grant = await db.mediaControlIntent.create({ data: { admissionId: admission.id, authorizationVersion: 1, kind: "GRANT" } });
+    expect(await claimMediaControlIntent(db)).toBeNull();
+    expect(await db.mediaControlIntent.findUniqueOrThrow({ where: { id: grant.id } })).toMatchObject({ status: "FAILED", errorCode: "REVOKED" });
+  });
+
+  it("warns about a removal that keeps failing even after an attempt lapsed", async () => {
+    const call = await liveCall(); const who = await staff();
+    const admission = await listener(call, who);
+    await revokeSession(who.token);
+    const removal = await db.mediaControlIntent.findFirstOrThrow({ where: { admissionId: admission.id, kind: "REMOVE" } });
+    // Five attempts so far; the last one lapsed without an answer.
+    await db.mediaControlIntent.update({ where: { id: removal.id }, data: { status: "RUNNING", attempts: CONTROL_DEGRADED_ATTEMPTS, attemptToken: "lost", leaseExpiresAt: new Date(Date.now() - 1) } });
+    const warnings = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const retry = await claimMediaControlIntent(db);
+      expect(retry).toMatchObject({ id: removal.id });
+      await finishMediaControlIntent({ id: retry!.id, attemptToken: retry!.attemptToken, success: false, errorCode: "SFU_UNAVAILABLE" }, db);
+      expect(warnings).toHaveBeenCalledWith(expect.stringContaining(removal.id));
+    } finally {
+      warnings.mockRestore();
+    }
+  });
 });

@@ -1,7 +1,37 @@
 import { afterEach, expect, it, vi } from "vitest";
 
-const { findUnique, auditCreate } = vi.hoisted(() => ({ findUnique: vi.fn(), auditCreate: vi.fn(async () => undefined) }));
-vi.mock("@msva/db", () => ({ prisma: { session: { findUnique, update: vi.fn(async () => undefined) }, auditLog: { create: auditCreate } } }));
+const { findUnique, auditCreate, statements, rows } = vi.hoisted(() => ({
+  findUnique: vi.fn(),
+  auditCreate: vi.fn(async () => undefined),
+  // Statements a verification runs, by shape, and the rows its reads return.
+  statements: [] as string[],
+  rows: { user: null as { id: string } | null, currentUser: null as object | null, candidate: null as object | null }
+}));
+vi.mock("@msva/db", () => {
+  const tx = {
+    $queryRaw: async (sql: TemplateStringsArray) => {
+      statements.push(sql.join("?"));
+      return sql.join("").includes('INSERT INTO "AuthRateBucket"') ? [{ id: "reserved" }] : [];
+    },
+    user: {
+      findFirst: async () => { statements.push("user.findFirst"); return rows.user; },
+      findUnique: async () => { statements.push("user.findUnique"); return rows.currentUser; }
+    },
+    loginCode: {
+      findFirst: async () => { statements.push("loginCode.findFirst"); return rows.candidate; },
+      updateMany: async () => { statements.push("loginCode.updateMany"); return { count: 0 }; }
+    }
+  };
+  return {
+    prisma: {
+      session: { findUnique, update: vi.fn(async () => undefined) },
+      auditLog: { create: auditCreate },
+      $transaction: async (work: (client: typeof tx) => Promise<unknown>) => work(tx),
+      $executeRaw: async (sql: TemplateStringsArray) => { statements.push(sql.join("?")); return 0; },
+      authRateBucket: { findMany: async () => [] }
+    }
+  };
+});
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -97,4 +127,27 @@ it("audits the trusted-chain client address, not a client-supplied one", async (
   const spoofed = { ...proxied("127.0.0.1", "6.6.6.6, 203.0.113.91"), ip: "6.6.6.6" };
   await audit(spoofed, "auth.login", "user", "user-1");
   expect(auditCreate).toHaveBeenCalledWith({ data: expect.objectContaining({ ip: "203.0.113.91" }) });
+});
+
+it("runs the same statements for every failed verification, known address or not", async () => {
+  vi.stubEnv("AUTH_CODE_HASH_KEY", "unit-code-key");
+  vi.stubEnv("AUTH_RATE_HASH_KEY", "unit-rate-key");
+  const { verifyLoginCode } = await import("./auth.js");
+  const user = { id: "user-1", email: "known@example.test", name: "Known", role: "AGENT", active: true };
+  const code = { id: "code-1", codeHash: "ab".repeat(32) };
+  const cases = {
+    unknown: { user: null, currentUser: null, candidate: null },
+    disabled: { user: { id: user.id }, currentUser: { ...user, active: false }, candidate: code },
+    withoutCode: { user: { id: user.id }, currentUser: user, candidate: null },
+    wrongCode: { user: { id: user.id }, currentUser: user, candidate: code }
+  };
+  const runs: Record<string, string[]> = {};
+  for (const [name, state] of Object.entries(cases)) {
+    Object.assign(rows, state);
+    statements.length = 0;
+    await expect(verifyLoginCode(`${name}@example.test`, "123456", { address: "203.0.113.9" })).resolves.toBeNull();
+    runs[name] = [...statements];
+  }
+  expect(runs.unknown).toContain("loginCode.updateMany");
+  for (const name of ["disabled", "withoutCode", "wrongCode"]) expect(runs[name]).toEqual(runs.unknown);
 });

@@ -137,6 +137,10 @@ export function rateAddress(address: string): string {
 }
 
 const RATE_CLEANUP_BATCH = 100;
+// Matches no row, so an unknown address runs the same statements as a known one.
+const NO_ROW = "";
+// Compared when there is no candidate code, so every check does the same hashing.
+const NO_CODE_HASH = randomBytes(32).toString("hex");
 const windowStart = (now: Date, ms: number) => new Date(Math.floor(now.getTime() / ms) * ms);
 /** Attempts allowed per window. A shared limit counts every client's attempts. */
 type RateLimit = { scope: string; key: string; limit: number; windowMs: number; shared?: true };
@@ -313,26 +317,27 @@ export async function verifyLoginCode(
   if (retryAfter) return { limited: true, retryAfter };
   const token = randomBytes(32).toString("hex");
   // Everything that authorizes the login is read after the user and code rows
-  // are locked, with the clock sampled after the locks are held. A wrong code
-  // returns (not throws) so its attempt increment commits.
+  // are locked, with the clock sampled after the locks are held. Every failed
+  // check runs the same statements, whether or not the address has an account,
+  // so neither response time nor the database work reveals which addresses can
+  // sign in. A wrong code returns (not throws) so its attempt increment commits.
   return prisma.$transaction(async (tx) => {
-    const user = await tx.user.findFirst({ where: { email } });
-    if (!user) return null;
-    await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${user.id} FOR UPDATE`;
+    const found = await tx.user.findFirst({ where: { email }, select: { id: true } });
+    const userId = found?.id ?? NO_ROW;
+    await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${userId} FOR UPDATE`;
     // Only codes that could authorize are locked. Pending ones are left alone, so
-    // this never waits on a code whose delivery is being reclaimed (which would
-    // take the user lock in the opposite order).
-    await tx.$queryRaw`SELECT "id" FROM "LoginCode" WHERE "userId" = ${user.id} AND "deliveryState" = 'DELIVERED' AND "usedAt" IS NULL FOR UPDATE`;
+    // this never waits on a code whose delivery is being reclaimed.
+    await tx.$queryRaw`SELECT "id" FROM "LoginCode" WHERE "userId" = ${userId} AND "deliveryState" = 'DELIVERED' AND "usedAt" IS NULL FOR UPDATE`;
     const now = new Date();
-    const currentUser = await tx.user.findUnique({ where: { id: user.id } });
-    if (!currentUser?.active) return null;
-    const candidate = await tx.loginCode.findFirst({ where: { userId: user.id, usedAt: null, deliveryState: "DELIVERED", attempts: { lt: 5 }, expiresAt: { gt: now } }, orderBy: { createdAt: "desc" } });
-    if (!candidate) return null;
-    const candidateHash = codeHash(candidate.id, code);
-    const expected = Buffer.from(candidate.codeHash, "hex");
-    const given = candidateHash ? Buffer.from(candidateHash, "hex") : Buffer.alloc(0);
-    if (expected.length !== given.length || !timingSafeEqual(expected, given)) {
-      await tx.loginCode.update({ where: { id: candidate.id }, data: { attempts: { increment: 1 } } });
+    const currentUser = await tx.user.findUnique({ where: { id: userId } });
+    const candidate = await tx.loginCode.findFirst({ where: { userId, usedAt: null, deliveryState: "DELIVERED", attempts: { lt: 5 }, expiresAt: { gt: now } }, orderBy: { createdAt: "desc" } });
+    const expected = Buffer.from(candidate?.codeHash ?? NO_CODE_HASH, "hex");
+    const givenHash = codeHash(candidate?.id ?? NO_ROW, code);
+    const given = givenHash ? Buffer.from(givenHash, "hex") : Buffer.alloc(0);
+    const matches = expected.length === given.length && timingSafeEqual(expected, given);
+    if (!currentUser?.active || !candidate || !matches) {
+      // A wrong code counts against it; without one the statement changes nothing.
+      await tx.loginCode.updateMany({ where: { id: candidate?.id ?? NO_ROW }, data: { attempts: { increment: 1 } } });
       return null;
     }
     const claimed = await tx.loginCode.updateMany({ where: { id: candidate.id, usedAt: null, deliveryState: "DELIVERED", attempts: { lt: 5 }, expiresAt: { gt: now } }, data: { usedAt: now } });

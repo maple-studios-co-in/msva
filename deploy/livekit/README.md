@@ -41,7 +41,8 @@ docker compose --env-file deploy/livekit/.env -f deploy/livekit/compose.yaml --p
 
 `voice-replay` shares the worker's spool volume and delivers everything the worker persists,
 during a call and after it (an API outage, a worker restart), using only each event's retained
-per-call credential. A call only appends; when it ends it waits briefly for its evidence to be
+per-call credential. It sends every call's next event in turn, so one call's backlog never holds
+up another's. A call only appends; when it ends it waits briefly for its evidence to be
 delivered. The companion needs `VOICE_INTERNAL_API_URL` and `VOICE_REPLAY_CREDENTIAL_KEY`, not
 LiveKit or provider secrets, and keeps running when `VOICE_RUNTIME_ENABLED=false`.
 

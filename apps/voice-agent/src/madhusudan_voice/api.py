@@ -196,33 +196,34 @@ class VoiceApiClient:
 
     async def flush_spool(self, spool: EventSpool) -> int:
         committed = 0
-        # Each ready() returns only each stream's head. Requery after every attempt so a
-        # contiguous ready/final/flushed stream drains in order and never jumps an event.
-        while queued_events := spool.ready():
-            queued = queued_events[0]
-            try:
-                # Every schema-declared lifecycle event is evidence. The API separately
-                # constrains historical receipt so this never restores call authority.
-                await self.publish(queued.payload, Lease(
-                    queued.credential.call_id, queued.credential.agent_epoch,
-                    queued.credential.expires_at, queued.credential.token,
-                ))
-            except VoiceApiError as error:
-                if error.permanent and error.code in EVENT_REFUSAL_CODES:
-                    # A refused event will be refused forever, and later events must not
-                    # jump it: stop this stream and surface a sanitized fault.
-                    reason = f"HTTP_{error.status}:{error.code}"
-                    spool.fault_stream(queued.credential.call_id, queued.credential.agent_epoch, reason)
-                    logger.warning("voice evidence stream stopped: call=%s epoch=%s reason=%s",
-                        queued.credential.call_id, queued.credential.agent_epoch, reason)
-                else:
-                    if error.permanent:
-                        logger.warning("voice evidence delivery got an unrecognized refusal (HTTP %s); retrying", error.status)
-                    # Backing off hides this stream from ready(); other streams still drain.
-                    spool.retry(queued.event_id)
-                continue
-            spool.acknowledge(queued.event_id)
-            committed += 1
+        # ready() returns each stream's head. Every head is posted once per round before
+        # the next query, so one stream's backlog never holds up another's, and no stream
+        # jumps its own events.
+        while heads := spool.ready():
+            for queued in heads:
+                try:
+                    # Every schema-declared lifecycle event is evidence. The API separately
+                    # constrains historical receipt so this never restores call authority.
+                    await self.publish(queued.payload, Lease(
+                        queued.credential.call_id, queued.credential.agent_epoch,
+                        queued.credential.expires_at, queued.credential.token,
+                    ))
+                except VoiceApiError as error:
+                    if error.permanent and error.code in EVENT_REFUSAL_CODES:
+                        # A refused event will be refused forever, and later events must not
+                        # jump it: stop this stream and surface a sanitized fault.
+                        reason = f"HTTP_{error.status}:{error.code}"
+                        spool.fault_stream(queued.credential.call_id, queued.credential.agent_epoch, reason)
+                        logger.warning("voice evidence stream stopped: call=%s epoch=%s reason=%s",
+                            queued.credential.call_id, queued.credential.agent_epoch, reason)
+                    else:
+                        if error.permanent:
+                            logger.warning("voice evidence delivery got an unrecognized refusal (HTTP %s); retrying", error.status)
+                        # Backing off hides this stream from ready(); other streams still drain.
+                        spool.retry(queued.event_id)
+                    continue
+                spool.acknowledge(queued.event_id)
+                committed += 1
         return committed
 
     async def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:

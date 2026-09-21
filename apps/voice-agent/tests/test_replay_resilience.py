@@ -132,3 +132,15 @@ def test_replay_needs_only_the_api_url_and_spool_key(tmp_path):
     assert config.internal_api_url == BASE
     with pytest.raises(RuntimeDisabled):
         ReplayConfig.from_env({"VOICE_REPLAY_CREDENTIAL_KEY": KEY})
+
+
+@pytest.mark.asyncio
+async def test_one_streams_backlog_does_not_hold_up_another(tmp_path):
+    spool = spool_at(tmp_path)
+    for sequence in range(1, 51):
+        queue(spool, "call-a", sequence, now=float(sequence))
+    queue(spool, "call-b", 1, now=100.0)
+    sent: list[str] = []
+    assert await api_answering({}, sent).flush_spool(spool) == 51
+    assert sent.index("call-b-1") == 1, "every stream's head goes out in each round"
+    assert [event for event in sent if event.startswith("call-a")] == [f"call-a-{n}" for n in range(1, 51)]

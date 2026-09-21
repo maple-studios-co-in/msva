@@ -31,7 +31,7 @@ describe("voice session persistence", () => {
     await expect(recordVoiceEvent({ ...event, eventId: "event-2", sourceSequence: 2, payload: { ...event.payload, participantId: workerParticipantIdentity(item.callId) } }, lease.token, db)).rejects.toMatchObject({ code: "PARTICIPANT_MISMATCH" } satisfies Partial<VoiceError>);
   });
   it("prepares opaque admissions and revocation creates durable remove intent", async () => {
-    const item = await session(); const row = await db.voiceSession.findUniqueOrThrow({ where: { id: item.id } }); await claimVoiceLease({ callId: item.callId, roomName: row.roomName, dispatchId: "dispatch", participantId: workerParticipantIdentity(item.callId) }, worker, db); const user = await db.user.create({ data: { email: `${randomUUID()}@test.invalid`, name: "Operator", role: "AGENT" } }); const browser = await db.session.create({ data: { userId: user.id, tokenHash: "token-hash", expiresAt: new Date(Date.now() + 60_000) } }); await db.voiceSession.update({ where: { id: item.id }, data: { ownerUserId: user.id, ownerSessionId: browser.id } });
+    const item = await session(); const row = await db.voiceSession.findUniqueOrThrow({ where: { id: item.id } }); await claimVoiceLease({ callId: item.callId, roomName: row.roomName, dispatchId: "dispatch", participantId: workerParticipantIdentity(item.callId) }, worker, db); const user = await db.user.create({ data: { email: `${randomUUID()}@test.invalid`, name: "Operator", role: "AGENT" } }); const browser = await db.session.create({ data: { userId: user.id, tokenHash: "token-hash", expiresAt: new Date(Date.now() + 60_000) } }); await db.voiceSession.update({ where: { id: item.id }, data: { ownerUserId: user.id, ownerSessionId: browser.id } }); await db.handoff.create({ data: { callId: item.callId, assignedUserId: user.id, state: "ASSIGNED" } });
     const admission = await prepareBrowserAdmission({ callId: item.callId, userId: user.id, sessionId: browser.id, role: "OPERATOR_LISTENER", expectedAuthorizationVersion: 1 }, db);
     expect(admission.participantIdentity).toMatch(/^adm_/); await db.$transaction((tx) => revokeAdmissions(tx, { sessionId: browser.id, reason: "LOGOUT" }));
     expect(await db.voiceAdmission.findUniqueOrThrow({ where: { id: admission.id } })).toMatchObject({ state: "REVOKING", authorizationVersion: 2 }); expect(await db.mediaControlIntent.count({ where: { admissionId: admission.id, kind: "REMOVE" } })).toBe(1);
@@ -148,6 +148,7 @@ describe("voice session persistence", () => {
     const user = await db.user.create({ data: { email: `${randomUUID()}@test.invalid`, name: "Caller", role: "AGENT" } });
     const browser = await db.session.create({ data: { userId: user.id, tokenHash: "caller-token", expiresAt: new Date(Date.now() + 60_000) } });
     await db.voiceSession.update({ where: { id: item.id }, data: { ownerUserId: user.id, ownerSessionId: browser.id } });
+    await db.handoff.create({ data: { callId: item.callId, assignedUserId: user.id, state: "ASSIGNED" } });
     const admission = await prepareBrowserAdmission({ callId: item.callId, userId: user.id, sessionId: browser.id, role: "CALLER", expectedAuthorizationVersion: 1 }, db);
     const input = { tokenClaims: { subject: admission.participantIdentity, room: row.roomName, roomJoin: true, publish: true, subscribe: true }, sessionTokenHash: "caller-token", origin: "https://console.test", protocol: "v1" as const, reconnect: false, participantSid: null, now: new Date() };
     await expect(authorizeSignalConnection({ ...input, participantSid: "forged-sid" }, db)).rejects.toMatchObject({ code: "INITIAL_SID_FORBIDDEN" } satisfies Partial<VoiceError>);
@@ -165,6 +166,7 @@ describe("voice session persistence", () => {
     const user = await db.user.create({ data: { email: `${randomUUID()}@test.invalid`, name: "Operator", role: "AGENT" } });
     const browser = await db.session.create({ data: { userId: user.id, tokenHash: "token-hash", expiresAt: new Date(Date.now() + 60_000) } });
     await db.voiceSession.update({ where: { id: item.id }, data: { ownerUserId: user.id, ownerSessionId: browser.id } });
+    await db.handoff.create({ data: { callId: item.callId, assignedUserId: user.id, state: "ASSIGNED" } });
     const admission = await prepareBrowserAdmission({ callId: item.callId, userId: user.id, sessionId: browser.id, role: "OPERATOR_LISTENER", expectedAuthorizationVersion: 1 }, db);
     await db.mediaControlIntent.create({ data: { admissionId: admission.id, authorizationVersion: 1, kind: "GRANT" } });
     const claimed = await claimMediaControlIntent(db);

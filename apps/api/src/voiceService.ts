@@ -260,13 +260,17 @@ export async function prepareBrowserAdmission(input: { callId: string; userId: s
     if (!browser || session.authorizationVersion !== input.expectedAuthorizationVersion || session.state !== "ACTIVE") throw new VoiceError(403, "ADMISSION_DENIED");
     const callerOwnsSession = session.ownerUserId === input.userId && session.ownerSessionId === input.sessionId;
     const assignedOperator = await tx.handoff.findFirst({ where: { callId: input.callId, assignedUserId: input.userId, state: { in: ["ASSIGNED", "JOINING", "HUMAN_ACTIVE"] } } });
-    const operatorAllowed = browser.user.role !== "VIEWER" && (session.ownerUserId === input.userId || Boolean(assignedOperator));
+    const operatorAllowed = browser.user.role !== "VIEWER" && Boolean(assignedOperator);
     if ((input.role === "CALLER" && !callerOwnsSession) || (input.role !== "CALLER" && !operatorAllowed)) throw new VoiceError(403, "ADMISSION_DENIED");
     if (input.role === "OPERATOR_SPEAKER" && (session.ownershipMode !== "HUMAN" || !assignedOperator || assignedOperator.state !== "HUMAN_ACTIVE")) throw new VoiceError(403, "ADMISSION_DENIED");
     const caller = session.participants.find((participant) => participant.role === "CALLER");
     if (input.role === "CALLER" && !caller) throw new VoiceError(503, "SESSION_INCOMPLETE");
     const existing = await tx.voiceAdmission.findFirst({ where: { voiceSessionId: session.id, sessionId: input.sessionId, userId: input.userId, role: input.role, state: { in: ["ISSUED", "CONNECTING", "ACTIVE"] } } });
     if (existing) return existing;
+    if (input.role === "CALLER") {
+      const occupied = await tx.voiceAdmission.findFirst({ where: { voiceSessionId: session.id, role: "CALLER", state: { in: ["ISSUED", "CONNECTING", "ACTIVE"] } } });
+      if (occupied) throw new VoiceError(409, "CALLER_ADMISSION_EXISTS");
+    }
     const absolute = new Date(Math.min(checkedAt.getTime() + 2 * 60 * 60 * 1000, browser.expiresAt.getTime()));
     return tx.voiceAdmission.create({ data: { callId: input.callId, voiceSessionId: session.id, sessionId: input.sessionId, userId: input.userId, participantIdentity: input.role === "CALLER" ? caller!.identity : `adm_${randomUUID()}`, role: input.role, authorizationVersion: session.authorizationVersion, firstJoinExpiresAt: new Date(checkedAt.getTime() + 60_000), absoluteExpiresAt: absolute } });
   });

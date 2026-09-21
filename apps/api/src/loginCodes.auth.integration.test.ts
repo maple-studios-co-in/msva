@@ -440,6 +440,27 @@ describe("abuse resistance", () => {
     expect(await contended).toEqual({ ok: true });
   });
 
+  it("writes nothing for a request some bucket has no room for", async () => {
+    const auth = await authWithFakeDelivery(async () => undefined);
+    for (let index = 0; index < 30; index += 1) expect(await auth.requestLoginCode(`flood${index}@example.test`, network(97))).toEqual({ ok: true });
+    for (let index = 0; index < 60; index += 1) expect(await auth.verifyLoginCode(`probe${index}@example.test`, "123456", network(98))).toBeNull();
+    // A sequence moves on even when the transaction that called it rolls back.
+    await db.$executeRawUnsafe(`CREATE SEQUENCE rate_bucket_writes`);
+    await db.$executeRawUnsafe(`CREATE FUNCTION count_rate_bucket_write() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM nextval('rate_bucket_writes'); RETURN NEW; END; $$`);
+    await db.$executeRawUnsafe(`CREATE TRIGGER count_rate_bucket_write BEFORE INSERT OR UPDATE ON "AuthRateBucket" FOR EACH ROW EXECUTE FUNCTION count_rate_bucket_write()`);
+    try {
+      // Fresh addresses, each with room in its own buckets, from clients that have none.
+      for (let index = 30; index < 40; index += 1) expect(await auth.requestLoginCode(`flood${index}@example.test`, network(97))).toMatchObject({ ok: false, limited: true });
+      for (let index = 60; index < 70; index += 1) expect(await auth.verifyLoginCode(`probe${index}@example.test`, "123456", network(98))).toMatchObject({ limited: true });
+      const [sequence] = await db.$queryRaw<{ is_called: boolean }[]>`SELECT is_called FROM rate_bucket_writes`;
+      expect(sequence!.is_called).toBe(false);
+    } finally {
+      await db.$executeRawUnsafe(`DROP TRIGGER IF EXISTS count_rate_bucket_write ON "AuthRateBucket"`);
+      await db.$executeRawUnsafe(`DROP FUNCTION IF EXISTS count_rate_bucket_write()`);
+      await db.$executeRawUnsafe(`DROP SEQUENCE IF EXISTS rate_bucket_writes`);
+    }
+  });
+
   it("counts every address in one IPv6 /64 as one client", async () => {
     const auth = await authWithFakeDelivery(async () => undefined);
     const inSubnet = (n: number) => ({ address: `2001:db8:1:2::${n.toString(16)}` });

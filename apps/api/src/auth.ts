@@ -157,23 +157,33 @@ class RateRefused extends Error {}
 async function reserveRates(limits: RateLimit[], now = new Date()): Promise<number | null> {
   const prepared = limits.map((limit) => ({ ...limit, keyHash: rateHash(limit.key), start: windowStart(now, limit.windowMs) }));
   if (prepared.some((limit) => !limit.keyHash)) return null;
-  const ordered = [...prepared].sort((a, b) => Number(Boolean(a.shared)) - Number(Boolean(b.shared)) || `${a.scope}:${a.keyHash}`.localeCompare(`${b.scope}:${b.keyHash}`));
-  let refused = false;
-  try {
-    await prisma.$transaction(async (tx) => {
-      for (const limit of ordered) {
-        // A raw Date parameter is timestamptz; the columns hold UTC, as Prisma writes them.
-        const reserved = await tx.$queryRaw<unknown[]>`INSERT INTO "AuthRateBucket" ("id", "scope", "keyHash", "windowStart", "count", "expiresAt", "updatedAt")
-          VALUES (${randomUUID()}, ${limit.scope}, ${limit.keyHash}, ${limit.start}::timestamptz AT TIME ZONE 'UTC', 1, ${new Date(limit.start.getTime() + limit.windowMs + 86_400_000)}::timestamptz AT TIME ZONE 'UTC', ${now}::timestamptz AT TIME ZONE 'UTC')
-          ON CONFLICT ("scope", "keyHash", "windowStart") DO UPDATE SET "count" = "AuthRateBucket"."count" + 1, "updatedAt" = EXCLUDED."updatedAt"
-          WHERE "AuthRateBucket"."count" < ${limit.limit}
-          RETURNING "id"`;
-        if (reserved.length === 0) throw new RateRefused();
-      }
-    });
-  } catch (error) {
-    if (!(error instanceof RateRefused)) throw error;
-    refused = true;
+  const full = async () => {
+    const buckets = await prisma.authRateBucket.findMany({ where: { OR: prepared.map((limit) => ({ scope: limit.scope, keyHash: limit.keyHash!, windowStart: limit.start })) }, select: { scope: true, count: true } });
+    return prepared.filter((limit) => (buckets.find((bucket) => bucket.scope === limit.scope)?.count ?? 0) >= limit.limit);
+  };
+  // A request some bucket has no room for is refused from a read, so a flood of them
+  // writes nothing. The reservation below still settles races between requests.
+  let refusedBy = await full();
+  let refused = refusedBy.length > 0;
+  if (!refused) {
+    const ordered = [...prepared].sort((a, b) => Number(Boolean(a.shared)) - Number(Boolean(b.shared)) || `${a.scope}:${a.keyHash}`.localeCompare(`${b.scope}:${b.keyHash}`));
+    try {
+      await prisma.$transaction(async (tx) => {
+        for (const limit of ordered) {
+          // A raw Date parameter is timestamptz; the columns hold UTC, as Prisma writes them.
+          const reserved = await tx.$queryRaw<unknown[]>`INSERT INTO "AuthRateBucket" ("id", "scope", "keyHash", "windowStart", "count", "expiresAt", "updatedAt")
+            VALUES (${randomUUID()}, ${limit.scope}, ${limit.keyHash}, ${limit.start}::timestamptz AT TIME ZONE 'UTC', 1, ${new Date(limit.start.getTime() + limit.windowMs + 86_400_000)}::timestamptz AT TIME ZONE 'UTC', ${now}::timestamptz AT TIME ZONE 'UTC')
+            ON CONFLICT ("scope", "keyHash", "windowStart") DO UPDATE SET "count" = "AuthRateBucket"."count" + 1, "updatedAt" = EXCLUDED."updatedAt"
+            WHERE "AuthRateBucket"."count" < ${limit.limit}
+            RETURNING "id"`;
+          if (reserved.length === 0) throw new RateRefused();
+        }
+      });
+    } catch (error) {
+      if (!(error instanceof RateRefused)) throw error;
+      refused = true;
+      refusedBy = await full();
+    }
   }
   // Expired buckets (a day past their window) are removed in small batches,
   // outside the reservation so it holds no bucket meanwhile. The batch is
@@ -182,10 +192,7 @@ async function reserveRates(limits: RateLimit[], now = new Date()): Promise<numb
   await prisma.$executeRaw`WITH doomed AS MATERIALIZED (SELECT "id" FROM "AuthRateBucket" WHERE "expiresAt" < ${now}::timestamptz AT TIME ZONE 'UTC' LIMIT ${RATE_CLEANUP_BATCH} FOR UPDATE SKIP LOCKED) DELETE FROM "AuthRateBucket" AS bucket USING doomed WHERE bucket."id" = doomed."id"`;
   if (!refused) return null;
   // Retry after the longest wait among the limits that are full.
-  const buckets = await prisma.authRateBucket.findMany({ where: { OR: prepared.map((limit) => ({ scope: limit.scope, keyHash: limit.keyHash!, windowStart: limit.start })) }, select: { scope: true, count: true } });
-  return prepared.reduce((wait, limit) => (buckets.find((bucket) => bucket.scope === limit.scope)?.count ?? 0) >= limit.limit
-    ? Math.max(wait, Math.ceil((limit.start.getTime() + limit.windowMs - now.getTime()) / 1000))
-    : wait, 1);
+  return refusedBy.reduce((wait, limit) => Math.max(wait, Math.ceil((limit.start.getTime() + limit.windowMs - now.getTime()) / 1000)), 1);
 }
 
 /**

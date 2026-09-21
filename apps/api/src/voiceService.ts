@@ -151,7 +151,7 @@ async function failStartedCall(tx: Prisma.TransactionClient, session: { id: stri
  */
 async function reclaimExpiredAuthority(tx: Prisma.TransactionClient, now: Date): Promise<void> {
   for (const stale of await tx.voiceSession.findMany({ where: { state: "STARTING", expiresAt: { lte: now } }, select: { id: true, callId: true }, take: SWEEP_BATCH })) await failStartedCall(tx, stale, now);
-  await tx.voiceSession.updateMany({ where: { state: "ACTIVE", ownershipMode: "AI", lease: { expiresAt: { lte: now } } }, data: { state: "RECOVERY_REQUIRED" } });
+  await tx.voiceSession.updateMany({ where: { state: "ACTIVE", ownershipMode: "AI", lease: { expiresAt: { lte: now } } }, data: { state: "RECOVERY_REQUIRED", recoveryAt: now } });
 }
 
 export async function createVoiceSession(input: { requestId: string; callId: string; ownerUserId?: string; ownerSessionId?: string; language?: string; callerParticipantId: string }, db: PrismaClient = prisma) {
@@ -193,7 +193,7 @@ export async function claimVoiceLease(input: { callId: string; roomName: string;
     if ((session.state !== "STARTING" && session.state !== "ACTIVE") || session.ownershipMode !== "AI") throw new VoiceError(409, "SESSION_UNAVAILABLE");
     if (session.lease) {
       // No automatic new epoch after a crash: an expired lease hands the call to staff.
-      if (session.lease.expiresAt <= now) { await tx.voiceSession.update({ where: { id: session.id }, data: { state: "RECOVERY_REQUIRED" } }); return deny(409, "RECOVERY_REQUIRED"); }
+      if (session.lease.expiresAt <= now) { await tx.voiceSession.update({ where: { id: session.id }, data: { state: "RECOVERY_REQUIRED", recoveryAt: now } }); return deny(409, "RECOVERY_REQUIRED"); }
       return leaseResponse(session.id, session.callId, session.lease.agentEpoch, session.lease.expiresAt);
     }
     const epoch = session.currentEpoch + 1; const expiresAt = new Date(now.getTime() + LEASE_MS); const token = leaseToken(session.id, epoch);
@@ -303,7 +303,7 @@ export async function recordVoiceEvent(event: WorkerEvent, token: string, db: Pr
     // and hands the live call to staff recovery. A late or historical failure
     // is evidence only and cannot disturb a newer owner.
     if (event.type === "agent.failed" && hasAuthority) {
-      await tx.voiceSession.update({ where: { id: session.id }, data: { state: "RECOVERY_REQUIRED" } });
+      await tx.voiceSession.update({ where: { id: session.id }, data: { state: "RECOVERY_REQUIRED", recoveryAt: now } });
       await tx.voiceLease.update({ where: { id: lease.id }, data: { expiresAt: now } });
     }
     // Evidence that arrives after the call ended keeps its record truthful.
@@ -400,12 +400,22 @@ export async function endVoiceCall(input: { callId: string; userId: string; sess
   });
 }
 
-/** A call in recovery that has waited long enough with nobody still admitted. */
-const abandonedWhere = (now: Date): Prisma.VoiceSessionWhereInput => ({
-  state: "RECOVERY_REQUIRED",
-  lease: { expiresAt: { lte: new Date(now.getTime() - RECOVERY_ABANDON_MS) } },
-  admissions: { none: { absoluteExpiresAt: { gt: now }, OR: [{ state: { in: ["CONNECTING", "ACTIVE"] } }, { state: "ISSUED", firstJoinExpiresAt: { gt: now } }] } }
-});
+/**
+ * A call that has been in recovery long enough with nobody connected to it,
+ * nobody about to join, and no staff assignment still fresh.
+ */
+const abandonedWhere = (now: Date): Prisma.VoiceSessionWhereInput => {
+  const since = new Date(now.getTime() - RECOVERY_ABANDON_MS);
+  return {
+    state: "RECOVERY_REQUIRED",
+    recoveryAt: { lte: since },
+    admissions: { none: { OR: [
+      { state: { in: ["CONNECTING", "ACTIVE"] }, connectionLeaseExpiresAt: { gt: new Date(now.getTime() - CONNECTION_MS) } },
+      { state: "ISSUED", firstJoinExpiresAt: { gt: now }, absoluteExpiresAt: { gt: now } }
+    ] } },
+    call: { handoffs: { none: { OR: [{ state: { in: ["ASSIGNED", "JOINING"] }, requestedAt: { gt: since } }, { state: "HUMAN_ACTIVE" }] } } }
+  };
+};
 
 /**
  * Upkeep for calls nobody ends explicitly, bounded per run: expired startups

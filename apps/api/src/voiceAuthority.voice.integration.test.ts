@@ -37,6 +37,8 @@ const tool = (call: Live, invocationId: string, args: unknown = complaint) => in
 const failed = (call: Live, seq: number, code: "FATAL" | "TRANSIENT" = "FATAL"): WorkerEvent => ({ ...envelope(call, seq), type: "agent.failed", payload: { code } });
 /** Records that the call has already ingested this much, so a test can start at the limits. */
 const alreadyIngested = (call: Live, events: number, bytes = 0) => db.voiceSessionUsage.upsert({ where: { sessionId: call.sessionId }, create: { sessionId: call.sessionId, events, bytes }, update: { events, bytes } });
+/** Moves the call's entry into recovery back by `msAgo`. */
+const inRecoverySince = (call: Live, msAgo: number) => db.voiceSession.update({ where: { id: call.sessionId }, data: { recoveryAt: new Date(Date.now() - msAgo) } });
 const lockWaiters = (count: number) => vi.waitFor(async () => {
   const [row] = await db.$queryRaw<{ waiting: bigint }[]>`SELECT count(*) AS waiting FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`;
   expect(Number(row!.waiting)).toBe(count);
@@ -307,10 +309,10 @@ describe("abandoned calls", () => {
     const abandoned = await liveCall("abandoned");
     await recordVoiceEvent(callerFinal(abandoned, 1), abandoned.lease.token, db);
     await recordVoiceEvent(failed(abandoned, 2), abandoned.lease.token, db);
-    await crash(abandoned, 16 * 60_000);
+    await inRecoverySince(abandoned, 16 * 60_000);
     const recent = await liveCall("recent");
     await recordVoiceEvent(failed(recent, 1), recent.lease.token, db);
-    await crash(recent, 5 * 60_000);
+    await inRecoverySince(recent, 5 * 60_000);
     expect(await sweepVoiceSessions(db)).toBe(1);
     const closed = await db.call.findUniqueOrThrow({ where: { id: abandoned.callId } });
     expect(closed).toMatchObject({ status: "FAILED", outcome: "IN_PROGRESS" });
@@ -324,6 +326,34 @@ describe("abandoned calls", () => {
     const call = await liveCall();
     await admittedCaller(call);
     await recordVoiceEvent(failed(call, 1), call.lease.token, db);
+    await inRecoverySince(call, 16 * 60_000);
+    expect(await sweepVoiceSessions(db)).toBe(0);
+    expect(await db.voiceSession.findUniqueOrThrow({ where: { id: call.sessionId } })).toMatchObject({ state: "RECOVERY_REQUIRED" });
+  });
+
+  it("does not count an admission whose connection lapsed long ago", async () => {
+    const call = await liveCall();
+    const caller = await admittedCaller(call);
+    await db.voiceAdmission.update({ where: { id: caller.admission.id }, data: { state: "ACTIVE", firstJoinExpiresAt: new Date(Date.now() - 20 * 60_000), connectionLeaseExpiresAt: new Date(Date.now() - 20 * 60_000) } });
+    await recordVoiceEvent(failed(call, 1), call.lease.token, db);
+    await inRecoverySince(call, 16 * 60_000);
+    expect(await sweepVoiceSessions(db)).toBe(1);
+    expect(await db.voiceSession.findUniqueOrThrow({ where: { id: call.sessionId } })).toMatchObject({ state: "FAILED" });
+  });
+
+  it("keeps a call open while a staff assignment is fresh", async () => {
+    const call = await liveCall();
+    const operator = await signedIn("AGENT");
+    const assignment = await db.handoff.create({ data: { callId: call.callId, assignedUserId: operator.userId, state: "ASSIGNED" } });
+    await recordVoiceEvent(failed(call, 1), call.lease.token, db);
+    await inRecoverySince(call, 16 * 60_000);
+    expect(await sweepVoiceSessions(db)).toBe(0);
+    await db.handoff.update({ where: { id: assignment.id }, data: { requestedAt: new Date(Date.now() - 20 * 60_000) } });
+    expect(await sweepVoiceSessions(db)).toBe(1);
+  });
+
+  it("never closes a call in the same pass that moved it to recovery", async () => {
+    const call = await liveCall();
     await crash(call, 16 * 60_000);
     expect(await sweepVoiceSessions(db)).toBe(0);
     expect(await db.voiceSession.findUniqueOrThrow({ where: { id: call.sessionId } })).toMatchObject({ state: "RECOVERY_REQUIRED" });

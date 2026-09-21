@@ -13,6 +13,8 @@ module.exports = {
       script: "dist/server.js",
       node_args: [],
       env: { NODE_ENV: "production" },
+      // A stop waits for sign-in codes already being sent: their SMTP deadline is 20 s.
+      kill_timeout: 25000,
       max_restarts: 10,
       restart_delay: 2000,
       time: true

@@ -159,6 +159,20 @@ async def test_evidence_held_up_by_an_api_outage_does_not_end_authority():
 
 
 @pytest.mark.asyncio
+async def test_intermittent_renewal_failures_do_not_hide_stuck_evidence():
+    # One renewal in five failing pauses the count; it must not start it over.
+    writer = Writer(lease_expiring_in(30))
+    writer.spool.waiting = 1.0
+    fenced: list[str] = []
+    responses = [VoiceApiError("unavailable", status=503) if turn % 5 == 4 else lease_expiring_in(30) for turn in range(500)]
+    guard = LeaseGuard(Api(*responses), writer, renew_seconds=0.02, retry_seconds=0.02, lease_seconds=30, on_lost=fenced.append, stall_seconds=0.2)
+    guard.start()
+    await wait_until(lambda: bool(fenced))
+    assert fenced == ["FATAL"] and writer.failures == ["FATAL"]
+    await guard.stop()
+
+
+@pytest.mark.asyncio
 async def test_evidence_still_within_the_limit_keeps_authority():
     writer = Writer(lease_expiring_in(30))
     writer.spool.waiting = 14.0

@@ -66,11 +66,15 @@ class LeaseGuard:
         # Renewed this long before the deadline at the latest, so a short lease (a
         # re-claim can return one) is renewed before it lapses.
         self._margin = min(2.0, lease_seconds / 10)
-        # Since when renewals have been succeeding, if they are. Evidence waiting counts
-        # against the call only while the API is reachable: during an outage the lease
-        # itself ends authority, and once the API is back delivery gets the full
+        # How long the oldest undelivered event has waited while the API was reachable. A
+        # failed renewal pauses the count (during an outage the lease itself ends
+        # authority) and delivery progress resets it, so intermittent failures cannot keep
+        # a stuck stream from ever counting, and after an outage delivery gets the whole
         # allowance to catch up.
-        self._reachable_since: float | None = clock()
+        self._stalled_for = 0.0
+        self._last_waiting = 0.0
+        self._renewal_ok = True
+        self._checked_at = clock()
         self._tasks: list[asyncio.Task[None]] = []
 
     @property
@@ -168,8 +172,14 @@ class LeaseGuard:
                 logger.warning("voice evidence stream stopped (%s); ending AI authority", fault)
                 self.fail_closed("FATAL", record=False)
                 return
-            reachable_for = 0.0 if self._reachable_since is None else self._clock() - self._reachable_since
-            if waiting > self.stall_seconds and reachable_for > self.stall_seconds:
+            now = self._clock()
+            elapsed, self._checked_at = now - self._checked_at, now
+            if waiting <= 0 or waiting < self._last_waiting:
+                self._stalled_for = 0.0  # delivered, or the stream moved on to a later event
+            elif self._renewal_ok:
+                self._stalled_for += elapsed
+            self._last_waiting = waiting
+            if waiting > self.stall_seconds and self._stalled_for > self.stall_seconds:
                 logger.warning("voice evidence has waited %.0f s for delivery; ending AI authority", waiting)
                 self.fail_closed("FATAL")
                 return
@@ -185,18 +195,17 @@ class LeaseGuard:
                 if error.permanent:
                     self.fail_closed("LEASE_LOST")
                     return
-                self._reachable_since = None
+                self._renewal_ok = False
                 delay = min(self.retry_seconds, self.remaining)
                 continue
             except TimeoutError:
-                self._reachable_since = None
+                self._renewal_ok = False
                 continue
             except Exception:  # noqa: BLE001 - an unreadable reply is retried; the deadline still fences
-                self._reachable_since = None
+                self._renewal_ok = False
                 delay = min(self.retry_seconds, self.remaining)
                 continue
-            if self._reachable_since is None:
-                self._reachable_since = self._clock()
+            self._renewal_ok = True
             self.writer.update_lease(renewed)
             self._deadline = renewed.local_deadline(self.lease_seconds)
             delay = max(0.0, min(self.renew_seconds, self.remaining - self._margin))

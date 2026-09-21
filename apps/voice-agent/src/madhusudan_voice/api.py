@@ -21,6 +21,13 @@ MAX_RESPONSE_BYTES = 65_536
 PERMANENT_STATUSES = frozenset({400, 401, 403, 404, 409, 413, 422})
 # The lease no longer authorizes this worker (expired, ended, taken over or disabled).
 AUTHORITY_CODES = frozenset({"LEASE_INVALID", "LEASE_EXPIRED", "LEASE_STALE", "SESSION_UNAVAILABLE", "RECOVERY_REQUIRED", "VOICE_DISABLED"})
+# The API's own reasons for refusing an event for good. Any other refusal (an HTML 404
+# from a misrouted URL, a proxy error) says nothing about the event, so it is retried.
+EVENT_REFUSAL_CODES = frozenset({
+    "INVALID_REQUEST", "LEASE_INVALID", "LEASE_EXPIRED", "EPOCH_MISMATCH", "EVENT_TIME_INVALID", "EVENT_CONFLICT",
+    "SEQUENCE_CONFLICT", "SEQUENCE_OUT_OF_ORDER", "EVENT_CAPACITY", "PARTICIPANT_MISMATCH", "SEGMENT_IDENTITY_CONFLICT",
+    "SEGMENT_REVISION_CONFLICT", "SEGMENT_SEQUENCE_CONFLICT", "FLUSH_WATERMARK_INVALID", "CONTROL_ACK_INVALID", "CONFLICT",
+})
 # The API refused the tool request before any business effect; the model may correct it.
 REJECTION_CODES = frozenset({"INVALID_REQUEST", "INVALID_TOOL_ARGUMENTS", "CALL_NOT_FOUND", "IDENTITY_REQUIRED", "PARENT_NOT_ACCESSIBLE", "IDEMPOTENCY_CONFLICT", "INVOCATION_CONFLICT"})
 _CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
@@ -201,14 +208,16 @@ class VoiceApiClient:
                     queued.credential.expires_at, queued.credential.token,
                 ))
             except VoiceApiError as error:
-                if error.permanent:
+                if error.permanent and error.code in EVENT_REFUSAL_CODES:
                     # A refused event will be refused forever, and later events must not
                     # jump it: stop this stream and surface a sanitized fault.
-                    reason = f"HTTP_{error.status}:{error.code or 'UNKNOWN'}"
+                    reason = f"HTTP_{error.status}:{error.code}"
                     spool.fault_stream(queued.credential.call_id, queued.credential.agent_epoch, reason)
                     logger.warning("voice evidence stream stopped: call=%s epoch=%s reason=%s",
                         queued.credential.call_id, queued.credential.agent_epoch, reason)
                 else:
+                    if error.permanent:
+                        logger.warning("voice evidence delivery got an unrecognized refusal (HTTP %s); retrying", error.status)
                     # Backing off hides this stream from ready(); other streams still drain.
                     spool.retry(queued.event_id)
                 continue

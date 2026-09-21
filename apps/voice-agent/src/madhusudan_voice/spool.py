@@ -239,6 +239,23 @@ class EventSpool:
         with self._write() as db:
             db.execute("UPDATE event_spool SET fault=? WHERE call_id=? AND agent_epoch=? AND fault IS NULL", (reason, call_id, agent_epoch))
 
+    def stream_fault(self, call_id: str, agent_epoch: int) -> str | None:
+        """Why a stream was stopped, if it was: none of its later evidence can be delivered."""
+        row = self._connection.execute("SELECT fault FROM event_spool WHERE call_id=? AND agent_epoch=? AND fault IS NOT NULL LIMIT 1", (call_id, agent_epoch)).fetchone()
+        return None if row is None else str(row[0])
+
+    def pending(self, call_id: str, agent_epoch: int) -> int:
+        """Events of one stream not yet delivered."""
+        return int(self._connection.execute("SELECT COUNT(*) FROM event_spool WHERE call_id=? AND agent_epoch=?", (call_id, agent_epoch)).fetchone()[0])
+
+    def clear_faults(self, call_id: str | None = None, *, now: float | None = None) -> int:
+        """Lets stopped streams be delivered again, once their cause is fixed."""
+        now = time.time() if now is None else now
+        with self._write() as db:
+            if call_id is None:
+                return db.execute("UPDATE event_spool SET fault=NULL, next_attempt_at=? WHERE fault IS NOT NULL", (now,)).rowcount
+            return db.execute("UPDATE event_spool SET fault=NULL, next_attempt_at=? WHERE fault IS NOT NULL AND call_id=?", (now, call_id)).rowcount
+
     def acknowledge(self, event_id: str) -> None:
         with self._write() as db:
             db.execute("DELETE FROM event_spool WHERE event_id=?", (event_id,))

@@ -43,8 +43,14 @@ docker compose --env-file deploy/livekit/.env -f deploy/livekit/compose.yaml --p
 could not deliver (for example after an API outage or a worker restart), using only each
 event's retained per-call credential. It needs `VOICE_INTERNAL_API_URL` and
 `VOICE_REPLAY_CREDENTIAL_KEY`, not LiveKit or provider secrets, and keeps running when
-`VOICE_RUNTIME_ENABLED=false`. Evidence the API permanently refuses stops that call's stream
-and is logged; anything older than the API's replay window is dropped and logged as unrecoverable.
+`VOICE_RUNTIME_ENABLED=false`.
+
+Evidence the API refuses for one of its own reasons stops that call's stream, and the stop
+is logged. Other refusals (an HTML 404 from a misrouted
+`VOICE_INTERNAL_API_URL`, a proxy error) are retried and logged. Once a cause is fixed, retry
+stopped streams with `docker compose ... run --rm voice-replay uv run --frozen python -m
+madhusudan_voice.replay clear-faults [CALL_ID]`. Anything older than the API's replay window is
+dropped and logged as unrecoverable.
 
 The configuration renderer creates `/run/livekit/livekit.yaml` at startup from secret-store
 environment values with mode `0600`; it accepts only the documented LiveKit token alphabet

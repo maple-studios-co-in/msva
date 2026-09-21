@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -32,6 +32,7 @@ jobs:
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/msva_jev_test?schema=public
       JEV_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/msva_jev_test?schema=public
+      MSVA_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/msva_jev_test?application_name=msva-foundation-integration
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -41,16 +42,37 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
       - run: pnpm install --frozen-lockfile
+      - name: Check development environment
+        run: pnpm check:dev-environment
+      - name: Test development environment checker
+        run: pnpm test:dev-environment
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install --yes postgresql-client
       - name: Apply migrations
         run: pnpm --filter @msva/db migrate
-      - name: Build shared package declarations
-        run: pnpm --filter @msva/shared --filter @msva/db build
+      - name: Verify migration status
+        run: pnpm --filter @msva/db exec prisma migrate status
+      - name: Build shared and contract package declarations
+        run: pnpm --filter @msva/shared build && pnpm --filter @msva/contracts build
+      - name: Build database package declarations
+        run: pnpm --filter @msva/db build
+      - name: Check generated demo contracts
+        run: pnpm contracts:check
+      - name: Validate demo contracts in Python 3.12
+        working-directory: apps/voice-agent
+        run: PYTHONDONTWRITEBYTECODE=1 uv run --frozen --python 3.12 pytest
       - name: Typecheck
         run: pnpm -r typecheck
       - name: Test
         run: pnpm test
       - name: Jev database integration test
         run: pnpm test:jev-db
+      - name: Test PostgreSQL integration gate
+        run: pnpm test:db
       - name: Build
         run: pnpm -r build

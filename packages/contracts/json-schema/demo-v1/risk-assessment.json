@@ -1,0 +1,60 @@
+{
+  "$id": "https://msva.example.invalid/contracts/demo-v1/risk-assessment.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "callId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "type": "string"
+    },
+    "id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "type": "string"
+    },
+    "mode": {
+      "const": "SHADOW",
+      "type": "string"
+    },
+    "rationale": {
+      "maxLength": 4000,
+      "minLength": 1,
+      "type": "string"
+    },
+    "sentiment": {
+      "enum": [
+        "NEUTRAL",
+        "POSITIVE",
+        "NEGATIVE",
+        "UNKNOWN"
+      ],
+      "type": "string"
+    },
+    "source": {
+      "enum": [
+        "FIXTURE",
+        "DETECTOR"
+      ],
+      "type": "string"
+    },
+    "urgency": {
+      "enum": [
+        "ROUTINE",
+        "POSSIBLE_SAFETY",
+        "UNKNOWN"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "callId",
+    "sentiment",
+    "urgency",
+    "mode",
+    "source",
+    "rationale"
+  ],
+  "type": "object"
+}

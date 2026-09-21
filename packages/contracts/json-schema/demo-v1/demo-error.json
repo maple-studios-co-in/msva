@@ -1,0 +1,28 @@
+{
+  "$id": "https://msva.example.invalid/contracts/demo-v1/demo-error.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "code": {
+      "enum": [
+        "INVALID_REQUEST",
+        "CALL_NOT_FOUND",
+        "IDENTITY_REQUIRED",
+        "PARENT_NOT_ACCESSIBLE",
+        "IDEMPOTENCY_CONFLICT",
+        "TEMPORARILY_UNAVAILABLE"
+      ],
+      "type": "string"
+    },
+    "message": {
+      "maxLength": 4000,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "code",
+    "message"
+  ],
+  "type": "object"
+}

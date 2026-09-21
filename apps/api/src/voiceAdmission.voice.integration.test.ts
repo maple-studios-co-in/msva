@@ -129,8 +129,14 @@ describe("revocation hooks", () => {
     try {
       // One active handoff per call, so each operator is assigned their own call.
       const demoted = await staff(); const demotedAdmission = await listener(await liveCall(), demoted);
+      // The same person is also the caller on a call of their own.
+      const ownCall = await liveCall();
+      await db.voiceSession.update({ where: { id: ownCall.sessionId }, data: { ownerUserId: demoted.user.id, ownerSessionId: demoted.browser.id } });
+      const callerAdmission = await prepareBrowserAdmission({ callId: ownCall.callId, userId: demoted.user.id, sessionId: demoted.browser.id, role: "CALLER", expectedAuthorizationVersion: 1 }, db);
       expect((await patch(demoted.user.id, { role: "VIEWER" })).status).toBe(200);
       expect(await db.voiceAdmission.findUniqueOrThrow({ where: { id: demotedAdmission.id } })).toMatchObject({ state: "REVOKING", revokeReason: "ROLE_CHANGED" });
+      expect(await db.voiceAdmission.findUniqueOrThrow({ where: { id: callerAdmission.id } })).toMatchObject({ state: "ISSUED" });
+      await db.voiceSession.updateMany({ data: { state: "ENDED" } });
       const disabled = await staff(); const disabledAdmission = await listener(await liveCall(), disabled);
       expect((await patch(disabled.user.id, { active: false })).status).toBe(200);
       expect(await db.voiceAdmission.findUniqueOrThrow({ where: { id: disabledAdmission.id } })).toMatchObject({ state: "REVOKING", revokeReason: "USER_DISABLED" });

@@ -475,7 +475,8 @@ adminRouter.patch("/users/:id", requireRole("ADMIN"), async (request, response, 
         await revokeAdmissions(tx, { userId: updated.id, reason: "USER_DISABLED" });
         await tx.session.deleteMany({ where: { userId: updated.id } });
       } else if (previous && parsed.data.role && parsed.data.role !== previous.role) {
-        await revokeAdmissions(tx, { userId: updated.id, reason: "ROLE_CHANGED" });
+        // Only staff media depends on the role; a caller admission does not.
+        await revokeAdmissions(tx, { userId: updated.id, reason: "ROLE_CHANGED", roles: ["OPERATOR_LISTENER", "OPERATOR_SPEAKER"] });
       }
       return updated;
     });

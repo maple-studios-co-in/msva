@@ -37,7 +37,7 @@ export class VoiceError extends Error { constructor(readonly status: number, rea
 export type VerifiedBrowserClaims = Readonly<{ subject: string; room: string; roomJoin: boolean; publish: boolean; subscribe: boolean }>;
 export type VoiceDb = PrismaClient | Prisma.TransactionClient;
 export type RevocationReason = "LOGOUT" | "USER_DISABLED" | "ROLE_CHANGED" | "SESSION_EXPIRED" | "OWNERSHIP_CHANGED" | "CALL_ENDED" | "CONTROL_LOST";
-type AdmissionRole = "CALLER" | "OPERATOR_LISTENER" | "OPERATOR_SPEAKER";
+export type AdmissionRole = "CALLER" | "OPERATOR_LISTENER" | "OPERATOR_SPEAKER";
 type Denied = { denied: VoiceError };
 const deny = (status: number, code: string): Denied => ({ denied: new VoiceError(status, code) });
 const isDenied = (value: unknown): value is Denied => typeof value === "object" && value !== null && "denied" in value;
@@ -522,9 +522,9 @@ export async function prepareBrowserAdmission(input: { callId: string; userId: s
 }
 
 /** Revokes matching live admissions: REVOKING, new version, pending grants cancelled, one REMOVE intent each. */
-export async function revokeAdmissions(tx: Prisma.TransactionClient, input: { admissionId?: string; sessionId?: string; userId?: string; callId?: string; reason: RevocationReason }, now = new Date()): Promise<void> {
+export async function revokeAdmissions(tx: Prisma.TransactionClient, input: { admissionId?: string; sessionId?: string; userId?: string; callId?: string; roles?: AdmissionRole[]; reason: RevocationReason }, now = new Date()): Promise<void> {
   if (!input.admissionId && !input.sessionId && !input.userId && !input.callId) throw new VoiceError(400, "REVOCATION_SCOPE_REQUIRED");
-  const admissions = await tx.voiceAdmission.findMany({ where: { ...(input.admissionId ? { id: input.admissionId } : {}), ...(input.sessionId ? { sessionId: input.sessionId } : {}), ...(input.userId ? { userId: input.userId } : {}), ...(input.callId ? { callId: input.callId } : {}), state: { in: ["ISSUED", "CONNECTING", "ACTIVE"] } } });
+  const admissions = await tx.voiceAdmission.findMany({ where: { ...(input.admissionId ? { id: input.admissionId } : {}), ...(input.sessionId ? { sessionId: input.sessionId } : {}), ...(input.userId ? { userId: input.userId } : {}), ...(input.callId ? { callId: input.callId } : {}), ...(input.roles ? { role: { in: input.roles } } : {}), state: { in: ["ISSUED", "CONNECTING", "ACTIVE"] } } });
   for (const admission of admissions) {
     const version = admission.authorizationVersion + 1;
     const revoked = await tx.voiceAdmission.updateMany({ where: { id: admission.id, authorizationVersion: admission.authorizationVersion, state: { in: ["ISSUED", "CONNECTING", "ACTIVE"] } }, data: { state: "REVOKING", authorizationVersion: version, revokedAt: now, revokeReason: input.reason, connectionLeaseExpiresAt: now, connectionOwner: null } });

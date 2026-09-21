@@ -196,7 +196,8 @@ Then in the env files (see `deploy/*.env.example`):
 
 - `apps/api/.env`: `DATABASE_URL`, `INTERNAL_API_TOKEN`, `NODE_ENV=production`,
   `BROWSER_ORIGINS` (the exact origin the console is served from)
-- `apps/telephony/.env`: `INTERNAL_API_TOKEN` (same value), `AGENT_BASE_URL=http://127.0.0.1:4100`
+- `apps/telephony/.env`: `INTERNAL_API_TOKEN` (same value), `AGENT_BASE_URL=http://127.0.0.1:4100`,
+  `BROWSER_ORIGINS` (same value)
 - `packages/db/.env`: `DATABASE_URL` (used by the Prisma CLI only)
 
 Every deploy:

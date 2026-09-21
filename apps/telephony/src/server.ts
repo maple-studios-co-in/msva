@@ -44,9 +44,12 @@ app.post("/exotel/incoming", (request, response) => {
 export const server = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 
+const REFUSALS = { 401: "Unauthorized", 403: "Forbidden", 503: "Service Unavailable" } as const;
+
 server.on("upgrade", (request, socket, head) => {
   const { url } = request;
-  if (!url || !(url.startsWith("/voice") || url.startsWith("/browser"))) {
+  const browser = url !== undefined && new URL(url, "http://telephony").pathname === "/browser";
+  if (!url || !(url.startsWith("/voice") || browser)) {
     socket.destroy();
     return;
   }
@@ -54,20 +57,21 @@ server.on("upgrade", (request, socket, head) => {
     wss.emit("connection", ws, request);
   });
   // The carrier's media stream (/voice) cannot carry a console session; a browser
-  // call must, so it opens only once the API accepts the caller's sign-in.
-  if (!url.startsWith("/browser")) {
+  // call (exactly /browser) must, so it opens only once the API accepts the
+  // caller's sign-in.
+  if (!browser) {
     open();
     return;
   }
   const onError = () => socket.destroy();
   socket.on("error", onError);
-  void browserCallDecision(request.headers.cookie).then((decision) => {
+  void browserCallDecision(request.headers).then((decision) => {
     socket.removeListener("error", onError);
     if (decision === "open") {
       open();
       return;
     }
-    socket.end(`HTTP/1.1 ${decision} ${decision === 401 ? "Unauthorized" : "Service Unavailable"}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+    socket.end(`HTTP/1.1 ${decision} ${REFUSALS[decision]}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
   });
 });
 

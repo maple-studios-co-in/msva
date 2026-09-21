@@ -69,8 +69,9 @@ class FakeCall:
 
 
 class FakeVoiceApi:
-    """tool_mode: "commit", "timeout_no_receipt" (POST times out, receipt 404) or
-    "reject" (403 PARENT_NOT_ACCESSIBLE before any effect)."""
+    """tool_mode: "commit", "timeout_no_receipt" (POST times out, receipt 404),
+    "reject" (403 PARENT_NOT_ACCESSIBLE before any effect) or "limit" (409 TOOL_LIMIT:
+    the call already recorded all the requests it may)."""
 
     CLOCK_SKEW = timedelta(seconds=5)
     REPLAY = timedelta(hours=24)
@@ -145,6 +146,8 @@ class FakeVoiceApi:
                 return self._reply(request, 409, {"error": "LEASE_EXPIRED"})
             if self.tool_mode == "reject":
                 return self._reply(request, 403, {"error": "PARENT_NOT_ACCESSIBLE"})
+            if self.tool_mode == "limit":
+                return self._reply(request, 409, {"error": "TOOL_LIMIT"})
             receipt = {"requestId": f"req-{len(self.tool_posts)}", "callId": call.call_id, "caseId": "case", "ticketNumber": len(self.tool_posts), "truthState": "RECORDED", "actionState": "PENDING_STAFF", "evidenceState": "NOT_REQUESTED"}
             if self.tool_mode == "timeout_no_receipt":
                 raise httpx.ReadTimeout("response lost")

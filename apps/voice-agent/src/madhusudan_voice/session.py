@@ -232,6 +232,8 @@ class MadhusudanAgent(Agent):
                 name="create_business_request", arguments=request,
             )
         except ToolRejected as error:
+            if error.code == "TOOL_LIMIT":
+                raise ToolError("No more requests can be recorded on this call; staff will follow up on the ones already recorded.") from error
             # Refused before any business effect; the model may correct and retry.
             raise ToolError(f"The request was not recorded ({error.code or 'rejected'}); check the details with the caller.") from error
         except AuthorityLost as error:

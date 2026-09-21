@@ -96,6 +96,18 @@ async def test_a_definite_rejection_goes_back_to_the_model_without_ending_the_ca
 
 
 @pytest.mark.asyncio
+async def test_a_call_at_its_request_limit_tells_the_model_to_stop_recording(tmp_path):
+    api, session, guard, closed, _spool = await start_call(tmp_path, [tool_call("toolu_A", "one more complaint"), text("Staff will follow up.")], "limit")
+    await session.run(user_input="please record one more complaint")
+    assert not guard.lost and not closed.is_set()
+    outputs = [item for item in session.history.items if getattr(item, "type", None) == "function_call_output"]
+    assert outputs and outputs[0].is_error
+    assert outputs[0].output.startswith("No more requests can be recorded on this call")
+    await guard.stop()
+    await session.aclose()
+
+
+@pytest.mark.asyncio
 async def test_no_new_request_can_follow_an_uncertain_one(tmp_path):
     api, session, guard, closed, _spool = await start_call(tmp_path, [tool_call("toolu_A", "milk was spoiled"), text("ok")], "timeout_no_receipt")
     session.run(user_input="please record my complaint")

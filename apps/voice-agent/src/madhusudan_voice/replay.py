@@ -2,6 +2,7 @@
 
     python -m madhusudan_voice.replay                        run the companion
     python -m madhusudan_voice.replay clear-faults [CALL]    retry stopped streams
+    python -m madhusudan_voice.replay healthcheck            exit 1 once delivery passes stop
 
 A stream stops when the API refuses one of its events for good. Once the cause is
 fixed (the worker was pointed at another API deployment, say), clear-faults lets its
@@ -14,10 +15,21 @@ import asyncio
 import logging
 import os
 import sys
+import time
+from pathlib import Path
 
 from .api import ReplayDrainer, VoiceApiClient
 from .config import ReplayConfig
 from .spool import EventSpool
+
+
+# The companion touches its heartbeat after every completed delivery pass (about once a
+# second); a heartbeat older than this means it has stopped delivering.
+HEARTBEAT_MAX_AGE_SECONDS = 30
+
+
+def heartbeat_path(config: ReplayConfig) -> Path:
+    return config.spool_path.with_name("replay.heartbeat")
 
 
 def open_spool(config: ReplayConfig) -> EventSpool:
@@ -30,7 +42,7 @@ async def run_replay() -> None:
     config = ReplayConfig.from_env(dict(os.environ))
     spool = open_spool(config)
     client = VoiceApiClient(config.internal_api_url)
-    drainer = ReplayDrainer(client, spool)
+    drainer = ReplayDrainer(client, spool, heartbeat=heartbeat_path(config))
     drainer.start()
     try:
         await asyncio.Event().wait()
@@ -48,14 +60,26 @@ def clear_faults(call_id: str | None = None) -> int:
         spool.close()
 
 
+def healthcheck(*, now: float | None = None) -> bool:
+    """Whether the companion completed a delivery pass recently."""
+    path = heartbeat_path(ReplayConfig.from_env(dict(os.environ)))
+    try:
+        age = (time.time() if now is None else now) - path.stat().st_mtime
+    except OSError:
+        return False
+    return age <= HEARTBEAT_MAX_AGE_SECONDS
+
+
 def main(argv: list[str]) -> None:
     logging.basicConfig(level=logging.INFO)
     if not argv:
         asyncio.run(run_replay())
     elif argv[0] == "clear-faults" and len(argv) <= 2:
         print(f"cleared {clear_faults(argv[1] if len(argv) == 2 else None)} stopped events")
+    elif argv == ["healthcheck"]:
+        raise SystemExit(0 if healthcheck() else 1)
     else:
-        raise SystemExit("usage: python -m madhusudan_voice.replay [clear-faults [CALL_ID]]")
+        raise SystemExit("usage: python -m madhusudan_voice.replay [clear-faults [CALL_ID] | healthcheck]")
 
 
 if __name__ == "__main__":

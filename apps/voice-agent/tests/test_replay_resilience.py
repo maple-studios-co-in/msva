@@ -89,9 +89,14 @@ async def test_the_replay_loop_survives_a_failing_pass_and_stops_cleanly(tmp_pat
         return real_ready(**kwargs)
 
     spool.ready = flaky_ready
-    drainer = ReplayDrainer(client, spool, interval_seconds=0.01)
+    heartbeat = tmp_path / "replay.heartbeat"
+    drainer = ReplayDrainer(client, spool, interval_seconds=0.01, heartbeat=heartbeat)
     drainer.start()
     await wait_until(lambda: sent == ["call-a-1"])
+    # Only completed passes beat, and each one does.
+    await wait_until(heartbeat.exists)
+    beat = heartbeat.stat().st_mtime_ns
+    await wait_until(lambda: heartbeat.stat().st_mtime_ns > beat)
     await drainer.stop()
     assert spool.pending_count() == 0
 
@@ -144,3 +149,19 @@ async def test_one_streams_backlog_does_not_hold_up_another(tmp_path):
     assert await api_answering({}, sent).flush_spool(spool) == 51
     assert sent.index("call-b-1") == 1, "every stream's head goes out in each round"
     assert [event for event in sent if event.startswith("call-a")] == [f"call-a-{n}" for n in range(1, 51)]
+
+
+@pytest.mark.asyncio
+async def test_a_companion_whose_passes_fail_stops_beating(tmp_path):
+    spool = spool_at(tmp_path)
+
+    def broken_ready(**kwargs):
+        raise RuntimeError("database is locked")
+
+    spool.ready = broken_ready
+    heartbeat = tmp_path / "replay.heartbeat"
+    drainer = ReplayDrainer(api_answering({}, []), spool, interval_seconds=0.01, heartbeat=heartbeat)
+    drainer.start()
+    await asyncio.sleep(0.1)
+    await drainer.stop()
+    assert not heartbeat.exists()

@@ -53,6 +53,9 @@ services:
         condition: service_healthy
       livekit:
         condition: service_started
+      # Calls are only taken while their evidence can be delivered.
+      voice-replay:
+        condition: service_healthy
     networks: [media-private, provider-egress]
     # The worker's 120 s drain plus time for the SDK's forced shutdown and each call's
     # final delivery wait, so a deploy stop lets calls finish.
@@ -82,6 +85,13 @@ services:
     # VOICE_INTERNAL_API_URL, VOICE_REPLAY_CREDENTIAL_KEY and the shared spool, and runs
     # while calls are disabled.
     command: ["uv", "run", "--frozen", "python", "-m", "madhusudan_voice.replay"]
+    healthcheck:
+      # Fails once no delivery pass has completed for 30 s.
+      test: ["CMD", "uv", "run", "--frozen", "python", "-m", "madhusudan_voice.replay", "healthcheck"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   sip:
     image: livekit/sip:v1.13.0

@@ -8,6 +8,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -323,8 +324,11 @@ class VoiceApiClient:
 class ReplayDrainer:
     """Independent bounded replay loop; event creation never waits for the API."""
 
-    def __init__(self, client: VoiceApiClient, spool: EventSpool, *, interval_seconds: float = 1.0, prune_seconds: float = 300.0) -> None:
+    def __init__(self, client: VoiceApiClient, spool: EventSpool, *, interval_seconds: float = 1.0, prune_seconds: float = 300.0,
+                 heartbeat: Path | None = None) -> None:
         self.client, self.spool, self.interval_seconds, self.prune_seconds = client, spool, interval_seconds, prune_seconds
+        # Touched after every completed delivery pass; the companion's healthcheck reads its age.
+        self.heartbeat = heartbeat
         self._stopping = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
 
@@ -354,6 +358,8 @@ class ReplayDrainer:
                 if time.monotonic() - last_prune >= self.prune_seconds:
                     self.spool.prune()
                     last_prune = time.monotonic()
+                if self.heartbeat is not None:
+                    self.heartbeat.touch()
             except Exception as error:  # noqa: BLE001 - one bad pass must not end evidence recovery
                 logger.warning("voice evidence replay pass failed with %s", type(error).__name__)
             try:

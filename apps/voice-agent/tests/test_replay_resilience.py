@@ -181,3 +181,33 @@ def test_live_evidence_is_retried_every_couple_of_seconds_and_history_backs_off(
     due = dict(spool._connection.execute("SELECT event_id, next_attempt_at FROM event_spool").fetchall())
     assert due["call-live-1"] == now + LIVE_RETRY_SECONDS
     assert due["call-old-1"] == now + 2 ** 6
+
+
+@pytest.mark.asyncio
+async def test_a_new_stream_goes_out_in_the_first_round_whatever_the_backlog(tmp_path):
+    spool = spool_at(tmp_path, max_events=1_000)
+    for index in range(150):
+        queue(spool, f"call-old{index}", 1, now=float(index))
+        queue(spool, f"call-old{index}", 2, now=float(1_000 + index))
+    queue(spool, "call-new", 1, now=5_000.0)
+    sent: list[str] = []
+    assert await api_answering({}, sent).flush_spool(spool) == 301
+    assert sent.index("call-new-1") < 151, "every stream's head goes out in the first round"
+
+
+@pytest.mark.asyncio
+async def test_streams_are_delivered_several_at_a_time(tmp_path):
+    spool = spool_at(tmp_path)
+    for index in range(8):
+        queue(spool, f"call-{index}", 1)
+
+    async def slow(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.2)
+        return httpx.Response(200, json={"eventId": json.loads(request.content)["eventId"], "status": "committed"})
+
+    client = VoiceApiClient(BASE, client=httpx.AsyncClient(transport=httpx.MockTransport(slow)))
+    started = time.monotonic()
+    assert await client.flush_spool(spool) == 8
+    # One at a time this would take 1.6 s.
+    assert time.monotonic() - started < 1.0
+    await client.aclose()

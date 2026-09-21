@@ -13,7 +13,7 @@ from typing import Any
 
 import httpx
 
-from .spool import EventSpool, ReplayCredential
+from .spool import EventSpool, ReplayCredential, SpoolEvent
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +36,9 @@ EVENT_REFUSAL_CODES = frozenset({
 SETTLING_REFUSALS = frozenset({"EVENT_TIME_INVALID", "CONFLICT"})
 SETTLING_ATTEMPTS = 5
 SETTLING_SECONDS = 30
+# Streams whose next events are posted at once. Heads belong to different streams, so
+# this never reorders a stream, and a slow API still serves several calls in turn.
+DELIVERY_CONCURRENCY = 4
 # The API refused the tool request before any business effect; the model may correct it.
 REJECTION_CODES = frozenset({"INVALID_REQUEST", "INVALID_TOOL_ARGUMENTS", "CALL_NOT_FOUND", "IDENTITY_REQUIRED", "PARENT_NOT_ACCESSIBLE", "IDEMPOTENCY_CONFLICT", "INVOCATION_CONFLICT"})
 _CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
@@ -203,12 +206,10 @@ class VoiceApiClient:
         return ReplayCredential(lease.call_id, lease.agent_epoch, lease.token, lease.expires_at)
 
     async def flush_spool(self, spool: EventSpool) -> int:
-        committed = 0
-        # ready() returns each stream's head. Every head is posted once per round before
-        # the next query, so one stream's backlog never holds up another's, and no stream
-        # jumps its own events.
-        while heads := spool.ready():
-            for queued in heads:
+        slots = asyncio.Semaphore(DELIVERY_CONCURRENCY)
+
+        async def deliver(queued: SpoolEvent) -> int:
+            async with slots:
                 try:
                     # Every schema-declared lifecycle event is evidence. The API separately
                     # constrains historical receipt so this never restores call authority.
@@ -233,9 +234,20 @@ class VoiceApiClient:
                             logger.warning("voice evidence delivery got an unrecognized refusal (HTTP %s); retrying", error.status)
                         # Backing off hides this stream from ready(); other streams still drain.
                         spool.retry(queued.event_id)
-                    continue
+                    return 0
                 spool.acknowledge(queued.event_id)
-                committed += 1
+                return 1
+
+        committed = 0
+        # ready() returns every stream's head. Each round posts all of them, a few at a
+        # time, before the next query, so one stream's backlog does not hold up another's
+        # and no stream jumps its own events.
+        while heads := spool.ready():
+            delivered = await asyncio.gather(*(deliver(queued) for queued in heads), return_exceptions=True)
+            for result in delivered:
+                if isinstance(result, BaseException):
+                    raise result
+            committed += sum(delivered)
         return committed
 
     async def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:

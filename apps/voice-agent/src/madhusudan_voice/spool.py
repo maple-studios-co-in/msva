@@ -293,7 +293,7 @@ class EventSpool:
                 encrypted, credential.expires_at, now, now))
         return event_id, sequence
 
-    def ready(self, *, now: float | None = None, limit: int = 100) -> list[SpoolEvent]:
+    def ready(self, *, now: float | None = None, limit: int | None = None) -> list[SpoolEvent]:
         """The deliverable head of each unfaulted stream. A faulted or pending earlier
         event still blocks everything after it, so no stream ever skips an event."""
         now = time.time() if now is None else now
@@ -301,7 +301,7 @@ class EventSpool:
             FROM (SELECT call_id, agent_epoch, MIN(source_sequence) AS head FROM event_spool GROUP BY call_id, agent_epoch) AS stream
             JOIN event_spool e ON e.call_id=stream.call_id AND e.agent_epoch=stream.agent_epoch AND e.source_sequence=stream.head
             WHERE e.fault IS NULL AND e.next_attempt_at<=?
-            ORDER BY e.created_at LIMIT ?""", (now, limit)).fetchall()
+            ORDER BY e.created_at LIMIT ?""", (now, -1 if limit is None else limit)).fetchall()
         result = []
         for row in rows:
             try:

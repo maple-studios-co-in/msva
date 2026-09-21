@@ -1,0 +1,15 @@
+{
+  "requestId": "retailer-request-001",
+  "callId": "browser-call-retailer-001",
+  "journey": "RETAILER_ENQUIRY",
+  "callerConfirmation": "NEW",
+  "fields": {
+    "shopName": "Sharma General Store",
+    "contactPerson": "Ravi Sharma",
+    "productRequest": "Madhusudan ghee",
+    "quantityRequest": "12 cartons",
+    "requestedOutcome": "Please record this stock enquiry for the sales team.",
+    "deliveryPreference": "Weekday morning"
+  },
+  "queue": { "territory": "Rajasthan", "language": "hi" }
+}

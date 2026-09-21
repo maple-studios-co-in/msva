@@ -1,0 +1,42 @@
+{
+  "$id": "https://msva.example.invalid/contracts/demo-v1/caller-context-input.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "anyOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "confirmation": {
+          "const": "FOLLOW_UP",
+          "type": "string"
+        },
+        "parentRequestId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "confirmation",
+        "parentRequestId"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "confirmation": {
+          "enum": [
+            "NONE",
+            "NEW",
+            "SEPARATE"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "confirmation"
+      ],
+      "type": "object"
+    }
+  ]
+}

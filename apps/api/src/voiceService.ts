@@ -19,6 +19,10 @@ const MAX_SESSION_EVENT_BYTES = 8 * 1024 * 1024;
 const RECOVERY_ABANDON_MS = 15 * 60 * 1000;
 const SWEEP_BATCH = 20;
 const CONTROL_SCAN = 20;
+// A failed removal backs off exponentially to a minute and counts as degraded
+// after five attempts.
+const CONTROL_RETRY_MAX_MS = 60_000;
+export const CONTROL_DEGRADED_ATTEMPTS = 5;
 const SERIALIZABLE_ATTEMPTS = 5;
 // The caller and staff stay admitted while an AI failure awaits recovery.
 const LIVE_STATES = ["ACTIVE", "RECOVERY_REQUIRED"] as const;
@@ -600,17 +604,19 @@ export async function releaseSignalConnection(input: ConnectionRef, db: PrismaCl
 
 /**
  * Claims one durable media instruction for a gateway worker. Intents run one
- * at a time per admission in creation order; an attempt whose lease lapsed is
- * reclaimed with a new token, which fences any late response from the old one.
+ * at a time per admission in creation order, and otherwise in the order they
+ * became due, so a removal that keeps failing waits behind the others. An
+ * attempt whose lease lapsed is reclaimed with a new token, which fences any
+ * late response from the old one.
  */
 export async function claimMediaControlIntent(db: PrismaClient = prisma) {
   return serializable(db, async (tx) => {
     const now = new Date();
-    const candidates = await tx.mediaControlIntent.findMany({ where: { OR: [{ status: "PENDING" }, { status: "RUNNING", leaseExpiresAt: { lte: now } }] }, orderBy: { createdAt: "asc" }, take: CONTROL_SCAN, select: { id: true } });
+    const candidates = await tx.mediaControlIntent.findMany({ where: { OR: [{ status: "PENDING", nextAttemptAt: { lte: now } }, { status: "RUNNING", leaseExpiresAt: { lte: now } }] }, orderBy: [{ nextAttemptAt: "asc" }, { createdAt: "asc" }], take: CONTROL_SCAN, select: { id: true } });
     for (const { id } of candidates) {
       await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "MediaControlIntent" WHERE "id" = ${id} FOR UPDATE`);
       const current = await tx.mediaControlIntent.findUniqueOrThrow({ where: { id }, include: { admission: { include: { voiceSession: true } } } });
-      const claimable = current.status === "PENDING" || (current.status === "RUNNING" && current.leaseExpiresAt !== null && current.leaseExpiresAt <= now);
+      const claimable = (current.status === "PENDING" && current.nextAttemptAt <= now) || (current.status === "RUNNING" && current.leaseExpiresAt !== null && current.leaseExpiresAt <= now);
       if (!claimable) continue;
       const blocked = await tx.mediaControlIntent.findFirst({ where: { admissionId: current.admissionId, id: { not: current.id }, OR: [{ status: "RUNNING", leaseExpiresAt: { gt: now } }, { status: { in: ["PENDING", "RUNNING"] }, createdAt: { lt: current.createdAt } }] }, select: { id: true } });
       if (blocked) continue;
@@ -621,7 +627,7 @@ export async function claimMediaControlIntent(db: PrismaClient = prisma) {
       }
       const attemptToken = randomUUID();
       const leaseExpiresAt = new Date(now.getTime() + CONNECTION_MS);
-      await tx.mediaControlIntent.update({ where: { id: current.id }, data: { status: "RUNNING", attemptToken, leaseExpiresAt } });
+      await tx.mediaControlIntent.update({ where: { id: current.id }, data: { status: "RUNNING", attemptToken, leaseExpiresAt, nextAttemptAt: leaseExpiresAt, attempts: { increment: 1 } } });
       return { id: current.id, admissionId: current.admissionId, authorizationVersion: current.authorizationVersion, kind: current.kind, attemptToken, leaseExpiresAt };
     }
     return null;
@@ -631,11 +637,11 @@ export async function claimMediaControlIntent(db: PrismaClient = prisma) {
 /**
  * Completes the current attempt. A grant that lost its admission is recorded
  * as revoked even if the adapter applied it (the queued REMOVE undoes it). A
- * failed REMOVE returns to the queue: removal must eventually succeed, and a
- * confirmed REMOVE completes the admission's revocation.
+ * failed REMOVE returns to the queue after a growing wait: removal must
+ * eventually succeed, and a confirmed REMOVE completes the revocation.
  */
 export async function finishMediaControlIntent(input: { id: string; attemptToken: string; success: boolean; errorCode?: string }, db: PrismaClient = prisma): Promise<void> {
-  await serializable(db, async (tx) => {
+  const degraded = await serializable(db, async (tx) => {
     await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "MediaControlIntent" WHERE "id" = ${input.id} FOR UPDATE`);
     const intent = await tx.mediaControlIntent.findUnique({ where: { id: input.id }, include: { admission: true } });
     if (!intent || intent.status !== "RUNNING" || intent.attemptToken !== input.attemptToken) throw new VoiceError(409, "CONTROL_ATTEMPT_STALE");
@@ -644,13 +650,24 @@ export async function finishMediaControlIntent(input: { id: string; attemptToken
       const revoked = intent.errorCode === "REVOKED" || intent.admission.state === "REVOKING" || intent.admission.state === "REVOKED" || intent.admission.authorizationVersion !== intent.authorizationVersion;
       if (revoked) await tx.mediaControlIntent.update({ where: { id: intent.id }, data: { status: "FAILED", errorCode: "REVOKED", ...done } });
       else await tx.mediaControlIntent.update({ where: { id: intent.id }, data: { status: input.success ? "CONFIRMED" : "FAILED", errorCode: input.success ? null : input.errorCode ?? "ADAPTER_FAILED", ...done } });
-      return;
+      return false;
     }
     if (!input.success) {
-      await tx.mediaControlIntent.update({ where: { id: intent.id }, data: { status: "PENDING", errorCode: input.errorCode ?? "ADAPTER_FAILED", ...done } });
-      return;
+      const retryAt = new Date(Date.now() + Math.min(CONTROL_RETRY_MAX_MS, 1_000 * 2 ** Math.max(0, intent.attempts - 1)));
+      await tx.mediaControlIntent.update({ where: { id: intent.id }, data: { status: "PENDING", errorCode: input.errorCode ?? "ADAPTER_FAILED", nextAttemptAt: retryAt, ...done } });
+      return intent.attempts === CONTROL_DEGRADED_ATTEMPTS;
     }
     await tx.mediaControlIntent.update({ where: { id: intent.id }, data: { status: "CONFIRMED", errorCode: null, ...done } });
     await tx.voiceAdmission.updateMany({ where: { id: intent.admissionId, state: "REVOKING", authorizationVersion: intent.authorizationVersion }, data: { state: "REVOKED" } });
+    return false;
   });
+  if (degraded) console.warn(`[voice] media removal ${input.id} has failed ${CONTROL_DEGRADED_ATTEMPTS} times; still retrying`);
+}
+
+/**
+ * Removals still being retried after repeated failures: a revoked participant
+ * may still have media, so staff should see these.
+ */
+export async function degradedMediaControls(db: PrismaClient = prisma) {
+  return db.mediaControlIntent.findMany({ where: { kind: "REMOVE", status: { in: ["PENDING", "RUNNING"] }, attempts: { gte: CONTROL_DEGRADED_ATTEMPTS } }, orderBy: { createdAt: "asc" }, select: { id: true, admissionId: true, attempts: true, errorCode: true, nextAttemptAt: true } });
 }

@@ -749,9 +749,11 @@ model MediaControlIntent {
   attemptToken         String?
   leaseExpiresAt       DateTime?
   errorCode            String?
+  attempts             Int                @default(0)
+  nextAttemptAt        DateTime           @default(now())
   createdAt            DateTime           @default(now())
   updatedAt            DateTime           @updatedAt
-  @@index([status, leaseExpiresAt])
+  @@index([status, nextAttemptAt])
   @@index([admissionId, authorizationVersion, kind])
 }
 

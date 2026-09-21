@@ -5,7 +5,7 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { PrismaClient } from "@msva/db";
 import { revokeSession } from "./auth.js";
 import { adminRouter } from "./routes/admin.js";
-import { authorizeSignalConnection, claimMediaControlIntent, claimVoiceLease, confirmSignalParticipant, createVoiceSession, finishMediaControlIntent, prepareBrowserAdmission, recordVoiceDispatch, renewSignalConnection, workerParticipantIdentity } from "./voiceService.js";
+import { authorizeSignalConnection, claimMediaControlIntent, claimVoiceLease, confirmSignalParticipant, CONTROL_DEGRADED_ATTEMPTS, createVoiceSession, degradedMediaControls, finishMediaControlIntent, prepareBrowserAdmission, recordVoiceDispatch, renewSignalConnection, workerParticipantIdentity } from "./voiceService.js";
 
 const databaseUrl = process.env.MSVA_VOICE_TEST_DATABASE_URL;
 if (!databaseUrl) throw new Error("MSVA_VOICE_TEST_DATABASE_URL is required");
@@ -42,6 +42,8 @@ async function listener(call: Call, who: Staff) {
 const connect = (call: Call, who: Staff, participantIdentity: string, grants: { publish: boolean; subscribe: boolean } = { publish: false, subscribe: false }, protocol: "v0" | "v1" = "v1") =>
   authorizeSignalConnection({ tokenClaims: { subject: participantIdentity, room: call.roomName, roomJoin: true, ...grants }, sessionTokenHash: sha256(who.token), origin: "https://console.test", protocol, reconnect: false, participantSid: null }, db);
 const removals = (admissionId: string) => db.mediaControlIntent.count({ where: { admissionId, kind: "REMOVE" } });
+/** Lets a control whose retry is scheduled later run now, as if the wait had passed. */
+const due = (id: string) => db.mediaControlIntent.update({ where: { id }, data: { nextAttemptAt: new Date(Date.now() - 1) } });
 
 describe("connection renewal", () => {
   const lapses: Array<[string, (call: Call, who: Staff, admissionId: string) => Promise<unknown>]> = [
@@ -196,8 +198,44 @@ describe("media control execution", () => {
     await expect(finishMediaControlIntent({ id: attempt!.id, attemptToken: attempt!.attemptToken, success: true }, db)).rejects.toMatchObject({ code: "CONTROL_ATTEMPT_STALE" });
     await finishMediaControlIntent({ id: retry!.id, attemptToken: retry!.attemptToken, success: false, errorCode: "SFU_UNAVAILABLE" }, db);
     expect(await db.mediaControlIntent.findUniqueOrThrow({ where: { id: attempt!.id } })).toMatchObject({ status: "PENDING", errorCode: "SFU_UNAVAILABLE" });
+    // The failed removal waits before its next attempt.
+    expect(await claimMediaControlIntent(db)).toBeNull();
+    await due(attempt!.id);
     const again = await claimMediaControlIntent(db);
     await finishMediaControlIntent({ id: again!.id, attemptToken: again!.attemptToken, success: true }, db);
     expect(await db.voiceAdmission.findUniqueOrThrow({ where: { id: admission.id } })).toMatchObject({ state: "REVOKED" });
+  });
+
+  it("keeps removing other participants' media while one removal keeps failing", async () => {
+    const failing = await staff(); const other = await staff();
+    const failingAdmission = await listener(await liveCall(), failing);
+    const otherAdmission = await listener(await liveCall(), other);
+    await revokeSession(failing.token);
+    await revokeSession(other.token);
+    const first = await claimMediaControlIntent(db);
+    expect(first).toMatchObject({ admissionId: failingAdmission.id, kind: "REMOVE" });
+    await finishMediaControlIntent({ id: first!.id, attemptToken: first!.attemptToken, success: false, errorCode: "SFU_UNAVAILABLE" }, db);
+    const next = await claimMediaControlIntent(db);
+    expect(next).toMatchObject({ admissionId: otherAdmission.id, kind: "REMOVE" });
+    await finishMediaControlIntent({ id: next!.id, attemptToken: next!.attemptToken, success: true }, db);
+    expect(await db.voiceAdmission.findUniqueOrThrow({ where: { id: otherAdmission.id } })).toMatchObject({ state: "REVOKED" });
+
+    // Each further failure waits longer, and repeated failures are surfaced.
+    let wait = 0;
+    for (let attempt = 2; attempt <= CONTROL_DEGRADED_ATTEMPTS; attempt += 1) {
+      await due(first!.id);
+      const retry = await claimMediaControlIntent(db);
+      expect(retry).toMatchObject({ id: first!.id });
+      await finishMediaControlIntent({ id: retry!.id, attemptToken: retry!.attemptToken, success: false, errorCode: "SFU_UNAVAILABLE" }, db);
+      const scheduled = (await db.mediaControlIntent.findUniqueOrThrow({ where: { id: first!.id } })).nextAttemptAt.getTime() - Date.now();
+      expect(scheduled).toBeGreaterThan(wait);
+      wait = scheduled;
+    }
+    expect(await degradedMediaControls(db)).toEqual([expect.objectContaining({ id: first!.id, admissionId: failingAdmission.id, attempts: CONTROL_DEGRADED_ATTEMPTS })]);
+    await due(first!.id);
+    const recovered = await claimMediaControlIntent(db);
+    await finishMediaControlIntent({ id: recovered!.id, attemptToken: recovered!.attemptToken, success: true }, db);
+    expect(await db.voiceAdmission.findUniqueOrThrow({ where: { id: failingAdmission.id } })).toMatchObject({ state: "REVOKED" });
+    expect(await degradedMediaControls(db)).toEqual([]);
   });
 });

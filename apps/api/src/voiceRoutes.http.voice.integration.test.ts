@@ -65,4 +65,42 @@ describe("voice worker mounted HTTP contract", () => {
     expect(await db.voiceEvent.count({ where: { sessionId: session.id } })).toBe(3);
     expect((await db.voiceSession.findUniqueOrThrow({ where: { id: session.id } })).finalWatermark).toBe(2);
   });
+
+  it("answers credential, scope and schema failures with their documented statuses", async () => {
+    const started = async () => {
+      const callId = `voice-${randomUUID()}`;
+      await db.call.create({ data: { id: callId, provider: "BROWSER", isTest: true, fromNumber: "browser" } });
+      const session = await createVoiceSession({ requestId: `request-${callId}`, callId, callerParticipantId: "caller", language: "en" }, db);
+      await recordVoiceDispatch(session.id, "provider-dispatch-id", db);
+      return { callId, claim: { callId, roomName: session.roomName, dispatchId: "provider-dispatch-id", participantId: workerParticipantIdentity(callId) } };
+    };
+    const send = (method: string, path: string, authorization?: string, body?: unknown) => fetch(`${baseUrl}${path}`, { method, headers: { "content-type": "application/json", ...(authorization ? { authorization } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const call = await started();
+    const other = await started();
+    expect((await send("POST", "/leases/claim", undefined, call.claim)).status).toBe(401);
+    expect((await send("POST", "/leases/claim", "Bearer wrong-token", call.claim)).status).toBe(401);
+    const lease = await (await send("POST", "/leases/claim", "Bearer worker-test-token", call.claim)).json() as { token: string; agentEpoch: number };
+    const otherLease = await (await send("POST", "/leases/claim", "Bearer worker-test-token", other.claim)).json() as { token: string };
+    // The global worker credential, another call's lease and an unknown call all
+    // look the same: a call's existence is not disclosed.
+    expect((await send("GET", `/calls/${call.callId}/context`, "Bearer worker-test-token")).status).toBe(401);
+    expect((await send("GET", `/calls/${call.callId}/context`, `Bearer ${otherLease.token}`)).status).toBe(401);
+    expect((await send("GET", "/calls/voice-unknown/context", `Bearer ${lease.token}`)).status).toBe(401);
+    expect((await send("GET", `/calls/${call.callId}/tools/anything`, "Bearer v1.1.forged")).status).toBe(401);
+    expect((await send("GET", `/calls/${call.callId}/context`, `Bearer ${lease.token}`)).status).toBe(200);
+    const overflow = { schemaVersion: 1, eventId: randomUUID(), callId: call.callId, agentEpoch: lease.agentEpoch, sourceSequence: 2_147_483_648, occurredAt: new Date().toISOString(), type: "agent.ready", payload: { participantId: workerParticipantIdentity(call.callId) } };
+    expect((await send("POST", `/calls/${call.callId}/events`, `Bearer ${lease.token}`, overflow)).status).toBe(400);
+    const followUp = { journey: "CONSUMER_COMPLAINT", callerConfirmation: "FOLLOW_UP", parentRequestId: "missing-request", fields: { product: "Oil", purchaseArea: "Indore", issueCategory: "quality", description: "Leaking", productAvailable: true }, queue: { territory: "MP", language: "hi" } };
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const rejected = await send("POST", `/calls/${call.callId}/tools`, `Bearer ${lease.token}`, { invocationId: "follow-up", agentEpoch: lease.agentEpoch, name: "create_business_request", arguments: followUp });
+      expect(rejected.status).toBe(403);
+      expect(await rejected.json()).toEqual({ error: "PARENT_NOT_ACCESSIBLE" });
+    }
+    process.env.VOICE_ENABLED = "false";
+    try {
+      expect((await send("POST", "/leases/claim", "Bearer worker-test-token", call.claim)).status).toBe(503);
+    } finally {
+      process.env.VOICE_ENABLED = "true";
+    }
+  });
 });

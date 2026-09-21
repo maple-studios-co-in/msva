@@ -67,11 +67,12 @@ describe("voice session persistence", () => {
     await db.voiceSession.update({ where: { id: first.id }, data: { expiresAt: new Date(Date.now() - 1) } });
     await expect(createStarting("three-retry")).resolves.toMatchObject({ state: "STARTING" });
   });
-  it("persists a fatal terminal state and fences renewal", async () => {
+  it("hands a live call to staff recovery on a worker failure and fences renewal", async () => {
     const item = await session(); const row = await db.voiceSession.findUniqueOrThrow({ where: { id: item.id } }); const lease = await claimVoiceLease({ callId: item.callId, roomName: row.roomName, dispatchId: "dispatch", participantId: workerParticipantIdentity(item.callId) }, worker, db);
     await recordVoiceEvent({ schemaVersion: 1, eventId: "fatal", callId: item.callId, agentEpoch: 1, sourceSequence: 1, occurredAt: new Date().toISOString(), type: "agent.failed", payload: { code: "FATAL" } }, lease.token, db);
-    expect(await db.voiceSession.findUniqueOrThrow({ where: { id: item.id } })).toMatchObject({ state: "FAILED" });
-    await expect(renewVoiceLease(item.callId, 1, lease.token, db)).rejects.toMatchObject({ code: "LEASE_STALE" } satisfies Partial<VoiceError>);
+    expect(await db.voiceSession.findUniqueOrThrow({ where: { id: item.id } })).toMatchObject({ state: "RECOVERY_REQUIRED" });
+    expect(await db.call.findUniqueOrThrow({ where: { id: item.callId } })).toMatchObject({ status: "IN_PROGRESS", endedAt: null });
+    await expect(renewVoiceLease(item.callId, 1, lease.token, db)).rejects.toMatchObject({ code: "LEASE_EXPIRED" } satisfies Partial<VoiceError>);
   });
   it("projects only the current transcript revision and rejects a forged flush watermark", async () => {
     const item = await session(); const row = await db.voiceSession.findUniqueOrThrow({ where: { id: item.id } }); const lease = await claimVoiceLease({ callId: item.callId, roomName: row.roomName, dispatchId: "dispatch", participantId: workerParticipantIdentity(item.callId) }, worker, db);
@@ -95,7 +96,10 @@ describe("voice session persistence", () => {
     await expect(finalizeVoiceSession(item.callId, db)).rejects.toMatchObject({ code: "EVIDENCE_INCOMPLETE" } satisfies Partial<VoiceError>);
     await recordVoiceEvent({ schemaVersion: 1, eventId: "flush-5", callId: item.callId, agentEpoch: 1, sourceSequence: 5, occurredAt: at, type: "transcript.flushed", payload: { lastSourceSequence: 4 } }, lease.token, db);
     await finalizeVoiceSession(item.callId, db);
-    expect(await db.call.findUniqueOrThrow({ where: { id: item.callId } })).toMatchObject({ status: "COMPLETED", outcome: "RESOLVED_BY_VA" });
+    // Caller speech without a recorded request is not evidence of resolution.
+    const ended = await db.call.findUniqueOrThrow({ where: { id: item.callId } });
+    expect(ended).toMatchObject({ status: "COMPLETED", outcome: "IN_PROGRESS" });
+    expect(ended.durationMs).not.toBeNull();
   });
   it("accepts retained expired ready, final, and flush as evidence without restoring authority", async () => {
     const item = await session();
@@ -150,7 +154,7 @@ describe("voice session persistence", () => {
     await db.voiceSession.update({ where: { id: item.id }, data: { ownerUserId: user.id, ownerSessionId: browser.id } });
     await db.handoff.create({ data: { callId: item.callId, assignedUserId: user.id, state: "ASSIGNED" } });
     const admission = await prepareBrowserAdmission({ callId: item.callId, userId: user.id, sessionId: browser.id, role: "CALLER", expectedAuthorizationVersion: 1 }, db);
-    const input = { tokenClaims: { subject: admission.participantIdentity, room: row.roomName, roomJoin: true, publish: true, subscribe: true }, sessionTokenHash: "caller-token", origin: "https://console.test", protocol: "v1" as const, reconnect: false, participantSid: null, now: new Date() };
+    const input = { tokenClaims: { subject: admission.participantIdentity, room: row.roomName, roomJoin: true, publish: false, subscribe: false }, sessionTokenHash: "caller-token", origin: "https://console.test", protocol: "v1" as const, reconnect: false, participantSid: null };
     await expect(authorizeSignalConnection({ ...input, participantSid: "forged-sid" }, db)).rejects.toMatchObject({ code: "INITIAL_SID_FORBIDDEN" } satisfies Partial<VoiceError>);
     const connection = await authorizeSignalConnection(input, db);
     await renewSignalConnection({ admissionId: connection.admissionId, connectionEpoch: connection.connectionEpoch, connectionOwner: connection.connectionOwner }, db);
@@ -173,7 +177,14 @@ describe("voice session persistence", () => {
     expect(claimed).toMatchObject({ admissionId: admission.id, kind: "GRANT" });
     await Promise.all([db.$transaction((tx) => revokeAdmissions(tx, { callId: item.callId, reason: "CALL_ENDED" })), db.$transaction((tx) => revokeAdmissions(tx, { callId: item.callId, reason: "CALL_ENDED" }))]);
     expect(await db.mediaControlIntent.count({ where: { admissionId: admission.id, kind: "REMOVE" } })).toBe(1);
+    // The in-flight grant keeps its attempt lease, so the REMOVE waits behind it.
+    expect(await db.mediaControlIntent.findFirstOrThrow({ where: { admissionId: admission.id, kind: "GRANT" } })).toMatchObject({ status: "RUNNING", errorCode: "REVOKED" });
+    expect(await claimMediaControlIntent(db)).toBeNull();
+    await finishMediaControlIntent({ id: claimed!.id, attemptToken: claimed!.attemptToken, success: true }, db);
     expect(await db.mediaControlIntent.findFirstOrThrow({ where: { admissionId: admission.id, kind: "GRANT" } })).toMatchObject({ status: "FAILED", errorCode: "REVOKED" });
-    await expect(finishMediaControlIntent({ id: claimed!.id, attemptToken: claimed!.attemptToken, success: true }, db)).rejects.toMatchObject({ code: "CONTROL_ATTEMPT_STALE" } satisfies Partial<VoiceError>);
+    const removal = await claimMediaControlIntent(db);
+    expect(removal).toMatchObject({ admissionId: admission.id, kind: "REMOVE" });
+    await finishMediaControlIntent({ id: removal!.id, attemptToken: removal!.attemptToken, success: true }, db);
+    expect(await db.voiceAdmission.findUniqueOrThrow({ where: { id: admission.id } })).toMatchObject({ state: "REVOKED" });
   });
 });

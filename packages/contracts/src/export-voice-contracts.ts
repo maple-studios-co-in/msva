@@ -14,7 +14,7 @@ function artifacts(): Record<string, string> {
   for (const [name, schema] of Object.entries(schemas)) result[`packages/contracts/json-schema/voice-v1/${name}.json`] = `${JSON.stringify({ $id: `https://msva.example.invalid/contracts/voice-v1/${name}`, $schema: "https://json-schema.org/draft/2020-12/schema", ...(schema as object) }, null, 2)}\n`;
   const call = { name: "callId", in: "path", required: true, schema: { type: "string", minLength: 1, maxLength: 128 } };
   const failure = (description: string) => ({ description, content: { "application/json": { schema: { $ref: "#/components/schemas/VoiceError" } } } });
-  const errors = { "400": failure("Invalid request"), "401": failure("Invalid credential"), "403": failure("Credential scope denied"), "404": failure("Unknown receipt"), "409": failure("Fenced, stale, or conflicting operation"), "503": failure("Voice service unavailable") };
+  const errors = { "400": failure("Invalid request"), "401": failure("Invalid credential"), "403": failure("Credential scope denied"), "404": failure("Unknown call or receipt"), "409": failure("Fenced, stale, conflicting, or over-limit operation"), "503": failure("Voice service unavailable") };
   const json = (name: string) => ({ content: { "application/json": { schema: { $ref: `#/components/schemas/${name}` } } } });
   const operation = (body: string | undefined, response: string, scoped = true) => ({
     security: [{ [scoped ? "callLease" : "workerBearer"]: [] }],

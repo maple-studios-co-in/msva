@@ -14,6 +14,8 @@ const MAX_ACTIVE_SESSIONS = 2;
 // event every 1.44 s.
 const MAX_SESSION_EVENTS = 5_000;
 const MAX_SESSION_EVENT_BYTES = 8 * 1024 * 1024;
+// Business requests one call may create; after that the model is refused.
+const MAX_SESSION_TOOL_CALLS = 5;
 // A call that lost its AI and that nobody ended is closed once it has waited
 // this long with nobody still admitted to it.
 const RECOVERY_ABANDON_MS = 15 * 60 * 1000;
@@ -417,20 +419,23 @@ function replayTool(status: string, result: Prisma.JsonValue | null): CreateRequ
 }
 
 export async function invokeVoiceTool(input: { callId: string; invocationId: string; agentEpoch: number; name: "create_business_request"; arguments: unknown }, token: string, db: PrismaClient = prisma): Promise<CreateRequestResult> {
+  // A bounded, stable request identity per invocation, whatever its length.
+  const args = input.arguments && typeof input.arguments === "object" && !Array.isArray(input.arguments) ? input.arguments as Record<string, unknown> : null;
+  const parsed = args ? CreateRequestInputSchema.safeParse({ ...args, callId: input.callId, requestId: `voice:${hash(`${input.callId}:${input.invocationId}`).slice(0, 48)}` }) : null;
+  const request = parsed?.success ? parsed.data : null;
   type Prepared = { kind: "replay"; result: CreateRequestResult } | { kind: "run"; canonicalPayload: string };
   const prepared = await serializable(db, async (tx): Promise<Prepared> => {
     const session = await authenticatedSession(tx, input.callId, token); const lease = currentAuthority(session, new Date());
     if (lease.agentEpoch !== input.agentEpoch) throw new VoiceError(409, "LEASE_STALE");
+    // Checked before anything is stored, so an invalid call leaves no pending record.
+    if (!request) throw new VoiceError(400, "INVALID_TOOL_ARGUMENTS");
     const canonicalPayload = stable(input.arguments); const existing = await tx.toolInvocation.findUnique({ where: { sessionId_invocationId: { sessionId: session.id, invocationId: input.invocationId } } });
     if (existing) { if (existing.canonicalPayload !== canonicalPayload) throw new VoiceError(409, "INVOCATION_CONFLICT"); const replay = replayTool(existing.status, existing.result); return replay ? { kind: "replay", result: replay } : { kind: "run", canonicalPayload }; }
+    if (await tx.toolInvocation.count({ where: { sessionId: session.id, status: { in: ["PENDING", "COMMITTED"] } } }) >= MAX_SESSION_TOOL_CALLS) throw new VoiceError(409, "TOOL_LIMIT");
     await tx.toolInvocation.create({ data: { sessionId: session.id, invocationId: input.invocationId, agentEpoch: input.agentEpoch, name: input.name, canonicalPayload, payloadHash: hash(canonicalPayload), status: "PENDING" } });
     return { kind: "run", canonicalPayload };
   });
   if (prepared.kind === "replay") return prepared.result;
-  if (!input.arguments || typeof input.arguments !== "object" || Array.isArray(input.arguments)) throw new VoiceError(400, "INVALID_TOOL_ARGUMENTS");
-  // A bounded, stable request identity per invocation, whatever its length.
-  const command = { ...(input.arguments as Record<string, unknown>), callId: input.callId, requestId: `voice:${hash(`${input.callId}:${input.invocationId}`).slice(0, 48)}` };
-  const parsed = CreateRequestInputSchema.safeParse(command); if (!parsed.success) throw new VoiceError(400, "INVALID_TOOL_ARGUMENTS");
   type Outcome = { kind: "done"; result: CreateRequestResult } | { kind: "rejected"; code: string; invocationId: string };
   const outcome = await serializable(db, async (tx): Promise<Outcome> => {
     const session = await authenticatedSession(tx, input.callId, token); const lease = currentAuthority(session, new Date());
@@ -439,7 +444,7 @@ export async function invokeVoiceTool(input: { callId: string; invocationId: str
     if (existing.canonicalPayload !== prepared.canonicalPayload) throw new VoiceError(409, "INVOCATION_CONFLICT");
     const replay = replayTool(existing.status, existing.result); if (replay) return { kind: "done", result: replay };
     try {
-      const result = await createBusinessRequest(tx, parsed.data);
+      const result = await createBusinessRequest(tx, request!);
       await tx.toolInvocation.update({ where: { id: existing.id }, data: { status: "COMMITTED", result: result as unknown as Prisma.InputJsonValue } });
       return { kind: "done", result };
     } catch (error) {

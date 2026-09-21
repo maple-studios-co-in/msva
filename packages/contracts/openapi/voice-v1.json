@@ -736,7 +736,7 @@
                 }
               }
             },
-            "description": "Unknown receipt"
+            "description": "Unknown call or receipt"
           },
           "409": {
             "content": {
@@ -746,7 +746,7 @@
                 }
               }
             },
-            "description": "Fenced, stale, or conflicting operation"
+            "description": "Fenced, stale, conflicting, or over-limit operation"
           },
           "503": {
             "content": {
@@ -839,7 +839,7 @@
                 }
               }
             },
-            "description": "Unknown receipt"
+            "description": "Unknown call or receipt"
           },
           "409": {
             "content": {
@@ -849,7 +849,7 @@
                 }
               }
             },
-            "description": "Fenced, stale, or conflicting operation"
+            "description": "Fenced, stale, conflicting, or over-limit operation"
           },
           "503": {
             "content": {
@@ -942,7 +942,7 @@
                 }
               }
             },
-            "description": "Unknown receipt"
+            "description": "Unknown call or receipt"
           },
           "409": {
             "content": {
@@ -952,7 +952,7 @@
                 }
               }
             },
-            "description": "Fenced, stale, or conflicting operation"
+            "description": "Fenced, stale, conflicting, or over-limit operation"
           },
           "503": {
             "content": {
@@ -1045,7 +1045,7 @@
                 }
               }
             },
-            "description": "Unknown receipt"
+            "description": "Unknown call or receipt"
           },
           "409": {
             "content": {
@@ -1055,7 +1055,7 @@
                 }
               }
             },
-            "description": "Fenced, stale, or conflicting operation"
+            "description": "Fenced, stale, conflicting, or over-limit operation"
           },
           "503": {
             "content": {
@@ -1148,7 +1148,7 @@
                 }
               }
             },
-            "description": "Unknown receipt"
+            "description": "Unknown call or receipt"
           },
           "409": {
             "content": {
@@ -1158,7 +1158,7 @@
                 }
               }
             },
-            "description": "Fenced, stale, or conflicting operation"
+            "description": "Fenced, stale, conflicting, or over-limit operation"
           },
           "503": {
             "content": {
@@ -1239,7 +1239,7 @@
                 }
               }
             },
-            "description": "Unknown receipt"
+            "description": "Unknown call or receipt"
           },
           "409": {
             "content": {
@@ -1249,7 +1249,7 @@
                 }
               }
             },
-            "description": "Fenced, stale, or conflicting operation"
+            "description": "Fenced, stale, conflicting, or over-limit operation"
           },
           "503": {
             "content": {

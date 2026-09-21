@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { PrismaClient } from "@msva/db";
 import type { WorkerEvent } from "@msva/contracts";
-import { claimVoiceLease, createVoiceSession, endVoiceCall, finalizeVoiceSession, invokeVoiceTool, prepareBrowserAdmission, recordVoiceDispatch, recordVoiceEvent, renewVoiceLease, sweepVoiceSessions, voiceContext, workerParticipantIdentity } from "./voiceService.js";
+import { claimVoiceLease, createVoiceSession, endVoiceCall, finalizeVoiceSession, invokeVoiceTool, prepareBrowserAdmission, recordVoiceDispatch, recordVoiceEvent, renewVoiceLease, sweepVoiceSessions, voiceContext, voiceToolReceipt, workerParticipantIdentity } from "./voiceService.js";
 
 const databaseUrl = process.env.MSVA_VOICE_TEST_DATABASE_URL;
 if (!databaseUrl) throw new Error("MSVA_VOICE_TEST_DATABASE_URL is required");
@@ -341,6 +341,24 @@ describe("business tools", () => {
     await expect(tool(call, "follow-up", followUp)).rejects.toMatchObject({ status: 403, code: "PARENT_NOT_ACCESSIBLE" });
     expect(await db.toolInvocation.findFirstOrThrow({ where: { invocationId: "follow-up" } })).toMatchObject({ status: "FAILED", result: { error: "PARENT_NOT_ACCESSIBLE" } });
     expect(await db.ticket.count()).toBe(0);
+  });
+
+  it("refuses invalid arguments before recording anything", async () => {
+    const call = await liveCall();
+    for (const args of [null, ["a list"], { ...complaint, journey: "NOT_A_JOURNEY" }]) {
+      await expect(tool(call, "invalid", args)).rejects.toMatchObject({ status: 400, code: "INVALID_TOOL_ARGUMENTS" });
+    }
+    expect(await db.toolInvocation.count()).toBe(0);
+    await expect(voiceToolReceipt(call.callId, "invalid", call.lease.token, db)).rejects.toMatchObject({ status: 404, code: "TOOL_RECEIPT_NOT_FOUND" });
+  });
+
+  it("refuses more than five business requests in one call but still answers earlier ones", async () => {
+    const call = await liveCall();
+    const receipts = [];
+    for (let index = 0; index < 5; index += 1) receipts.push(await tool(call, `request-${index}`));
+    await expect(tool(call, "request-5")).rejects.toMatchObject({ status: 409, code: "TOOL_LIMIT" });
+    expect(await db.ticket.count()).toBe(5);
+    await expect(tool(call, "request-0")).resolves.toEqual(receipts[0]);
   });
 
   it("accepts the longest allowed invocation identifier", async () => {

@@ -17,6 +17,8 @@ class EventWriter:
         self.lease = lease
         self._source_sequence = 0
         self.agent_participant_id = agent_participant_id
+        # Set once an event could not be stored: the stream has a gap from then on.
+        self.evidence_lost = False
 
     async def emit(self, event_type: str, payload: dict[str, Any]) -> str:
         return self.append(event_type, payload)
@@ -30,8 +32,12 @@ class EventWriter:
                 "occurredAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"), "type": event_type, "payload": payload}
         # Persistence precedes every delivery attempt. Payloads contain only event metadata/text,
         # never audio bytes or HTTP headers.
-        _, self._source_sequence = self.spool.append_event(call_id=self.lease.call_id, agent_epoch=self.lease.agent_epoch,
-            credential=self.client.replay_credential(self.lease), build=build)
+        try:
+            _, self._source_sequence = self.spool.append_event(call_id=self.lease.call_id, agent_epoch=self.lease.agent_epoch,
+                credential=self.client.replay_credential(self.lease), build=build)
+        except Exception:
+            self.evidence_lost = True
+            raise
         return event_id
 
     def record_failure(self, code: str) -> str:
@@ -40,8 +46,10 @@ class EventWriter:
         return self.append("agent.failed", {"code": code})
 
     def record_flush(self) -> str | None:
-        """Checkpoint exactly the prefix persisted so far (nothing to checkpoint before ready)."""
-        if self._source_sequence < 1:
+        """Checkpoint exactly the prefix persisted so far. There is nothing to checkpoint
+        before ready, and no checkpoint once an event was lost: the API would take the
+        stream for complete when words are missing from it."""
+        if self._source_sequence < 1 or self.evidence_lost:
             return None
         return self.append("transcript.flushed", {"lastSourceSequence": self._source_sequence})
 

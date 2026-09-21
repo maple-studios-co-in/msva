@@ -60,21 +60,28 @@ function requestTarget(url: string | undefined): URL | null {
   }
 }
 
+type Transport = "carrier" | "browser";
+
+// The route each upgrade was admitted for. The connection is dispatched on this same
+// decision, never on the path parsed again, so what was checked is what runs.
+const routes = new WeakMap<http.IncomingMessage, { target: URL; transport: Transport }>();
+
 server.on("upgrade", (request, socket, head) => {
-  const { url } = request;
-  const target = requestTarget(url);
-  const browser = target?.pathname === "/browser";
-  if (!url || !target || !(url.startsWith("/voice") || browser)) {
+  const target = requestTarget(request.url);
+  // Exactly /voice is the carrier's media stream and exactly /browser a browser call,
+  // compared on the parsed path; no prefix, alias or dot segment opens anything.
+  const transport: Transport | null = target?.pathname === "/voice" ? "carrier" : target?.pathname === "/browser" ? "browser" : null;
+  if (!target || !transport) {
     socket.destroy();
     return;
   }
   const open = () => wss.handleUpgrade(request, socket, head, (ws) => {
+    routes.set(request, { target, transport });
     wss.emit("connection", ws, request);
   });
-  // The carrier's media stream (/voice) cannot carry a console session; a browser
-  // call (exactly /browser) must, so it opens only once the API accepts the
-  // caller's sign-in.
-  if (!browser) {
+  // The carrier's media stream cannot carry a console session; a browser call must,
+  // so it opens only once the API accepts the caller's sign-in.
+  if (transport === "carrier") {
     open();
     return;
   }
@@ -91,17 +98,18 @@ server.on("upgrade", (request, socket, head) => {
 });
 
 wss.on("connection", (ws, request) => {
-  const url = requestTarget(request.url);
-  if (!url) {
+  const route = routes.get(request);
+  if (!route) {
     ws.terminate();
     return;
   }
+  const url = route.target;
 
   // -------------------------------------------------------------------------
   // Browser call transport (/browser). The web app's "Live Call" screen
   // connects here, streaming 16 kHz PCM both ways.
   // -------------------------------------------------------------------------
-  if (url.pathname.startsWith("/browser")) {
+  if (route.transport === "browser") {
     const callId = url.searchParams.get("call") ?? "call-dist-ghee-delay";
     const fromNumber = url.searchParams.get("from") ?? "+910000000000";
     const profile: DemoCall = {

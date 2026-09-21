@@ -150,3 +150,22 @@ it("survives upgrade requests whose target or host does not parse", async () => 
   }
 });
 
+
+it("routes each upgrade on the exact path it names", async () => {
+  const checked = fakeApi(() => Response.json({ user: { role: "ADMIN" } }));
+  const service = await telephony();
+  try {
+    // No prefix, alias or dot segment reaches a call: in particular a carrier-looking
+    // path can never open a browser call without its checks.
+    for (const target of ["/voice/../browser/x", "/voice/", "/voicex", "/browser/", "/browser/../browser/x"]) {
+      expect(await rawUpgrade(service.url, `${target}?call=x`, "127.0.0.1")).toBe("");
+    }
+    // One that names exactly /browser is a browser call, checked like any other.
+    for (const target of ["/voice/../browser", "/voice/%2e%2e/browser"]) {
+      expect(await rawUpgrade(service.url, `${target}?call=x`, "127.0.0.1")).toBe("HTTP/1.1 403 Forbidden");
+    }
+    expect(checked).toEqual([]);
+  } finally {
+    await service.close();
+  }
+});

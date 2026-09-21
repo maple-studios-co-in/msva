@@ -12,6 +12,7 @@ import { databaseReady } from "@msva/db";
 import { adminRouter } from "./routes/admin.js";
 import { internalRouter } from "./routes/internal.js";
 import { createLiveCallsHandler } from "./liveCalls.js";
+import { voiceRouter } from "./voiceRoutes.js";
 import { startAssessmentWorker } from "./assessmentWorker.js";
 
 const app = express();
@@ -198,8 +199,9 @@ app.use((error: unknown, _request: express.Request, response: express.Response, 
 const server = app.listen(port, () => {
   console.log(`MSVA API running on http://localhost:${port}`);
 });
+
 const assessmentWorker = startAssessmentWorker();
-for (const signal of ["SIGTERM", "SIGINT"] as const) {
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => {
     void assessmentWorker.stop().finally(() => server.close());
   });

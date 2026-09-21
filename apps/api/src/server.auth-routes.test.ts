@@ -47,3 +47,20 @@ it("mounts the strict internal agent route before the legacy internal router", a
     await testServer.close();
   }
 });
+
+it("fails closed through the mounted login route when production SMTP is unavailable", async () => {
+  vi.stubEnv("NODE_ENV", "production");
+  const { createApp } = await import("./server.js");
+  const testServer = await serve(createApp());
+  try {
+    const response = await fetch(`${testServer.url}/api/admin/auth/request-code`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "known@example.test" })
+    });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "Sign-in is temporarily unavailable" });
+  } finally {
+    await testServer.close();
+  }
+});

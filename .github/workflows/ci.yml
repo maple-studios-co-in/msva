@@ -41,6 +41,10 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
       - run: pnpm install --frozen-lockfile
       - name: Check development environment
         run: pnpm check:dev-environment
@@ -50,8 +54,15 @@ jobs:
         run: pnpm --filter @msva/db migrate
       - name: Verify migration status
         run: pnpm --filter @msva/db exec prisma migrate status
-      - name: Build shared package declarations
-        run: pnpm --filter @msva/shared --filter @msva/db build
+      - name: Build shared and contract package declarations
+        run: pnpm --filter @msva/shared build && pnpm --filter @msva/contracts build
+      - name: Build database package declarations
+        run: pnpm --filter @msva/db build
+      - name: Check generated demo contracts
+        run: pnpm contracts:check
+      - name: Validate demo contracts in Python 3.12
+        working-directory: apps/voice-agent
+        run: PYTHONDONTWRITEBYTECODE=1 uv run --frozen --python 3.12 pytest
       - name: Typecheck
         run: pnpm -r typecheck
       - name: Test

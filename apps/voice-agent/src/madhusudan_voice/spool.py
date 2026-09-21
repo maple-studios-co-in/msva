@@ -362,6 +362,11 @@ class EventSpool:
             db.execute("INSERT INTO tool_intent(call_id,agent_epoch,logical_id,name,arguments,invocation_id,state,created_at) VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?)", (call_id, agent_epoch, logical_id, name, body, invocation_id, time.time()))
             return invocation_id, None
 
+    def drop_tool_intents(self, call_id: str, agent_epoch: int) -> int:
+        """Releases a finished call's tool intents: it can make no further tool call."""
+        with self._write() as db:
+            return db.execute("DELETE FROM tool_intent WHERE call_id=? AND agent_epoch=?", (call_id, agent_epoch)).rowcount
+
     def complete_tool_intent(self, invocation_id: str, receipt: dict[str, Any]) -> None:
         with self._write() as db:
             db.execute("UPDATE tool_intent SET state='COMMITTED', receipt=? WHERE invocation_id=?", (canonical_json(receipt), invocation_id))

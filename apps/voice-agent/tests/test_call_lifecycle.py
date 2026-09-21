@@ -7,7 +7,7 @@ from cryptography.fernet import Fernet
 
 from madhusudan_voice.spool import SpoolKeyMismatch
 
-from fake_voice_api import FakeCtx, FakeSession, FakeVoiceApi, enabled_env, install_runtime
+from fake_voice_api import BASE, KEY, FakeCtx, FakeSession, FakeVoiceApi, enabled_env, install_runtime
 
 
 def committed_types(api: FakeVoiceApi) -> list[str]:
@@ -125,3 +125,24 @@ def test_the_worker_starts_only_with_a_replay_key_that_reads_its_spool(tmp_path,
     with pytest.raises(SpoolKeyMismatch):
         main.run()
     assert len(started) == 1, "a worker that could not record calls must not start"
+
+
+@pytest.mark.asyncio
+async def test_a_finished_call_releases_its_tool_intents(tmp_path):
+    from madhusudan_voice.api import Lease, VoiceApiClient
+    from madhusudan_voice.events import EventWriter
+    from madhusudan_voice.main import CallRuntime
+    from madhusudan_voice.spool import EventSpool
+
+    def open_spool():
+        return EventSpool(tmp_path / "spool.sqlite3", max_events=100, max_bytes=1_000_000, replay_key=KEY)
+
+    spool = open_spool()
+    for call_id in ("call-1", "call-2"):
+        spool.tool_intent(call_id=call_id, agent_epoch=1, logical_id="toolu_A", name="create_business_request", arguments={"journey": "SALES_LEAD"})
+    client = VoiceApiClient(BASE, worker_credential="worker-token")
+    runtime = CallRuntime(client, spool, writer=EventWriter(spool, client, Lease("call-1", 1, "2030-01-01T00:00:00Z", "lease-token")))
+    await runtime.finalize(1)
+    reopened = open_spool()
+    assert reopened._connection.execute("SELECT call_id FROM tool_intent").fetchall() == [("call-2",)]
+    reopened.close()

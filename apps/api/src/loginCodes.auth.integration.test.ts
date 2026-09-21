@@ -3,7 +3,11 @@ import { PrismaClient } from "@msva/db";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const databaseUrl = process.env.MSVA_AUTH_TEST_DATABASE_URL;
-if (!databaseUrl || !databaseUrl.includes("msva_auth_test")) throw new Error("MSVA_AUTH_TEST_DATABASE_URL must point to disposable msva_auth_test");
+// These tests delete users and sessions: only ever against the disposable database,
+// and only when the app's own connection points at the same one.
+if (!databaseUrl || databaseUrl !== process.env.DATABASE_URL || !new URL(databaseUrl).pathname.endsWith("/msva_auth_test")) {
+  throw new Error("DATABASE_URL and MSVA_AUTH_TEST_DATABASE_URL must match the disposable msva_auth_test database");
+}
 const db = new PrismaClient({ datasourceUrl: databaseUrl });
 
 type Send = (input: { recipient: string; code: string; expiresAt: Date }) => Promise<void>;

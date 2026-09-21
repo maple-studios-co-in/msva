@@ -62,6 +62,10 @@ jobs:
           PGPASSWORD: postgres
       - name: Verify migration status
         run: pnpm --filter @msva/db exec prisma migrate status
+      - name: Check schema matches migrations
+        run: createdb -h localhost -U postgres msva_shadow && pnpm --filter @msva/db exec prisma migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma --shadow-database-url "postgresql://postgres:postgres@localhost:5432/msva_shadow?schema=public" --exit-code
+        env:
+          PGPASSWORD: postgres
       - name: Build shared and contract package declarations
         run: pnpm --filter @msva/shared build && pnpm --filter @msva/contracts build
       - name: Build database package declarations

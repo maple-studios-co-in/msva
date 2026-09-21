@@ -42,6 +42,7 @@ model User {
   queueAssignments QueueAssignment[] @relation("QueueAssignmentAssignee")
   handoffs         Handoff[]         @relation("HandoffAssignee")
   riskAlerts       RiskAlert[]       @relation("RiskAlertOwner")
+  requestedAssessments CallAssessment[] @relation("CallAssessmentRequester")
 }
 
 model LoginCode {
@@ -177,6 +178,7 @@ model Call {
   businessRequests BusinessRequest[]
   handoffs         Handoff[]
   riskAssessments  RiskAssessment[]
+  assessments      CallAssessment[]
 
   @@index([startedAt])
   @@index([callerId])
@@ -528,4 +530,43 @@ model RiskAlert {
   ownerId          String?
   owner            User?          @relation("RiskAlertOwner", fields: [ownerId], references: [id], onDelete: Restrict)
   createdAt        DateTime       @default(now())
+}
+
+enum CallAssessmentStatus {
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+model CallAssessment {
+  id                   String               @id @default(cuid())
+  callId               String
+  call                 Call                 @relation(fields: [callId], references: [id], onDelete: Cascade)
+  inputHash            String
+  requestedModel       String
+  returnedModel        String?
+  rubricVersion        String
+  preprocessingVersion String
+  status               CallAssessmentStatus
+  requestedById        String?
+  requestedBy          User?                @relation("CallAssessmentRequester", fields: [requestedById], references: [id], onDelete: SetNull)
+  attemptToken         String
+  attemptCount         Int                  @default(1)
+  leaseExpiresAt       DateTime?
+  errorCode            String?
+  result               Json?
+  inputCharCount       Int
+  utteranceCount       Int
+  linkedTicketRecorded Boolean              @default(false)
+  inputLanguage        String?
+  promptTokens         Int?
+  completionTokens     Int?
+  requestedAt          DateTime             @default(now())
+  completedAt          DateTime?
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+
+  @@unique([callId, inputHash, requestedModel, rubricVersion])
+  @@index([callId, requestedAt])
+  @@index([status, leaseExpiresAt])
 }

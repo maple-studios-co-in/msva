@@ -30,7 +30,7 @@ describe("voice session persistence", () => {
     await expect(recordVoiceEvent({ ...event, eventId: "event-2", sourceSequence: 2, payload: { ...event.payload, participantId: "agent" } }, lease.token, db)).rejects.toMatchObject({ code: "PARTICIPANT_MISMATCH" } satisfies Partial<VoiceError>);
   });
   it("prepares opaque admissions and revocation creates durable remove intent", async () => {
-    const item = await session(); const user = await db.user.create({ data: { email: `${randomUUID()}@test.invalid`, name: "Operator", role: "AGENT" } }); const browser = await db.session.create({ data: { userId: user.id, tokenHash: "token-hash", expiresAt: new Date(Date.now() + 60_000) } }); await db.voiceSession.update({ where: { id: item.id }, data: { ownerUserId: user.id, ownerSessionId: browser.id } });
+    const item = await session(); const row = await db.voiceSession.findUniqueOrThrow({ where: { id: item.id } }); await claimVoiceLease({ callId: item.callId, roomName: row.roomName, dispatchId: "dispatch", participantId: "agent" }, worker, db); const user = await db.user.create({ data: { email: `${randomUUID()}@test.invalid`, name: "Operator", role: "AGENT" } }); const browser = await db.session.create({ data: { userId: user.id, tokenHash: "token-hash", expiresAt: new Date(Date.now() + 60_000) } }); await db.voiceSession.update({ where: { id: item.id }, data: { ownerUserId: user.id, ownerSessionId: browser.id } });
     const admission = await prepareBrowserAdmission({ callId: item.callId, userId: user.id, sessionId: browser.id, role: "OPERATOR_LISTENER", expectedAuthorizationVersion: 1 }, db);
     expect(admission.participantIdentity).toMatch(/^adm_/); await db.$transaction((tx) => revokeAdmissions(tx, { sessionId: browser.id, reason: "LOGOUT" }));
     expect(await db.voiceAdmission.findUniqueOrThrow({ where: { id: admission.id } })).toMatchObject({ state: "REVOKING", authorizationVersion: 2 }); expect(await db.mediaControlIntent.count({ where: { admissionId: admission.id, kind: "REMOVE" } })).toBe(1);
@@ -44,5 +44,28 @@ describe("voice session persistence", () => {
     const first = await invokeVoiceTool({ callId: item.callId, invocationId: "tool-1", agentEpoch: 1, name: "create_business_request", arguments: arguments_ }, lease.token, db);
     const replay = await invokeVoiceTool({ callId: item.callId, invocationId: "tool-1", agentEpoch: 1, name: "create_business_request", arguments: arguments_ }, lease.token, db);
     expect(replay).toEqual(first); expect(await db.toolInvocation.findFirstOrThrow({ where: { sessionId: item.id } })).toMatchObject({ status: "COMMITTED" });
+  });
+  it("replays an equal create request and rejects a changed request payload", async () => {
+    const callId = `voice-${randomUUID()}`;
+    await db.call.create({ data: { id: callId, provider: "BROWSER", isTest: true, fromNumber: "browser" } });
+    const input = { requestId: "create-1", callId, callerParticipantId: "caller", agentParticipantId: "agent", language: "hi" };
+    const first = await createVoiceSession(input, db);
+    expect((await createVoiceSession(input, db)).id).toBe(first.id);
+    await expect(createVoiceSession({ ...input, language: "en" }, db)).rejects.toMatchObject({ code: "CREATE_REQUEST_CONFLICT" } satisfies Partial<VoiceError>);
+    expect(await db.voiceSession.count({ where: { callId } })).toBe(1);
+  });
+  it("persists a fatal terminal state and fences renewal", async () => {
+    const item = await session(); const row = await db.voiceSession.findUniqueOrThrow({ where: { id: item.id } }); const lease = await claimVoiceLease({ callId: item.callId, roomName: row.roomName, dispatchId: "dispatch", participantId: "agent" }, worker, db);
+    await recordVoiceEvent({ schemaVersion: 1, eventId: "fatal", callId: item.callId, agentEpoch: 1, sourceSequence: 1, occurredAt: new Date().toISOString(), type: "agent.failed", payload: { code: "FATAL" } }, lease.token, db);
+    expect(await db.voiceSession.findUniqueOrThrow({ where: { id: item.id } })).toMatchObject({ state: "FAILED" });
+    await expect(renewVoiceLease(item.callId, 1, lease.token, db)).rejects.toMatchObject({ code: "LEASE_STALE" } satisfies Partial<VoiceError>);
+  });
+  it("projects only the current transcript revision and rejects a forged flush watermark", async () => {
+    const item = await session(); const row = await db.voiceSession.findUniqueOrThrow({ where: { id: item.id } }); const lease = await claimVoiceLease({ callId: item.callId, roomName: row.roomName, dispatchId: "dispatch", participantId: "agent" }, worker, db);
+    const event = (eventId: string, sourceSequence: number, revision: number, text: string) => ({ schemaVersion: 1 as const, eventId, callId: item.callId, agentEpoch: 1, sourceSequence, occurredAt: new Date().toISOString(), type: "transcript.final" as const, payload: { segmentId: "segment", revision, speaker: "CALLER" as const, participantId: "caller", sequence: 1, text, language: "hi" } });
+    await recordVoiceEvent(event("one", 1, 1, "old"), lease.token, db);
+    await recordVoiceEvent(event("two", 2, 2, "new"), lease.token, db);
+    expect(await db.utterance.findFirstOrThrow({ where: { callId: item.callId, seq: 1 } })).toMatchObject({ text: "new" });
+    await expect(recordVoiceEvent({ schemaVersion: 1, eventId: "flush", callId: item.callId, agentEpoch: 1, sourceSequence: 3, occurredAt: new Date().toISOString(), type: "transcript.flushed", payload: { lastSourceSequence: 999 } }, lease.token, db)).rejects.toMatchObject({ code: "FLUSH_WATERMARK_INVALID" } satisfies Partial<VoiceError>);
   });
 });

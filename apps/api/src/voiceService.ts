@@ -140,6 +140,11 @@ export async function recordVoiceEvent(event: WorkerEvent, token: string, db: Pr
       }
     }
     if (event.type === "agent.ready" && event.payload.participantId !== agent?.identity) throw new VoiceError(403, "PARTICIPANT_MISMATCH");
+    if (event.type === "control.ack") {
+      const control = await tx.mediaControlIntent.findUnique({ where: { id: event.payload.controlId } });
+      if (!control || control.status !== "RUNNING") throw new VoiceError(409, "CONTROL_ACK_INVALID");
+      await tx.mediaControlIntent.update({ where: { id: control.id }, data: { status: "CONFIRMED", leaseExpiresAt: null } });
+    }
     await tx.voiceEvent.create({ data: { sessionId: session.id, eventId: event.eventId, agentEpoch: event.agentEpoch, sourceSequence: event.sourceSequence, canonicalBody, bodyHash, type: event.type, occurredAt: new Date(event.occurredAt) } });
     if (event.type === "transcript.flushed") {
       if (event.payload.lastSourceSequence !== (watermark._max.sourceSequence ?? 0)) throw new VoiceError(409, "FLUSH_WATERMARK_INVALID");
@@ -203,7 +208,7 @@ export async function prepareBrowserAdmission(input: { callId: string; userId: s
     const session = await lockedSession(tx, input.callId);
     const checkedAt = new Date();
     const browser = await tx.session.findFirst({ where: { id: input.sessionId, userId: input.userId, expiresAt: { gt: checkedAt }, user: { active: true } }, include: { user: true } });
-    if (!browser || session.authorizationVersion !== input.expectedAuthorizationVersion || session.state === "ENDED") throw new VoiceError(403, "ADMISSION_DENIED");
+    if (!browser || session.authorizationVersion !== input.expectedAuthorizationVersion || session.state !== "ACTIVE") throw new VoiceError(403, "ADMISSION_DENIED");
     const callerOwnsSession = session.ownerUserId === input.userId && session.ownerSessionId === input.sessionId;
     const assignedOperator = await tx.handoff.findFirst({ where: { callId: input.callId, assignedUserId: input.userId, state: { in: ["ASSIGNED", "JOINING", "HUMAN_ACTIVE"] } } });
     const operatorAllowed = browser.user.role !== "VIEWER" && (session.ownerUserId === input.userId || Boolean(assignedOperator));
@@ -211,6 +216,8 @@ export async function prepareBrowserAdmission(input: { callId: string; userId: s
     if (input.role === "OPERATOR_SPEAKER" && (session.ownershipMode !== "HUMAN" || !assignedOperator || assignedOperator.state !== "HUMAN_ACTIVE")) throw new VoiceError(403, "ADMISSION_DENIED");
     const caller = session.participants.find((participant) => participant.role === "CALLER");
     if (input.role === "CALLER" && !caller) throw new VoiceError(503, "SESSION_INCOMPLETE");
+    const existing = await tx.voiceAdmission.findFirst({ where: { voiceSessionId: session.id, sessionId: input.sessionId, userId: input.userId, role: input.role, state: { in: ["ISSUED", "CONNECTING", "ACTIVE"] } } });
+    if (existing) return existing;
     const absolute = new Date(Math.min(checkedAt.getTime() + 2 * 60 * 60 * 1000, browser.expiresAt.getTime()));
     return tx.voiceAdmission.create({ data: { callId: input.callId, voiceSessionId: session.id, sessionId: input.sessionId, userId: input.userId, participantIdentity: input.role === "CALLER" ? caller!.identity : `adm_${randomUUID()}`, role: input.role, authorizationVersion: session.authorizationVersion, firstJoinExpiresAt: new Date(checkedAt.getTime() + 60_000), absoluteExpiresAt: absolute } });
   });

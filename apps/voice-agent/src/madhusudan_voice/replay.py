@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 
 from .api import ReplayDrainer, VoiceApiClient
-from .config import RuntimeConfig
+from .config import ReplayConfig
 from .spool import EventSpool
 
 
 async def run_replay() -> None:
-    config = RuntimeConfig.from_env(dict(os.environ)).require_enabled()
+    # Only retained per-event lease credentials are used; no worker or provider secret.
+    config = ReplayConfig.from_env(dict(os.environ))
     spool = EventSpool(config.spool_path, max_events=config.spool_max_events,
-        max_bytes=config.spool_max_bytes, replay_key=str(config.replay_credential_key))
-    client = VoiceApiClient(str(config.internal_api_url), worker_credential=str(config.worker_credential))
+        max_bytes=config.spool_max_bytes, replay_key=config.replay_credential_key)
+    client = VoiceApiClient(config.internal_api_url)
     drainer = ReplayDrainer(client, spool)
     drainer.start()
     try:
@@ -26,4 +28,5 @@ async def run_replay() -> None:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     asyncio.run(run_replay())

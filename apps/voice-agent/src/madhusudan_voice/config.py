@@ -11,10 +11,10 @@ class RuntimeDisabled(RuntimeError):
     """The worker cannot accept a call with its current configuration."""
 
 
-def _required(env: dict[str, str], name: str) -> str:
+def _required(env: dict[str, str], name: str, context: str = "VOICE_RUNTIME_ENABLED=true") -> str:
     value = env.get(name, "").strip()
     if not value or value.startswith("replace-with-"):
-        raise RuntimeDisabled(f"{name} is required when VOICE_RUNTIME_ENABLED=true")
+        raise RuntimeDisabled(f"{name} is required when {context}")
     return value
 
 
@@ -43,6 +43,32 @@ def _internal_livekit_url(value: str) -> str:
     return value.rstrip("/")
 
 
+DEFAULT_SPOOL_PATH = "/var/lib/msva-voice-agent/spool.sqlite3"
+
+
+@dataclass(frozen=True)
+class ReplayConfig:
+    """Only what evidence recovery needs. It needs no call or provider secrets, and it
+    keeps draining retained evidence while new calls are disabled."""
+
+    internal_api_url: str
+    replay_credential_key: str
+    spool_path: Path
+    spool_max_events: int
+    spool_max_bytes: int
+
+    @classmethod
+    def from_env(cls, env: dict[str, str]) -> "ReplayConfig":
+        context = "the evidence replay companion runs"
+        return cls(
+            internal_api_url=_https_url(_required(env, "VOICE_INTERNAL_API_URL", context), "VOICE_INTERNAL_API_URL"),
+            replay_credential_key=_required(env, "VOICE_REPLAY_CREDENTIAL_KEY", context),
+            spool_path=Path(env.get("VOICE_SPOOL_PATH", DEFAULT_SPOOL_PATH)),
+            spool_max_events=_positive_int(env, "VOICE_SPOOL_MAX_EVENTS", 10_000),
+            spool_max_bytes=_positive_int(env, "VOICE_SPOOL_MAX_BYTES", 52_428_800),
+        )
+
+
 @dataclass(frozen=True)
 class RuntimeConfig:
     enabled: bool
@@ -67,7 +93,7 @@ class RuntimeConfig:
     @classmethod
     def from_env(cls, env: dict[str, str]) -> "RuntimeConfig":
         enabled = env.get("VOICE_RUNTIME_ENABLED", "false").lower() == "true"
-        spool_path = Path(env.get("VOICE_SPOOL_PATH", "/var/lib/msva-voice-agent/spool.sqlite3"))
+        spool_path = Path(env.get("VOICE_SPOOL_PATH", DEFAULT_SPOOL_PATH))
         base = cls(
             enabled=enabled,
             livekit_url=None,

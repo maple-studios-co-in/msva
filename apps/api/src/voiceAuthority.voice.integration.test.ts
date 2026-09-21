@@ -276,6 +276,12 @@ describe("ending calls without complete evidence", () => {
     const bystander = await signedIn("AGENT");
     const viewer = await signedIn("VIEWER");
     for (const who of [bystander, viewer]) await expect(endVoiceCall({ callId: call.callId, ...who }, db)).rejects.toMatchObject({ status: 403, code: "END_DENIED" });
+    // An unknown call answers the same, so it reveals nothing.
+    await expect(endVoiceCall({ callId: "no-such-call", ...bystander }, db)).rejects.toMatchObject({ status: 403, code: "END_DENIED" });
+    // An assignment does not let a viewer end the call.
+    await db.handoff.create({ data: { callId: call.callId, assignedUserId: viewer.userId, state: "ASSIGNED" } });
+    await expect(endVoiceCall({ callId: call.callId, ...viewer }, db)).rejects.toMatchObject({ status: 403, code: "END_DENIED" });
+    await db.handoff.deleteMany({ where: { callId: call.callId } });
     expect(await db.voiceSession.findUniqueOrThrow({ where: { id: call.sessionId } })).toMatchObject({ state: "RECOVERY_REQUIRED" });
     await endVoiceCall({ callId: call.callId, userId: caller.userId, sessionId: caller.sessionId }, db);
     expect(await db.voiceSession.findUniqueOrThrow({ where: { id: call.sessionId } })).toMatchObject({ state: "ENDED" });

@@ -380,13 +380,21 @@ export async function finalizeVoiceSession(callId: string, db: PrismaClient = pr
  */
 export async function endVoiceCall(input: { callId: string; userId: string; sessionId: string }, db: PrismaClient = prisma): Promise<void> {
   await sessionLocked(db, async (tx) => {
+    // Checked before taking the call's lock, so a user who may not end it can
+    // neither queue on it nor learn whether it exists.
+    const allowed = async (now: Date) => {
+      const browser = await tx.session.findFirst({ where: { id: input.sessionId, userId: input.userId, expiresAt: { gt: now }, user: { active: true } }, include: { user: true } });
+      const call = await tx.voiceSession.findFirst({ where: { callId: input.callId }, select: { ownerUserId: true, ownerSessionId: true } });
+      if (!browser || !call) return false;
+      if (browser.user.role === "ADMIN" || browser.user.role === "SUPERVISOR") return true;
+      if (call.ownerUserId === input.userId && call.ownerSessionId === input.sessionId) return true;
+      return browser.user.role !== "VIEWER" && await tx.handoff.count({ where: { callId: input.callId, assignedUserId: input.userId, state: { in: ["ASSIGNED", "JOINING", "HUMAN_ACTIVE"] } } }) > 0;
+    };
+    if (!(await allowed(new Date()))) throw new VoiceError(403, "END_DENIED");
     const session = await lockedSession(tx, input.callId);
     const now = new Date();
-    const browser = await tx.session.findFirst({ where: { id: input.sessionId, userId: input.userId, expiresAt: { gt: now }, user: { active: true } }, include: { user: true } });
-    const allowed = Boolean(browser) && (browser!.user.role === "ADMIN" || browser!.user.role === "SUPERVISOR"
-      || (session.ownerUserId === input.userId && session.ownerSessionId === input.sessionId)
-      || await tx.handoff.count({ where: { callId: input.callId, assignedUserId: input.userId, state: { in: ["ASSIGNED", "JOINING", "HUMAN_ACTIVE"] } } }) > 0);
-    if (!allowed) throw new VoiceError(403, "END_DENIED");
+    // Rechecked under the lock: access may have changed while it waited.
+    if (!(await allowed(now))) throw new VoiceError(403, "END_DENIED");
     if (session.state === "ENDED" || session.state === "FAILED") return;
     await endSession(tx, session, now, "COMPLETED");
   });

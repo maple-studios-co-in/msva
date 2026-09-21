@@ -56,12 +56,15 @@ function activeLease(session: Awaited<ReturnType<typeof lockedSession>>, token: 
   throw new VoiceError(409, "LEASE_EXPIRED");
 }
 
-export async function createVoiceSession(input: { callId: string; ownerUserId?: string; ownerSessionId?: string; language?: string; callerParticipantId: string; agentParticipantId: string }, db: PrismaClient = prisma) {
-  const requestId = randomUUID(); const roomName = `msva-${hash(`${input.callId}:${requestId}`).slice(0, 24)}`; const dispatchIntentId = randomUUID();
+export async function createVoiceSession(input: { requestId: string; callId: string; ownerUserId?: string; ownerSessionId?: string; language?: string; callerParticipantId: string; agentParticipantId: string }, db: PrismaClient = prisma) {
+  const canonicalInput = stable(input); const requestHash = hash(canonicalInput); const roomName = `msva-${hash(`${input.callId}:${input.requestId}`).slice(0, 24)}`; const dispatchIntentId = randomUUID();
   return serializable(db, async (tx) => {
+    const replay = await tx.voiceSession.findUnique({ where: { createRequestId: input.requestId } });
+    if (replay) { if (replay.createRequestHash !== requestHash) throw new VoiceError(409, "CREATE_REQUEST_CONFLICT"); return replay; }
     const call = await tx.call.findUnique({ where: { id: input.callId }, select: { id: true } }); if (!call) throw new VoiceError(404, "CALL_NOT_FOUND");
+    await tx.voiceSession.updateMany({ where: { state: "STARTING", expiresAt: { lte: new Date() } }, data: { state: "FAILED", endedAt: new Date() } });
     const count = await tx.voiceSession.count({ where: { state: { in: ["STARTING", "ACTIVE"] } } }); if (count >= 2) throw new VoiceError(409, "ACTIVE_CAPACITY");
-    return tx.voiceSession.create({ data: { callId: input.callId, roomName, ownerUserId: input.ownerUserId, ownerSessionId: input.ownerSessionId, createRequestId: requestId, createRequestHash: hash(requestId), dispatchIntentId, state: "STARTING", language: input.language ?? "hi", prompt: prompt(input.language ?? "hi"), participants: { create: [{ identity: input.callerParticipantId, role: "CALLER" }, { identity: input.agentParticipantId, role: "AGENT" }] } } });
+    return tx.voiceSession.create({ data: { callId: input.callId, roomName, ownerUserId: input.ownerUserId, ownerSessionId: input.ownerSessionId, createRequestId: input.requestId, createRequestHash: requestHash, dispatchIntentId, state: "STARTING", expiresAt: new Date(Date.now() + 60_000), language: input.language ?? "hi", prompt: prompt(input.language ?? "hi"), participants: { create: [{ identity: input.callerParticipantId, role: "CALLER" }, { identity: input.agentParticipantId, role: "AGENT" }] } } });
   });
 }
 
@@ -71,21 +74,24 @@ export async function recordVoiceDispatch(sessionId: string, providerDispatchId:
 
 export async function claimVoiceLease(input: { callId: string; roomName: string; dispatchId: string; participantId: string }, authorization: string | undefined, db: PrismaClient = prisma, now = new Date()): Promise<VoiceLease> {
   const { workerToken } = configured(); if (!tokenEquals(authorization, workerToken)) throw new VoiceError(401, "WORKER_UNAUTHORIZED");
-  return serializable(db, async (tx) => {
+  const claimed = await serializable(db, async (tx) => {
     const session = await lockedSession(tx, input.callId);
+    const checkedAt = new Date();
     const agent = session.participants.find((p) => p.identity === input.participantId && p.role === "AGENT");
     if (!agent || session.roomName !== input.roomName) throw new VoiceError(403, "DISPATCH_MISMATCH");
     if (!session.providerDispatchId) throw new VoiceError(503, "DISPATCH_PENDING");
     if (session.providerDispatchId !== input.dispatchId) throw new VoiceError(403, "DISPATCH_MISMATCH");
     if (session.state === "ENDED" || session.state === "FAILED" || session.ownershipMode !== "AI") throw new VoiceError(409, "SESSION_UNAVAILABLE");
     if (session.lease) {
-      if (session.lease.expiresAt <= now) { await tx.voiceSession.update({ where: { id: session.id }, data: { state: "RECOVERY_REQUIRED" } }); throw new VoiceError(409, "RECOVERY_REQUIRED"); }
+      if (session.lease.expiresAt <= checkedAt) { await tx.voiceSession.update({ where: { id: session.id }, data: { state: "RECOVERY_REQUIRED", authorizationVersion: { increment: 1 } } }); return null; }
       return leaseResponse(session.id, session.callId, session.lease.agentEpoch, session.lease.expiresAt);
     }
-    const epoch = session.currentEpoch + 1; const expiresAt = new Date(now.getTime() + LEASE_MS); const token = leaseToken(session.id, epoch);
+    const epoch = session.currentEpoch + 1; const expiresAt = new Date(checkedAt.getTime() + LEASE_MS); const token = leaseToken(session.id, epoch);
     await tx.voiceSession.update({ where: { id: session.id }, data: { currentEpoch: epoch, state: "ACTIVE", lease: { create: { agentEpoch: epoch, tokenHash: hash(token), expiresAt } } } });
     return leaseResponse(session.id, session.callId, epoch, expiresAt);
   });
+  if (!claimed) throw new VoiceError(409, "RECOVERY_REQUIRED");
+  return claimed;
 }
 
 export async function voiceContext(callId: string, token: string, db: PrismaClient = prisma, now = new Date()) {
@@ -96,13 +102,23 @@ export async function voiceContext(callId: string, token: string, db: PrismaClie
 }
 
 export async function renewVoiceLease(callId: string, epoch: number, token: string, db: PrismaClient = prisma, now = new Date()): Promise<VoiceLease> {
-  return serializable(db, async (tx) => { const session = await lockedSession(tx, callId); const lease = activeLease(session, token, now); if (lease.agentEpoch !== epoch || session.state !== "ACTIVE" || session.ownershipMode !== "AI") throw new VoiceError(409, "LEASE_STALE"); const expiresAt = new Date(now.getTime() + LEASE_MS); await tx.voiceLease.update({ where: { id: lease.id }, data: { expiresAt, renewedAt: now } }); return leaseResponse(session.id, callId, epoch, expiresAt); });
+  return serializable(db, async (tx) => {
+    const session = await lockedSession(tx, callId);
+    const checkedAt = new Date();
+    const lease = activeLease(session, token, checkedAt);
+    if (lease.agentEpoch !== epoch || session.state !== "ACTIVE" || session.ownershipMode !== "AI") throw new VoiceError(409, "LEASE_STALE");
+    const expiresAt = new Date(checkedAt.getTime() + LEASE_MS);
+    await tx.voiceLease.update({ where: { id: lease.id }, data: { expiresAt, renewedAt: checkedAt } });
+    return leaseResponse(session.id, callId, epoch, expiresAt);
+  });
 }
 
 export async function recordVoiceEvent(event: WorkerEvent, token: string, db: PrismaClient = prisma, now = new Date()) {
   return serializable(db, async (tx) => {
-    const session = await lockedSession(tx, event.callId); const evidence = event.type === "transcript.final"; const lease = activeLease(session, token, now, evidence);
+    const session = await lockedSession(tx, event.callId); const checkedAt = new Date(); const evidence = event.type === "transcript.final"; const lease = activeLease(session, token, checkedAt, evidence);
     if (lease.agentEpoch !== event.agentEpoch) throw new VoiceError(403, "EPOCH_MISMATCH");
+    const occurredAt = new Date(event.occurredAt);
+    if (!Number.isFinite(occurredAt.getTime()) || occurredAt > checkedAt || occurredAt < lease.createdAt || (lease.expiresAt <= checkedAt && occurredAt > lease.expiresAt)) throw new VoiceError(409, "EVENT_TIME_INVALID");
     const canonicalBody = stable(event); const bodyHash = hash(canonicalBody);
     const byId = await tx.voiceEvent.findUnique({ where: { sessionId_eventId: { sessionId: session.id, eventId: event.eventId } } });
     if (byId) { if (byId.bodyHash !== bodyHash) throw new VoiceError(409, "EVENT_CONFLICT"); return { eventId: event.eventId, status: "duplicate" as const }; }
@@ -110,17 +126,48 @@ export async function recordVoiceEvent(event: WorkerEvent, token: string, db: Pr
     const watermark = await tx.voiceEvent.aggregate({ where: { sessionId: session.id, agentEpoch: event.agentEpoch }, _max: { sourceSequence: true } });
     if (event.sourceSequence !== (watermark._max.sourceSequence ?? 0) + 1) throw new VoiceError(409, "SEQUENCE_OUT_OF_ORDER");
     const caller = session.participants.find((p) => p.role === "CALLER"); const agent = session.participants.find((p) => p.role === "AGENT");
-    if (event.type === "transcript.final") { const expected = event.payload.speaker === "CALLER" ? caller?.identity : event.payload.speaker === "AGENT" ? agent?.identity : undefined; if (!expected || expected !== event.payload.participantId) throw new VoiceError(403, "PARTICIPANT_MISMATCH"); const highest = await tx.transcriptSegment.aggregate({ where: { sessionId: session.id, segmentId: event.payload.segmentId }, _max: { revision: true } }); const current = !highest._max.revision || event.payload.revision >= highest._max.revision; if (current) await tx.transcriptSegment.updateMany({ where: { sessionId: session.id, segmentId: event.payload.segmentId, isCurrent: true }, data: { isCurrent: false } }); await tx.transcriptSegment.create({ data: { sessionId: session.id, segmentId: event.payload.segmentId, revision: event.payload.revision, speaker: event.payload.speaker, participantId: event.payload.participantId, sequence: event.payload.sequence, text: event.payload.text, startMs: event.payload.startMs ?? null, endMs: event.payload.endMs ?? null, language: event.payload.language, isCurrent: current } }); }
+    if (event.type === "transcript.final") {
+      const expected = event.payload.speaker === "CALLER" ? caller?.identity : event.payload.speaker === "AGENT" ? agent?.identity : undefined;
+      if (!expected || expected !== event.payload.participantId) throw new VoiceError(403, "PARTICIPANT_MISMATCH");
+      const highest = await tx.transcriptSegment.aggregate({ where: { sessionId: session.id, segmentId: event.payload.segmentId }, _max: { revision: true } });
+      const current = !highest._max.revision || event.payload.revision >= highest._max.revision;
+      if (current) await tx.transcriptSegment.updateMany({ where: { sessionId: session.id, segmentId: event.payload.segmentId, isCurrent: true }, data: { isCurrent: false } });
+      await tx.transcriptSegment.create({ data: { sessionId: session.id, segmentId: event.payload.segmentId, revision: event.payload.revision, speaker: event.payload.speaker, participantId: event.payload.participantId, sequence: event.payload.sequence, text: event.payload.text, startMs: event.payload.startMs ?? null, endMs: event.payload.endMs ?? null, language: event.payload.language, isCurrent: current } });
+      if (current) {
+        const projection = await tx.utterance.findFirst({ where: { callId: event.callId, seq: event.payload.sequence } });
+        if (projection) await tx.utterance.update({ where: { id: projection.id }, data: { speaker: event.payload.speaker, text: event.payload.text, atMs: event.payload.endMs ?? null } });
+        else await tx.utterance.create({ data: { callId: event.callId, seq: event.payload.sequence, speaker: event.payload.speaker, text: event.payload.text, atMs: event.payload.endMs ?? null } });
+      }
+    }
     if (event.type === "agent.ready" && event.payload.participantId !== agent?.identity) throw new VoiceError(403, "PARTICIPANT_MISMATCH");
     await tx.voiceEvent.create({ data: { sessionId: session.id, eventId: event.eventId, agentEpoch: event.agentEpoch, sourceSequence: event.sourceSequence, canonicalBody, bodyHash, type: event.type, occurredAt: new Date(event.occurredAt) } });
-    if (event.type === "transcript.flushed") await tx.voiceSession.update({ where: { id: session.id }, data: { finalWatermark: Math.max(session.finalWatermark, event.payload.lastSourceSequence) } });
+    if (event.type === "transcript.flushed") {
+      if (event.payload.lastSourceSequence !== (watermark._max.sourceSequence ?? 0)) throw new VoiceError(409, "FLUSH_WATERMARK_INVALID");
+      await tx.voiceSession.update({ where: { id: session.id }, data: { finalWatermark: event.payload.lastSourceSequence } });
+    }
+    if (event.type === "agent.failed" && event.payload.code === "FATAL") {
+      await tx.voiceSession.update({ where: { id: session.id }, data: { state: "FAILED", endedAt: checkedAt, authorizationVersion: { increment: 1 } } });
+      await tx.call.update({ where: { id: event.callId }, data: { status: "FAILED", endedAt: checkedAt, outcome: "ABANDONED" } });
+      await revokeAdmissions(tx, { callId: event.callId, reason: "CALL_ENDED" }, checkedAt);
+    }
     return { eventId: event.eventId, status: "committed" as const };
+  });
+}
+
+export async function finalizeVoiceSession(callId: string, db: PrismaClient = prisma): Promise<void> {
+  await serializable(db, async (tx) => {
+    const session = await lockedSession(tx, callId);
+    const now = new Date();
+    if (session.state === "ENDED" || session.state === "FAILED") return;
+    await tx.voiceSession.update({ where: { id: session.id }, data: { state: "ENDED", endedAt: now, authorizationVersion: { increment: 1 } } });
+    await tx.call.update({ where: { id: callId }, data: { status: "COMPLETED", endedAt: now } });
+    await revokeAdmissions(tx, { callId, reason: "CALL_ENDED" }, now);
   });
 }
 
 export async function invokeVoiceTool(input: { callId: string; invocationId: string; agentEpoch: number; name: "create_business_request"; arguments: unknown }, token: string, db: PrismaClient = prisma, now = new Date()): Promise<CreateRequestResult> {
   const prepared = await serializable(db, async (tx) => {
-    const session = await lockedSession(tx, input.callId); const lease = activeLease(session, token, now);
+    const session = await lockedSession(tx, input.callId); const checkedAt = new Date(); const lease = activeLease(session, token, checkedAt);
     if (lease.agentEpoch !== input.agentEpoch || session.state !== "ACTIVE" || session.ownershipMode !== "AI") throw new VoiceError(409, "LEASE_STALE");
     const canonicalPayload = stable(input.arguments); const existing = await tx.toolInvocation.findUnique({ where: { sessionId_invocationId: { sessionId: session.id, invocationId: input.invocationId } } });
     if (existing) { if (existing.canonicalPayload !== canonicalPayload) throw new VoiceError(409, "INVOCATION_CONFLICT"); if (existing.status === "COMMITTED" && existing.result) return { result: existing.result as unknown as CreateRequestResult } as const; return { sessionId: session.id, canonicalPayload } as const; }
@@ -132,7 +179,7 @@ export async function invokeVoiceTool(input: { callId: string; invocationId: str
   const command = { ...(input.arguments as Record<string, unknown>), callId: input.callId, requestId: `voice:${input.callId}:${input.invocationId}` };
   const parsed = CreateRequestInputSchema.safeParse(command); if (!parsed.success) throw new VoiceError(400, "INVALID_TOOL_ARGUMENTS");
   return serializable(db, async (tx) => {
-    const session = await lockedSession(tx, input.callId); const lease = activeLease(session, token, now);
+    const session = await lockedSession(tx, input.callId); const checkedAt = new Date(); const lease = activeLease(session, token, checkedAt);
     if (lease.agentEpoch !== input.agentEpoch || session.state !== "ACTIVE" || session.ownershipMode !== "AI") throw new VoiceError(409, "LEASE_STALE");
     const existing = await tx.toolInvocation.findUniqueOrThrow({ where: { sessionId_invocationId: { sessionId: session.id, invocationId: input.invocationId } } });
     if (existing.canonicalPayload !== prepared.canonicalPayload) throw new VoiceError(409, "INVOCATION_CONFLICT");
@@ -161,18 +208,26 @@ export async function prepareBrowserAdmission(input: { callId: string; userId: s
     const assignedOperator = await tx.handoff.findFirst({ where: { callId: input.callId, assignedUserId: input.userId, state: { in: ["ASSIGNED", "JOINING", "HUMAN_ACTIVE"] } } });
     const operatorAllowed = browser.user.role !== "VIEWER" && (session.ownerUserId === input.userId || Boolean(assignedOperator));
     if ((input.role === "CALLER" && !callerOwnsSession) || (input.role !== "CALLER" && !operatorAllowed)) throw new VoiceError(403, "ADMISSION_DENIED");
+    if (input.role === "OPERATOR_SPEAKER" && (session.ownershipMode !== "HUMAN" || !assignedOperator || assignedOperator.state !== "HUMAN_ACTIVE")) throw new VoiceError(403, "ADMISSION_DENIED");
+    const caller = session.participants.find((participant) => participant.role === "CALLER");
+    if (input.role === "CALLER" && !caller) throw new VoiceError(503, "SESSION_INCOMPLETE");
     const absolute = new Date(Math.min(checkedAt.getTime() + 2 * 60 * 60 * 1000, browser.expiresAt.getTime()));
-    return tx.voiceAdmission.create({ data: { callId: input.callId, voiceSessionId: session.id, sessionId: input.sessionId, userId: input.userId, participantIdentity: `adm_${randomUUID()}`, role: input.role, authorizationVersion: session.authorizationVersion, firstJoinExpiresAt: new Date(checkedAt.getTime() + 60_000), absoluteExpiresAt: absolute } });
+    return tx.voiceAdmission.create({ data: { callId: input.callId, voiceSessionId: session.id, sessionId: input.sessionId, userId: input.userId, participantIdentity: input.role === "CALLER" ? caller!.identity : `adm_${randomUUID()}`, role: input.role, authorizationVersion: session.authorizationVersion, firstJoinExpiresAt: new Date(checkedAt.getTime() + 60_000), absoluteExpiresAt: absolute } });
   });
 }
 
 export async function revokeAdmissions(tx: Prisma.TransactionClient, input: { sessionId?: string; userId?: string; callId?: string; reason: "LOGOUT" | "USER_DISABLED" | "SESSION_EXPIRED" | "OWNERSHIP_CHANGED" | "CALL_ENDED" | "CONTROL_LOST" }, now = new Date()): Promise<void> {
   if (!input.sessionId && !input.userId && !input.callId) throw new VoiceError(400, "REVOCATION_SCOPE_REQUIRED");
   const admissions = await tx.voiceAdmission.findMany({ where: { ...(input.sessionId ? { sessionId: input.sessionId } : {}), ...(input.userId ? { userId: input.userId } : {}), ...(input.callId ? { callId: input.callId } : {}), state: { in: ["ISSUED", "CONNECTING", "ACTIVE"] } } });
-  for (const admission of admissions) { const version = admission.authorizationVersion + 1; await tx.voiceAdmission.update({ where: { id: admission.id }, data: { state: "REVOKING", authorizationVersion: version, revokedAt: now, revokeReason: input.reason, connectionLeaseExpiresAt: now } }); await tx.mediaControlIntent.create({ data: { admissionId: admission.id, authorizationVersion: version, kind: "REMOVE" } }); }
+  for (const admission of admissions) {
+    const version = admission.authorizationVersion + 1;
+    await tx.mediaControlIntent.updateMany({ where: { admissionId: admission.id, kind: "GRANT", status: "PENDING" }, data: { status: "FAILED", errorCode: "REVOKED" } });
+    await tx.voiceAdmission.update({ where: { id: admission.id }, data: { state: "REVOKING", authorizationVersion: version, revokedAt: now, revokeReason: input.reason, connectionLeaseExpiresAt: now } });
+    await tx.mediaControlIntent.create({ data: { admissionId: admission.id, authorizationVersion: version, kind: "REMOVE" } });
+  }
 }
 
 export async function authorizeSignalConnection(input: { tokenClaims: VerifiedBrowserClaims; sessionTokenHash: string; origin: string; protocol: "v0" | "v1"; reconnect: boolean; participantSid: string | null; now: Date }, db: PrismaClient = prisma) {
   // This is intentionally an internal, post-verifier primitive. No HTTP route accepts claims.
-  return serializable(db, async (tx) => { const now = new Date(); const admission = await tx.voiceAdmission.findUnique({ where: { participantIdentity: input.tokenClaims.subject }, include: { voiceSession: true } }); const expectedOrigin = process.env.VOICE_BROWSER_ORIGIN; const canPublish = admission?.role !== "OPERATOR_LISTENER"; if (!expectedOrigin || input.origin !== expectedOrigin || !admission || !input.tokenClaims.roomJoin || input.tokenClaims.publish && !canPublish || admission.voiceSession.roomName !== input.tokenClaims.room || admission.voiceSession.state === "ENDED" || admission.state === "REVOKING" || admission.state === "REVOKED" || admission.state === "EXPIRED" || admission.absoluteExpiresAt <= now || (admission.state === "ISSUED" && admission.firstJoinExpiresAt <= now)) throw new VoiceError(403, "ADMISSION_DENIED"); const browser = await tx.session.findFirst({ where: { id: admission.sessionId, userId: admission.userId, tokenHash: input.sessionTokenHash, expiresAt: { gt: now }, user: { active: true } } }); if (!browser || admission.authorizationVersion !== admission.voiceSession.authorizationVersion) throw new VoiceError(403, "ADMISSION_DENIED"); if (admission.connectionLeaseExpiresAt && admission.connectionLeaseExpiresAt > now) throw new VoiceError(409, "CONNECTION_ACTIVE"); if (input.reconnect && admission.participantSid !== input.participantSid) throw new VoiceError(403, "RECONNECT_MISMATCH"); const epoch = admission.connectionEpoch + 1; const until = new Date(now.getTime() + CONNECTION_MS); await tx.voiceAdmission.update({ where: { id: admission.id }, data: { connectionEpoch: epoch, connectionOwner: randomUUID(), connectionLeaseExpiresAt: until, participantSid: input.participantSid ?? admission.participantSid, lastAuthorizedAt: now, state: "CONNECTING" } }); return { admissionId: admission.id, callId: admission.callId, participantIdentity: admission.participantIdentity, authorizationVersion: admission.authorizationVersion, connectionEpoch: epoch, connectionLeaseExpiresAt: until }; });
+  return serializable(db, async (tx) => { const now = new Date(); const admission = await tx.voiceAdmission.findUnique({ where: { participantIdentity: input.tokenClaims.subject }, include: { voiceSession: true } }); const expectedOrigin = process.env.VOICE_BROWSER_ORIGIN; const canPublish = admission?.role !== "OPERATOR_LISTENER"; if (!expectedOrigin || input.origin !== expectedOrigin || !admission || !input.tokenClaims.roomJoin || input.tokenClaims.publish && !canPublish || admission.voiceSession.roomName !== input.tokenClaims.room || admission.voiceSession.state !== "ACTIVE" || admission.state === "REVOKING" || admission.state === "REVOKED" || admission.state === "EXPIRED" || admission.absoluteExpiresAt <= now || (admission.state === "ISSUED" && admission.firstJoinExpiresAt <= now)) throw new VoiceError(403, "ADMISSION_DENIED"); const browser = await tx.session.findFirst({ where: { id: admission.sessionId, userId: admission.userId, tokenHash: input.sessionTokenHash, expiresAt: { gt: now }, user: { active: true }, ...(admission.role === "CALLER" ? { id: admission.voiceSession.ownerSessionId ?? "" } : {}) } }); const assignment = admission.role === "CALLER" ? true : Boolean(await tx.handoff.findFirst({ where: { callId: admission.callId, assignedUserId: admission.userId, state: admission.role === "OPERATOR_SPEAKER" ? "HUMAN_ACTIVE" : { in: ["ASSIGNED", "JOINING", "HUMAN_ACTIVE"] } } })); if (!browser || !assignment || admission.authorizationVersion !== admission.voiceSession.authorizationVersion) throw new VoiceError(403, "ADMISSION_DENIED"); if (admission.connectionLeaseExpiresAt && admission.connectionLeaseExpiresAt > now) throw new VoiceError(409, "CONNECTION_ACTIVE"); if (!input.reconnect && input.participantSid) throw new VoiceError(403, "INITIAL_SID_FORBIDDEN"); if (input.reconnect && admission.participantSid !== input.participantSid) throw new VoiceError(403, "RECONNECT_MISMATCH"); const epoch = admission.connectionEpoch + 1; const until = new Date(now.getTime() + CONNECTION_MS); const owner = randomUUID(); await tx.voiceAdmission.update({ where: { id: admission.id }, data: { connectionEpoch: epoch, connectionOwner: owner, connectionLeaseExpiresAt: until, participantSid: input.reconnect ? input.participantSid : admission.participantSid, lastAuthorizedAt: now, state: "CONNECTING" } }); return { admissionId: admission.id, callId: admission.callId, participantIdentity: admission.participantIdentity, authorizationVersion: admission.authorizationVersion, connectionEpoch: epoch, connectionOwner: owner, connectionLeaseExpiresAt: until }; });
 }

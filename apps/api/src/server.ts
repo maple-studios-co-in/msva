@@ -37,8 +37,8 @@ app.get("/health", async (_request, response) => {
   });
 });
 
-app.use("/api/internal", internalRouter);
 app.use("/api/internal/voice/v1", voiceRouter);
+app.use("/api/internal", internalRouter);
 app.use("/api/admin", adminRouter);
 app.get("/api/live-calls", createLiveCallsHandler());
 

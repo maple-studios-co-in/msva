@@ -647,6 +647,7 @@ model VoiceSession {
   admissions            VoiceAdmission[]
   toolInvocations       ToolInvocation[]
   @@unique([callId, roomName])
+  @@unique([callId])
   @@index([state, expiresAt])
 }
 

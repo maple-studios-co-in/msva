@@ -12,7 +12,7 @@ const db = new PrismaClient({ datasourceUrl: databaseUrl });
 
 beforeEach(async () => { await db.$executeRawUnsafe('TRUNCATE TABLE "ToolInvocation", "MediaControlIntent", "VoiceAdmission", "TranscriptSegment", "VoiceEvent", "VoiceLease", "VoiceParticipant", "VoiceSession", "Session", "User", "Call" CASCADE'); });
 afterAll(() => db.$disconnect());
-async function session() { const callId = `voice-${randomUUID()}`; await db.call.create({ data: { id: callId, provider: "BROWSER", isTest: true, fromNumber: "browser" } }); const created = await createVoiceSession({ callId, callerParticipantId: "caller", agentParticipantId: "agent", language: "hinglish" }, db); await recordVoiceDispatch(created.id, "dispatch", db); return { callId, id: created.id }; }
+async function session() { const callId = `voice-${randomUUID()}`; await db.call.create({ data: { id: callId, provider: "BROWSER", isTest: true, fromNumber: "browser" } }); const created = await createVoiceSession({ requestId: `request-${callId}`, callId, callerParticipantId: "caller", agentParticipantId: "agent", language: "hinglish" }, db); await recordVoiceDispatch(created.id, "dispatch", db); return { callId, id: created.id }; }
 const worker = "Bearer worker-test-token";
 
 describe("voice session persistence", () => {
@@ -24,7 +24,7 @@ describe("voice session persistence", () => {
   it("fences stale epochs, binds caller segments, and deduplicates exact evidence", async () => {
     const item = await session(); const row = await db.voiceSession.findUniqueOrThrow({ where: { id: item.id } }); const lease = await claimVoiceLease({ callId: item.callId, roomName: row.roomName, dispatchId: "dispatch", participantId: "agent" }, worker, db);
     await expect(renewVoiceLease(item.callId, 2, lease.token, db)).rejects.toMatchObject({ code: "LEASE_STALE" } satisfies Partial<VoiceError>);
-    const event = { schemaVersion: 1 as const, eventId: "event-1", callId: item.callId, agentEpoch: 1, sourceSequence: 1, occurredAt: "2026-09-21T00:00:00Z", type: "transcript.final" as const, payload: { segmentId: "segment", revision: 1, speaker: "CALLER" as const, participantId: "caller", sequence: 1, text: "Need help", language: "hi" } };
+    const event = { schemaVersion: 1 as const, eventId: "event-1", callId: item.callId, agentEpoch: 1, sourceSequence: 1, occurredAt: new Date().toISOString(), type: "transcript.final" as const, payload: { segmentId: "segment", revision: 1, speaker: "CALLER" as const, participantId: "caller", sequence: 1, text: "Need help", language: "hi" } };
     expect(await recordVoiceEvent(event, lease.token, db)).toMatchObject({ status: "committed" }); expect(await recordVoiceEvent(event, lease.token, db)).toMatchObject({ status: "duplicate" });
     await expect(recordVoiceEvent({ ...event, eventId: "skipped", sourceSequence: 3 }, lease.token, db)).rejects.toMatchObject({ code: "SEQUENCE_OUT_OF_ORDER" } satisfies Partial<VoiceError>);
     await expect(recordVoiceEvent({ ...event, eventId: "event-2", sourceSequence: 2, payload: { ...event.payload, participantId: "agent" } }, lease.token, db)).rejects.toMatchObject({ code: "PARTICIPANT_MISMATCH" } satisfies Partial<VoiceError>);

@@ -107,7 +107,8 @@ export async function revokeSession(token: string): Promise<void> {
     if (!session) return;
     // Browser voice media admitted under this login ends with it.
     await revokeAdmissions(tx, { sessionId: session.id, reason: "LOGOUT" });
-    await tx.session.delete({ where: { id: session.id } });
+    // A concurrent logout may have deleted it already.
+    await tx.session.deleteMany({ where: { id: session.id } });
   });
 }
 

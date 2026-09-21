@@ -108,6 +108,17 @@ describe("revocation hooks", () => {
     expect(await removals(admission.id)).toBe(1);
   });
 
+  it("lets concurrent logouts of one login all succeed and revoke once", async () => {
+    for (let round = 0; round < 10; round += 1) {
+      const call = await liveCall(); const who = await staff();
+      const admission = await listener(call, who);
+      await expect(Promise.all([revokeSession(who.token), revokeSession(who.token), revokeSession(who.token)])).resolves.toBeDefined();
+      expect(await db.session.count({ where: { id: who.browser.id } })).toBe(0);
+      expect(await removals(admission.id)).toBe(1);
+      await db.$executeRawUnsafe('TRUNCATE TABLE "MediaControlIntent", "VoiceAdmission", "VoiceSession", "Handoff", "Call" CASCADE');
+    }
+  });
+
   it("revokes a user's admissions when an admin disables them or changes their role", async () => {
     const admin = await staff("ADMIN");
     const app = express(); app.use(express.json()); app.use("/api/admin", adminRouter);

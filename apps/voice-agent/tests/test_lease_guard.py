@@ -1,4 +1,6 @@
 import asyncio
+import time
+from collections.abc import Callable
 
 import pytest
 
@@ -11,13 +13,14 @@ from fake_voice_api import lease_expiring_in, wait_until
 class Spool:
     def __init__(self) -> None:
         self.fault: str | None = None
-        self.waiting = 0.0
+        # How long the oldest undelivered event has waited: a value, or a function of time.
+        self.waiting: float | Callable[[], float] = 0.0
 
     def stream_fault(self, call_id: str, agent_epoch: int) -> str | None:
         return self.fault
 
     def waiting_seconds(self, call_id: str, agent_epoch: int) -> float:
-        return self.waiting
+        return self.waiting() if callable(self.waiting) else self.waiting
 
 
 class Writer:
@@ -146,11 +149,13 @@ async def test_evidence_held_up_by_an_api_outage_does_not_end_authority():
     # While renewals fail the lease bounds the call; once the API is back, delivery gets
     # the whole allowance to catch up before the call is judged stuck.
     writer = Writer(lease_expiring_in(30))
-    writer.spool.waiting = 5.0
-    api = Api(*[VoiceApiError("unavailable", status=503)] * 10)
-    guard = LeaseGuard(api, writer, renew_seconds=0.02, retry_seconds=0.02, lease_seconds=30, stall_seconds=0.3)
+    started = time.monotonic()
+    # Everything stored since the outage began is waiting for the API.
+    writer.spool.waiting = lambda: time.monotonic() - started
+    api = Api(*[VoiceApiError("unavailable", status=503)] * 30)
+    guard = LeaseGuard(api, writer, renew_seconds=0.02, retry_seconds=0.02, lease_seconds=30, stall_seconds=0.5)
     guard.start()
-    await wait_until(lambda: api.calls >= 11)
+    await wait_until(lambda: api.calls >= 31)
     await asyncio.sleep(0.1)
     writer.spool.waiting = 0.0
     await asyncio.sleep(0.4)
@@ -159,8 +164,24 @@ async def test_evidence_held_up_by_an_api_outage_does_not_end_authority():
 
 
 @pytest.mark.asyncio
+async def test_an_earlier_outage_does_not_excuse_evidence_stuck_later():
+    writer = Writer(lease_expiring_in(30))
+    api = Api(*[VoiceApiError("unavailable", status=503)] * 25)
+    fenced: list[str] = []
+    guard = LeaseGuard(api, writer, renew_seconds=0.02, retry_seconds=0.02, lease_seconds=30, on_lost=fenced.append, stall_seconds=0.2)
+    guard.start()
+    await wait_until(lambda: api.calls >= 26)
+    stuck = time.monotonic()
+    writer.spool.waiting = lambda: time.monotonic() - stuck
+    await wait_until(lambda: bool(fenced))
+    # Judged on how long this event has waited, with nothing taken off for the outage before it.
+    assert fenced == ["FATAL"] and time.monotonic() - stuck < 0.45
+    await guard.stop()
+
+
+@pytest.mark.asyncio
 async def test_intermittent_renewal_failures_do_not_hide_stuck_evidence():
-    # One renewal in five failing pauses the count; it must not start it over.
+    # One renewal in five failing excuses only the time the API was down.
     writer = Writer(lease_expiring_in(30))
     writer.spool.waiting = 1.0
     fenced: list[str] = []
@@ -169,6 +190,28 @@ async def test_intermittent_renewal_failures_do_not_hide_stuck_evidence():
     guard.start()
     await wait_until(lambda: bool(fenced))
     assert fenced == ["FATAL"] and writer.failures == ["FATAL"]
+    await guard.stop()
+
+
+@pytest.mark.asyncio
+async def test_evidence_falling_behind_ends_authority_while_some_of_it_still_arrives():
+    # Every other check an event was delivered and the wait dips, but the stream falls
+    # further behind all the same.
+    writer = Writer(lease_expiring_in(30))
+    started, reads, last = time.monotonic(), 0, 0.0
+
+    def waiting() -> float:
+        nonlocal reads, last
+        reads += 1
+        last = last - 0.001 if reads % 2 == 0 else 0.9 * (time.monotonic() - started)
+        return last
+
+    writer.spool.waiting = waiting
+    fenced: list[str] = []
+    guard = LeaseGuard(Api(), writer, renew_seconds=0.02, lease_seconds=30, on_lost=fenced.append, stall_seconds=0.2)
+    guard.start()
+    await wait_until(lambda: bool(fenced))
+    assert fenced == ["FATAL"]
     await guard.stop()
 
 

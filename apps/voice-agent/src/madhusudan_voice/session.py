@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import deque
 from collections.abc import AsyncIterator, Callable
 from typing import Any, Literal
 
@@ -66,13 +67,12 @@ class LeaseGuard:
         # Renewed this long before the deadline at the latest, so a short lease (a
         # re-claim can return one) is renewed before it lapses.
         self._margin = min(2.0, lease_seconds / 10)
-        # How long the oldest undelivered event has waited while the API was reachable. A
-        # failed renewal pauses the count (during an outage the lease itself ends
-        # authority) and delivery progress resets it, so intermittent failures cannot keep
-        # a stuck stream from ever counting, and after an outage delivery gets the whole
-        # allowance to catch up.
-        self._stalled_for = 0.0
-        self._last_waiting = 0.0
+        # The API's unreachable time so far (while the last renewal had failed), sampled on
+        # every renewal pass. A stall is the oldest undelivered event's wait minus the part
+        # of it the API was unreachable: during an outage the lease itself ends authority,
+        # and a stream that falls behind cannot hide it by delivering a little at a time.
+        self._unreachable = 0.0
+        self._samples: deque[tuple[float, float]] = deque([(clock(), 0.0)])
         self._renewal_ok = True
         self._checked_at = clock()
         self._tasks: list[asyncio.Task[None]] = []
@@ -158,6 +158,15 @@ class LeaseGuard:
             logger.warning("voice evidence stream state was not read: %s", type(error).__name__)
             return None, 0.0
 
+    def _unreachable_within(self, seconds: float, now: float) -> float:
+        """How much of the last `seconds` the API was unreachable."""
+        since, earlier = now - seconds, self._samples[0][1]
+        for at, total in self._samples:
+            if at > since:
+                break
+            earlier = total
+        return self._unreachable - earlier
+
     async def _renew(self) -> None:
         delay = max(0.0, min(self.renew_seconds, self.remaining - self._margin))
         while not self.lost:
@@ -173,13 +182,14 @@ class LeaseGuard:
                 self.fail_closed("FATAL", record=False)
                 return
             now = self._clock()
-            elapsed, self._checked_at = now - self._checked_at, now
-            if waiting <= 0 or waiting < self._last_waiting:
-                self._stalled_for = 0.0  # delivered, or the stream moved on to a later event
-            elif self._renewal_ok:
-                self._stalled_for += elapsed
-            self._last_waiting = waiting
-            if waiting > self.stall_seconds and self._stalled_for > self.stall_seconds:
+            if not self._renewal_ok:
+                self._unreachable += now - self._checked_at
+            self._checked_at = now
+            self._samples.append((now, self._unreachable))
+            # A wait longer than ten minutes ended authority long before; older samples are not needed.
+            while len(self._samples) > 2 and self._samples[1][0] <= now - 600:
+                self._samples.popleft()
+            if waiting - self._unreachable_within(waiting, now) > self.stall_seconds:
                 logger.warning("voice evidence has waited %.0f s for delivery; ending AI authority", waiting)
                 self.fail_closed("FATAL")
                 return

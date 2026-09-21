@@ -7,7 +7,10 @@ rtc:
   tcp_port: 7881
   port_range_start: 50000
   port_range_end: 60000
-  use_external_ip: true
+  # Private pilot network: never attempt public STUN discovery from this isolated
+  # service. A future public-media deployment must provide a reviewed explicit
+  # advertised node IP and firewall/TURN policy before changing this to true.
+  use_external_ip: false
 logging:
   level: info
   json: true

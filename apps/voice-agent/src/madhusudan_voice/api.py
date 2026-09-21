@@ -197,8 +197,8 @@ class VoiceApiClient:
             raise VoiceApiError(f"tool invocation failed with HTTP {response.status_code}")
         return self._json(response)
 
-    def record_tool_intent(self, spool: EventSpool, lease: Lease, *, name: str, arguments: dict[str, Any]) -> str:
-        return spool.tool_intent(call_id=lease.call_id, agent_epoch=lease.agent_epoch, name=name, arguments=arguments)
+    def record_tool_intent(self, spool: EventSpool, lease: Lease, *, logical_id: str, name: str, arguments: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
+        return spool.tool_intent(call_id=lease.call_id, agent_epoch=lease.agent_epoch, logical_id=logical_id, name=name, arguments=arguments)
 
     async def tool_receipt(self, lease: Lease, invocation_id: str) -> dict[str, Any]:
         response = await self._request("GET",

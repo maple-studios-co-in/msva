@@ -45,6 +45,12 @@ The checked-in file contains no literal `$` credential placeholders. The worker 
 production, host egress policy must restrict it to the MSVA API, Sarvam, and Anthropic over
 approved DNS/TLS destinations. Raw LiveKit signaling/admin `:7880` remains private.
 
+The private Compose template disables LiveKit automatic external-IP discovery because its
+internal media network intentionally has no STUN/DNS egress. It is not a public-media topology.
+Before enabling public media, set a reviewed explicit advertised node IP in the production
+configuration and approve the corresponding UDP/TCP, TURN, and firewall policy; do not expose
+raw signaling/admin `:7880` to solve discovery.
+
 Do not publish raw `:7880` through Caddy/nginx or directly on a host. A local permission probe
 showed that a self-hosted LiveKit refreshed token can reconnect with newly granted permissions after
 application-session revocation. The Node admission proxy must verify every signaling connection and

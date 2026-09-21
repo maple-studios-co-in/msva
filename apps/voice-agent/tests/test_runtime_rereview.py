@@ -10,7 +10,7 @@ from madhusudan_voice.api import Lease, VoiceApiClient
 from madhusudan_voice.events import EventWriter
 from madhusudan_voice.main import agent_identity_for_call
 from madhusudan_voice.session import LeaseGuard, canonical_language
-from madhusudan_voice.spool import EventSpool
+from madhusudan_voice.spool import EventSpool, ToolIntentConflict
 
 KEY = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
 
@@ -57,3 +57,16 @@ def test_identity_and_language_are_deterministic_and_canonical():
     assert canonical_language("hinglish") == "hinglish"
     assert canonical_language("hi-en") == "hinglish"
     assert canonical_language("en-US") == "en"
+
+
+def test_logical_tool_identity_reuses_receipt_but_not_identical_new_command(tmp_path: Path):
+    spool = EventSpool(tmp_path / "spool.db", max_events=10, max_bytes=100_000, replay_key=KEY)
+    first, receipt = spool.tool_intent(call_id="call", agent_epoch=1, logical_id="sdk-call-1", name="create_business_request", arguments={"description": "same"})
+    assert receipt is None
+    spool.complete_tool_intent(first, {"status": "committed"})
+    same, receipt = spool.tool_intent(call_id="call", agent_epoch=1, logical_id="sdk-call-1", name="create_business_request", arguments={"description": "same"})
+    other, _ = spool.tool_intent(call_id="call", agent_epoch=1, logical_id="sdk-call-2", name="create_business_request", arguments={"description": "same"})
+    assert same == first and receipt == {"status": "committed"}
+    assert other != first
+    with pytest.raises(ToolIntentConflict):
+        spool.tool_intent(call_id="call", agent_epoch=1, logical_id="sdk-call-1", name="create_business_request", arguments={"description": "changed"})

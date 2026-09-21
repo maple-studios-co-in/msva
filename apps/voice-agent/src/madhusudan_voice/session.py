@@ -8,7 +8,7 @@ from typing import Any
 from datetime import UTC, datetime
 
 from livekit.agents import Agent, AgentSession, function_tool
-from livekit.agents.voice import ConversationItemAddedEvent, SpeechCreatedEvent, UserInputTranscribedEvent
+from livekit.agents.voice import ConversationItemAddedEvent, RunContext, SpeechCreatedEvent, UserInputTranscribedEvent
 from livekit.plugins import anthropic, sarvam
 
 from .api import CallContext, Lease, VoiceApiClient
@@ -115,17 +115,20 @@ class MadhusudanAgent(Agent):
         name="create_business_request",
         description="Record an approved support request. It does not place orders or promise callbacks.",
     )
-    async def create_business_request(self, request: dict[str, Any]) -> dict[str, Any]:
+    async def create_business_request(self, ctx: RunContext, request: dict[str, Any]) -> dict[str, Any]:
         """Call the one initially permitted business effect through MSVA's lease boundary."""
         self._lease_guard.require_active()
         if "create_business_request" not in self._context.permitted_tools:
             raise LeaseLost("create_business_request is not permitted for this call")
-        invocation_id = self._client.record_tool_intent(
+        invocation_id, committed = self._client.record_tool_intent(
             self._lease_guard.writer.spool,
             self._lease_guard.writer.lease,
+            logical_id=ctx.function_call.call_id,
             name="create_business_request",
             arguments=request,
         )
+        if committed is not None:
+            return committed
         try:
             result = await self._client.invoke_tool(
                 self._lease_guard.writer.lease, invocation_id=invocation_id,

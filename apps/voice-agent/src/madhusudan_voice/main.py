@@ -52,6 +52,30 @@ def build_server(config: RuntimeConfig) -> AgentServer:
         num_idle_processes=1,
     )
     server.load_fnc = lambda worker: min(len(worker.active_jobs) / config.call_limit, 1.0)
+    runtimes: dict[str, tuple] = {}
+
+    async def finalize_runtime(ctx: JobContext) -> None:
+        runtime = runtimes.pop(ctx.job.id, None)
+        if runtime is None:
+            return
+        client, spool, drainer, writer, guard, observer, agent_speech = runtime
+        # AgentServer invokes this only after AgentSession.aclose. One bounded budget keeps
+        # final SDK callbacks, checkpoint persistence and resource close ordered.
+        try:
+            async with asyncio.timeout(min(10, config.drain_timeout_seconds)):
+                await guard.stop()
+                await observer.drain(min(10, config.drain_timeout_seconds))
+                await agent_speech.drain(min(10, config.drain_timeout_seconds))
+                if guard.lost:
+                    await writer.emit("agent.failed", {"code": "LEASE_LOST"})
+                await writer.emit("transcript.flushed", {"lastSourceSequence": writer.last_source_sequence})
+                await drainer.drain(min(10, config.drain_timeout_seconds))
+        except (TimeoutError, VoiceApiError):
+            pass
+        finally:
+            await drainer.stop()
+            spool.close()
+            await client.aclose()
 
     async def on_request(request: JobRequest) -> None:
         # Explicit dispatch is the first admission gate. The MSVA API repeats room/dispatch
@@ -66,7 +90,7 @@ def build_server(config: RuntimeConfig) -> AgentServer:
             return
         await request.accept(name="Madhusudan", identity=agent_identity_for_call(call_id))
 
-    @server.rtc_session(agent_name=config.agent_name, on_request=on_request)
+    @server.rtc_session(agent_name=config.agent_name, on_request=on_request, on_session_end=finalize_runtime)
     async def run_call(ctx: JobContext) -> None:
         call_id = call_id_from_dispatch_metadata(ctx.job.metadata)
         room_name = ctx.job.room.name
@@ -110,8 +134,8 @@ def build_server(config: RuntimeConfig) -> AgentServer:
             session.on("speech_created", agent_speech.speech)
             session.on("error", lambda *_: asyncio.create_task(guard.fail_closed(), name="voice-provider-fence"))
             session.on("close", lambda *_: stopped.set())
-            try:
-                await session.start(
+            runtimes[ctx.job.id] = (client, spool, drainer, writer, guard, observer, agent_speech)
+            await session.start(
                     room=ctx.room,
                     agent=MadhusudanAgent(client, guard, context),
                     room_options=RoomOptions(
@@ -121,26 +145,12 @@ def build_server(config: RuntimeConfig) -> AgentServer:
                     ),
                     record=False,
                 )
-                await stopped.wait()
-            finally:
-                # AgentServer cancels an entrypoint before its own teardown on administrative
-                # shutdown. Close while our observers/spool are still alive.
-                await session.aclose()
-                await guard.stop()
-                await observer.drain(min(10, config.drain_timeout_seconds))
-                await agent_speech.drain(min(10, config.drain_timeout_seconds))
-                if guard.lost:
-                    # The API may be unavailable; the event is persisted first and replayed later.
-                    await writer.emit("agent.failed", {"code": "LEASE_LOST"})
-                await writer.emit("transcript.flushed", {"lastSourceSequence": writer.last_source_sequence})
-        finally:
-            try:
-                await drainer.drain(min(10, config.drain_timeout_seconds))
-            except (TimeoutError, VoiceApiError):
-                pass
-            await drainer.stop()
-            spool.close()
-            await client.aclose()
+            # Return after start. Session termination triggers the supported on_session_end
+            # callback after SDK aclose, avoiding the framework's 15-second entrypoint wait.
+            return
+        except Exception:
+            await finalize_runtime(ctx)
+            raise
 
     return server
 

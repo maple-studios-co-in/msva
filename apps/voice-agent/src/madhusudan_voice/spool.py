@@ -18,6 +18,10 @@ class SpoolCapacityError(RuntimeError):
     """New calls must be rejected until durable evidence can be recorded again."""
 
 
+class ToolIntentConflict(RuntimeError):
+    """A provider logical call ID was reused with changed arguments."""
+
+
 def canonical_json(payload: dict[str, Any]) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
@@ -65,10 +69,24 @@ class EventSpool:
             call_id TEXT NOT NULL, agent_epoch INTEGER NOT NULL, next_value INTEGER NOT NULL,
             PRIMARY KEY(call_id, agent_epoch))""")
         self._connection.execute("""CREATE TABLE IF NOT EXISTS tool_intent (
-            call_id TEXT NOT NULL, agent_epoch INTEGER NOT NULL, name TEXT NOT NULL,
-            arguments TEXT NOT NULL, invocation_id TEXT NOT NULL UNIQUE,
+            call_id TEXT NOT NULL, agent_epoch INTEGER NOT NULL, logical_id TEXT NOT NULL,
+            name TEXT NOT NULL, arguments TEXT NOT NULL, invocation_id TEXT NOT NULL UNIQUE,
             state TEXT NOT NULL, receipt TEXT, created_at REAL NOT NULL,
-            PRIMARY KEY(call_id, agent_epoch, name, arguments))""")
+            PRIMARY KEY(call_id, agent_epoch, logical_id))""")
+        columns = {row[1] for row in self._connection.execute("PRAGMA table_info(tool_intent)")}
+        if "logical_id" not in columns:
+            # Rebuild the old argument-keyed table. Existing entries retain evidence under
+            # synthetic legacy IDs but can never collide with a newly supplied SDK call ID.
+            self._connection.execute("ALTER TABLE tool_intent RENAME TO tool_intent_legacy")
+            self._connection.execute("""CREATE TABLE tool_intent (
+                call_id TEXT NOT NULL, agent_epoch INTEGER NOT NULL, logical_id TEXT NOT NULL,
+                name TEXT NOT NULL, arguments TEXT NOT NULL, invocation_id TEXT NOT NULL UNIQUE,
+                state TEXT NOT NULL, receipt TEXT, created_at REAL NOT NULL,
+                PRIMARY KEY(call_id, agent_epoch, logical_id))""")
+            self._connection.execute("""INSERT INTO tool_intent(call_id,agent_epoch,logical_id,name,arguments,invocation_id,state,receipt,created_at)
+                SELECT call_id,agent_epoch,'legacy:' || invocation_id,name,arguments,invocation_id,state,receipt,created_at FROM tool_intent_legacy""")
+            self._connection.execute("DROP TABLE tool_intent_legacy")
+        self._connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS tool_intent_logical ON tool_intent(call_id,agent_epoch,logical_id)")
         self._connection.execute("""CREATE TABLE IF NOT EXISTS segment_order (
             call_id TEXT NOT NULL, agent_epoch INTEGER NOT NULL, segment_id TEXT NOT NULL,
             ordering INTEGER NOT NULL, PRIMARY KEY(call_id, agent_epoch, segment_id),
@@ -184,15 +202,17 @@ class EventSpool:
                 attempts = int(row[0]) + 1
                 db.execute("UPDATE event_spool SET attempts=?, next_attempt_at=? WHERE event_id=?", (attempts, now + min(300, 2 ** min(attempts, 8)), event_id))
 
-    def tool_intent(self, *, call_id: str, agent_epoch: int, name: str, arguments: dict[str, Any]) -> str:
+    def tool_intent(self, *, call_id: str, agent_epoch: int, logical_id: str, name: str, arguments: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
         body = canonical_json(arguments)
         with self._write() as db:
-            row = db.execute("SELECT invocation_id FROM tool_intent WHERE call_id=? AND agent_epoch=? AND name=? AND arguments=?", (call_id, agent_epoch, name, body)).fetchone()
+            row = db.execute("SELECT invocation_id,name,arguments,state,receipt FROM tool_intent WHERE call_id=? AND agent_epoch=? AND logical_id=?", (call_id, agent_epoch, logical_id)).fetchone()
             if row:
-                return str(row[0])
+                if row[1] != name or row[2] != body:
+                    raise ToolIntentConflict("logical tool call was reused with different content")
+                return str(row[0]), json.loads(row[4]) if row[3] == "COMMITTED" and row[4] else None
             invocation_id = str(uuid4())
-            db.execute("INSERT INTO tool_intent(call_id,agent_epoch,name,arguments,invocation_id,state,created_at) VALUES (?, ?, ?, ?, ?, 'PENDING', ?)", (call_id, agent_epoch, name, body, invocation_id, time.time()))
-            return invocation_id
+            db.execute("INSERT INTO tool_intent(call_id,agent_epoch,logical_id,name,arguments,invocation_id,state,created_at) VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?)", (call_id, agent_epoch, logical_id, name, body, invocation_id, time.time()))
+            return invocation_id, None
 
     def complete_tool_intent(self, invocation_id: str, receipt: dict[str, Any]) -> None:
         with self._write() as db:

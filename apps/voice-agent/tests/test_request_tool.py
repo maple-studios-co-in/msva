@@ -46,3 +46,17 @@ def test_free_form_arguments_are_not_valid_tool_input():
     validator = Draft202012Validator(TOOL_PARAMETERS)
     assert list(validator.iter_errors({"request": {"description": "Leaking oil"}}))
     assert list(validator.iter_errors({"description": "Leaking oil"}))
+
+
+def test_the_agent_offers_the_model_exactly_this_schema():
+    from types import SimpleNamespace
+
+    from livekit.agents import llm
+
+    from madhusudan_voice.session import MadhusudanAgent
+
+    agent = MadhusudanAgent(None, None, SimpleNamespace(prompt="Madhusudan support"))
+    # What the Anthropic plugin sends for the agent's tools.
+    offered = llm.ToolContext(agent.tools).parse_function_tools("anthropic")
+    assert [tool["name"] for tool in offered] == ["create_business_request"]
+    assert offered[0]["input_schema"] == TOOL_PARAMETERS

@@ -13,6 +13,7 @@ import {
   trustedNetworkFromRequest,
   verifyLoginCode
 } from "../auth.js";
+import { requireBrowserOrigin } from "../browserOrigin.js";
 
 // ---------------------------------------------------------------------------
 // Admin console API — everything the console UI reads and writes.
@@ -55,7 +56,7 @@ const dateOrUndefined = (value: unknown): Date | undefined => {
 
 const emailSchema = z.object({ email: z.string().max(254).email() });
 
-adminRouter.post("/auth/request-code", async (request, response, next) => {
+adminRouter.post("/auth/request-code", requireBrowserOrigin, async (request, response, next) => {
   const parsed = emailSchema.safeParse(request.body);
   if (!parsed.success) return void bad(response, parsed.error);
   try {
@@ -70,7 +71,7 @@ adminRouter.post("/auth/request-code", async (request, response, next) => {
 
 const verifySchema = z.object({ email: z.string().max(254).email(), code: z.string().regex(/^\d{6}$/) });
 
-adminRouter.post("/auth/verify", async (request, response, next) => {
+adminRouter.post("/auth/verify", requireBrowserOrigin, async (request, response, next) => {
   const parsed = verifySchema.safeParse(request.body);
   if (!parsed.success) return void bad(response, parsed.error);
   try {
@@ -92,7 +93,7 @@ adminRouter.post("/auth/verify", async (request, response, next) => {
   }
 });
 
-adminRouter.post("/auth/logout", async (request, response, next) => {
+adminRouter.post("/auth/logout", requireBrowserOrigin, async (request, response, next) => {
   try {
     const token = tokenFromRequest(request);
     if (token) await revokeSession(token);

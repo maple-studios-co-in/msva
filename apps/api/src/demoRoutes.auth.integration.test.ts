@@ -12,9 +12,12 @@ if (!databaseUrl || databaseUrl !== process.env.DATABASE_URL || !new URL(databas
 const db = new PrismaClient({ datasourceUrl: databaseUrl });
 
 const provider = vi.hoisted(() => ({ handleChat: vi.fn(), previewVoice: vi.fn(), setLlmEnabled: vi.fn() }));
+// The origin the console and demo pages are served from in these tests.
+const CONSOLE = "https://console.example.test";
 
 beforeEach(async () => {
   vi.resetModules();
+  vi.stubEnv("BROWSER_ORIGINS", CONSOLE);
   provider.handleChat.mockReset().mockResolvedValue({ reply: "Namaste", state: {} });
   provider.previewVoice.mockReset().mockResolvedValue({ ok: true, data: { voice: "anushka", audio: "" } });
   provider.setLlmEnabled.mockReset();
@@ -33,6 +36,7 @@ beforeEach(async () => {
 afterEach(() => {
   vi.doUnmock("./voiceAgent.js");
   vi.doUnmock("./sarvamPreview.js");
+  vi.unstubAllEnvs();
 });
 afterAll(async () => db.$disconnect());
 
@@ -53,9 +57,9 @@ async function demoApp() {
   const server = http.createServer(createApp());
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as import("node:net").AddressInfo;
-  const post = (path: string, body: object, cookie?: string) => fetch(`http://127.0.0.1:${port}${path}`, {
+  const post = (path: string, body: object, cookie?: string, origin: string | null = CONSOLE) => fetch(`http://127.0.0.1:${port}${path}`, {
     method: "POST",
-    headers: { "content-type": "application/json", ...(cookie ? { cookie } : {}) },
+    headers: { "content-type": "application/json", ...(cookie ? { cookie } : {}), ...(origin ? { origin } : {}) },
     body: JSON.stringify(body)
   });
   return { post, close: () => new Promise<void>((resolve) => server.close(() => resolve())) };
@@ -73,6 +77,23 @@ it("lets a signed-in agent chat and preview voices, and no viewer", async () => 
     expect((await app.post("/api/voice-agent/tts-preview", { voice: "anushka", text: "Namaste" }, agent)).status).toBe(200);
     expect(provider.handleChat).toHaveBeenCalledOnce();
     expect(provider.previewVoice).toHaveBeenCalledOnce();
+  } finally {
+    await app.close();
+  }
+});
+
+it("refuses a signed-in request from any other origin, or none", async () => {
+  const app = await demoApp();
+  try {
+    const admin = await sessionCookie("ADMIN");
+    for (const origin of [null, "https://evil.example.test", "https://console.example.test.evil.test"]) {
+      expect((await app.post("/api/voice-agent/chat", { callId: "call-123456", message: "hello" }, admin, origin)).status).toBe(403);
+      expect((await app.post("/api/voice-agent/tts-preview", { voice: "anushka", text: "Namaste" }, admin, origin)).status).toBe(403);
+      expect((await app.post("/api/voice-agent/llm-mode", { enabled: false }, admin, origin)).status).toBe(403);
+    }
+    expect(provider.handleChat).not.toHaveBeenCalled();
+    expect(provider.previewVoice).not.toHaveBeenCalled();
+    expect(provider.setLlmEnabled).not.toHaveBeenCalled();
   } finally {
     await app.close();
   }

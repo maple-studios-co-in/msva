@@ -12,6 +12,9 @@ async function serve(app: import("express").Express) {
   };
 }
 
+// The origin the console is served from in these tests.
+const CONSOLE = "https://console.example.test";
+
 afterEach(() => {
   vi.resetModules();
   vi.doUnmock("./voiceAgent.js");
@@ -104,12 +107,13 @@ it("refuses the demo's provider routes without a console sign-in", async () => {
 
 it("fails closed through the mounted login route when production SMTP is unavailable", async () => {
   vi.stubEnv("NODE_ENV", "production");
+  vi.stubEnv("BROWSER_ORIGINS", CONSOLE);
   const { createApp } = await import("./server.js");
   const testServer = await serve(createApp());
   try {
     const response = await fetch(`${testServer.url}/api/admin/auth/request-code`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", origin: CONSOLE },
       body: JSON.stringify({ email: "known@example.test" })
     });
     expect(response.status).toBe(503);
@@ -121,10 +125,11 @@ it("fails closed through the mounted login route when production SMTP is unavail
 
 it("refuses sign-in email addresses longer than 254 characters", async () => {
   vi.stubEnv("NODE_ENV", "production");
+  vi.stubEnv("BROWSER_ORIGINS", CONSOLE);
   const { createApp } = await import("./server.js");
   const testServer = await serve(createApp());
   const post = (path: string, body: object) => fetch(`${testServer.url}/api/admin/auth/${path}`, {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body)
+    method: "POST", headers: { "content-type": "application/json", origin: CONSOLE }, body: JSON.stringify(body)
   });
   const longest = `${"a".repeat(64)}@${"b".repeat(60)}.${"c".repeat(60)}.${"d".repeat(62)}.test`;
   expect(longest).toHaveLength(254);
@@ -133,6 +138,46 @@ it("refuses sign-in email addresses longer than 254 characters", async () => {
     expect((await post("request-code", { email: longest })).status).toBe(503);
     expect((await post("request-code", { email: `a${longest}` })).status).toBe(400);
     expect((await post("verify", { email: `a${longest}`, code: "123456" })).status).toBe(400);
+  } finally {
+    await testServer.close();
+  }
+});
+
+
+it("takes sign-in only from the configured browser origins", async () => {
+  vi.stubEnv("NODE_ENV", "production");
+  vi.stubEnv("BROWSER_ORIGINS", `${CONSOLE}, https://*.example.test, https://other.example.test/path`);
+  const { createApp } = await import("./server.js");
+  const testServer = await serve(createApp());
+  const post = (path: string, headers: Record<string, string>) => fetch(`${testServer.url}/api/admin/auth/${path}`, {
+    method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify({ email: "known@example.test", code: "123456" })
+  });
+  try {
+    for (const path of ["request-code", "verify", "logout"]) {
+      expect((await post(path, {})).status).toBe(403);
+      for (const origin of ["https://evil.example.test", "https://console.example.test.evil.test", "https://a.example.test", "https://other.example.test"]) {
+        expect((await post(path, { origin })).status).toBe(403);
+      }
+    }
+    // From the console's own origin the request goes on (and fails closed without SMTP).
+    expect((await post("request-code", { origin: CONSOLE })).status).toBe(503);
+  } finally {
+    await testServer.close();
+  }
+});
+
+it("answers credentialed CORS for the configured browser origins only", async () => {
+  vi.stubEnv("BROWSER_ORIGINS", CONSOLE);
+  const { createApp } = await import("./server.js");
+  const testServer = await serve(createApp());
+  const preflight = (origin: string) => fetch(`${testServer.url}/api/admin/me`, {
+    method: "OPTIONS", headers: { origin, "access-control-request-method": "POST" }
+  });
+  try {
+    const allowed = await preflight(CONSOLE);
+    expect(allowed.headers.get("access-control-allow-origin")).toBe(CONSOLE);
+    expect(allowed.headers.get("access-control-allow-credentials")).toBe("true");
+    expect((await preflight("https://evil.example.test")).headers.get("access-control-allow-origin")).toBeNull();
   } finally {
     await testServer.close();
   }

@@ -11,6 +11,7 @@ import { getActiveModel, getLlmEnabled, handleChat, initialState, setLlmEnabled 
 import { DEMO_FAILSAFE_AUDIO_PATH, demoFailsafeAvailable, loadDemoFailsafe } from "./demoFailsafe.js";
 import { databaseReady } from "@msva/db";
 import { authenticate, requireRole } from "./auth.js";
+import { browserOrigins, corsOrigin, requireBrowserOrigin } from "./browserOrigin.js";
 import { adminRouter } from "./routes/admin.js";
 import { internalRouter } from "./routes/internal.js";
 import { internalAgentRouter } from "./routes/internalAgent.js";
@@ -23,9 +24,10 @@ const csvPath = process.env.CSV_PATH ?? "../../data/reports.csv";
 export function createApp(): express.Express {
 const app = express();
 
-// The console sends its session cookie, so CORS must name the origin rather
-// than use "*". Same-origin deployments (Caddy) never hit this path.
-app.use(cors({ origin: process.env.CORS_ORIGIN?.split(",").map((o) => o.trim()) ?? true, credentials: true }));
+// The console sends its session cookie, so credentialed CORS answers exactly the
+// configured browser origins and never reflects others. Same-origin deployments
+// (Caddy) never need it.
+app.use(cors({ origin: corsOrigin, credentials: true }));
 app.use(express.json({ limit: "1mb" }));
 app.set("trust proxy", true);
 
@@ -67,8 +69,9 @@ const chatSchema = z.object({
 });
 
 // The demo's chat and voice preview spend provider credits, so they need an agent's
-// console sign-in (the session cookie the console sets on this origin).
-app.post("/api/voice-agent/chat", authenticate, requireRole("AGENT"), async (request, response) => {
+// console sign-in (the session cookie the console sets on this origin), sent from one
+// of the browser origins.
+app.post("/api/voice-agent/chat", authenticate, requireRole("AGENT"), requireBrowserOrigin, async (request, response) => {
   const parsed = chatSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ error: "Invalid request", details: parsed.error.flatten() });
@@ -102,7 +105,7 @@ const previewSchema = z.object({
   language: z.string().optional()
 });
 
-app.post("/api/voice-agent/tts-preview", authenticate, requireRole("AGENT"), async (request, response) => {
+app.post("/api/voice-agent/tts-preview", authenticate, requireRole("AGENT"), requireBrowserOrigin, async (request, response) => {
   const parsed = previewSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ error: "Invalid request", details: parsed.error.flatten() });
@@ -129,7 +132,7 @@ app.get("/api/voice-agent/llm-mode", (_request, response) => {
 
 const llmModeSchema = z.object({ enabled: z.boolean() });
 
-app.post("/api/voice-agent/llm-mode", authenticate, requireRole("SUPERVISOR"), (request, response) => {
+app.post("/api/voice-agent/llm-mode", authenticate, requireRole("SUPERVISOR"), requireBrowserOrigin, (request, response) => {
   const parsed = llmModeSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ error: "Invalid request", details: parsed.error.flatten() });
@@ -181,6 +184,9 @@ app.use((error: unknown, _request: express.Request, response: express.Response, 
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  if (browserOrigins().size === 0) {
+    console.warn("[api] BROWSER_ORIGINS is empty: browser sign-in and the demo's paid routes will refuse every request");
+  }
   const server = createApp().listen(port, () => {
     console.log(`MSVA API running on http://localhost:${port}`);
   });

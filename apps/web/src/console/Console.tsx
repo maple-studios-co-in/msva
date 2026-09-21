@@ -25,6 +25,8 @@ import {
 } from "./api";
 import { isCallActive } from "./polling";
 import { usePollingLoad } from "./usePollingLoad";
+import { CallAssessmentPanel } from "./CallAssessmentPanel.js";
+import { savedCallAssessmentRevision } from "./assessmentView.js";
 
 // ---------------------------------------------------------------------------
 // Console v0 — overview, call history with drawer, ticket queue, users.
@@ -410,8 +412,14 @@ function CallDrawer({ id, user, onClose, onAuthError }: { id: string; user: Sess
   const call = usePollingLoad<CallDetail>((signal) => api.call(id, signal), [id], { intervalMs: 2500, onError: onAuthError, shouldPoll: isCallActive });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [assessmentRefreshToken, setAssessmentRefreshToken] = useState(0);
   const c = call.data;
   const active = !c || isCallActive(c);
+  const savedCallRevision = useMemo(() => c ? savedCallAssessmentRevision(c) : "loading", [c]);
+  const refreshCall = useCallback(() => {
+    setAssessmentRefreshToken((value) => value + 1);
+    call.reload();
+  }, [call.reload]);
   const toggleTest = async () => {
     if (!c) return;
     setBusy(true);
@@ -431,7 +439,7 @@ function CallDrawer({ id, user, onClose, onAuthError }: { id: string; user: Sess
     <Drawer title={c ? c.callerName || c.caller?.name || "Unknown caller" : "Call"} subtitle={c ? `${c.fromNumber} · ${fmtTime(c.startedAt)} · ${fmtDuration(c.durationMs)}` : undefined} onClose={onClose}>
       <div className="co-refresh-row">
         <span className="co-hint">{call.error ? "Updates delayed" : active ? "Updates automatically" : "Call finished · Saved transcript"}</span>
-        <button className="co-btn" onClick={call.reload} disabled={call.loading || call.refreshing}>Refresh</button>
+        <button className="co-btn" onClick={refreshCall} disabled={call.loading || call.refreshing}>Refresh</button>
       </div>
       {call.error && <RefreshError error={call.error} hasData={!!c} automatic={active} />}
       {error && <div className="co-error" role="status">{error}</div>}
@@ -493,6 +501,14 @@ function CallDrawer({ id, user, onClose, onAuthError }: { id: string; user: Sess
               </div>
             )}
           </section>
+          <CallAssessmentPanel
+            callId={c.id}
+            canAssess={atLeast(user, "SUPERVISOR")}
+            savedCallRevision={savedCallRevision}
+            refreshToken={assessmentRefreshToken}
+            onAuthError={onAuthError}
+            onChanged={refreshCall}
+          />
           <section className="co-section">
             <h3>Latency per turn</h3>
             <div className="co-tablewrap"><table className="co-table">

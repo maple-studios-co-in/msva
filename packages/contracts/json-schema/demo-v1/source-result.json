@@ -1,0 +1,125 @@
+{
+  "$id": "https://msva.example.invalid/contracts/demo-v1/source-result.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "anyOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "additionalProperties": false,
+          "properties": {
+            "items": {
+              "items": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 50,
+              "type": "array"
+            },
+            "reference": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "status": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "reference",
+            "status",
+            "items"
+          ],
+          "type": "object"
+        },
+        "sourceRef": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "truthState": {
+          "const": "CONNECTED",
+          "type": "string"
+        }
+      },
+      "required": [
+        "truthState",
+        "sourceRef",
+        "data"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "additionalProperties": false,
+          "properties": {
+            "items": {
+              "items": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 50,
+              "type": "array"
+            },
+            "reference": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "status": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "reference",
+            "status",
+            "items"
+          ],
+          "type": "object"
+        },
+        "fixtureRef": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "truthState": {
+          "const": "FIXTURE",
+          "type": "string"
+        }
+      },
+      "required": [
+        "truthState",
+        "fixtureRef",
+        "data"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "reason": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "truthState": {
+          "const": "UNAVAILABLE",
+          "type": "string"
+        }
+      },
+      "required": [
+        "truthState",
+        "reason"
+      ],
+      "type": "object"
+    }
+  ]
+}

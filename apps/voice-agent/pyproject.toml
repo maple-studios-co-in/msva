@@ -1,0 +1,13 @@
+[project]
+name = "msva-voice-agent-contracts"
+version = "0.1.0"
+description = "Canonical MSVA contract validation only"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "jsonschema[format]>=4.23,<5",
+  "pytest>=8,<9"
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider"

@@ -25,6 +25,7 @@
     "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
+    "@msva/contracts": "workspace:*",
     "@prisma/client": "^6.0.0"
   },
   "devDependencies": {

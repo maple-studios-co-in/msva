@@ -1,0 +1,9 @@
+{
+  "truthState": "FIXTURE",
+  "fixtureRef": "seeded-order-001",
+  "data": {
+    "reference": "ORDER-001",
+    "status": "Fixture only; no live order lookup occurred.",
+    "items": ["Mustard oil 1L"]
+  }
+}

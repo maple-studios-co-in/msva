@@ -1,0 +1,16 @@
+{
+  "requestId": "consumer-request-001",
+  "callId": "browser-call-consumer-001",
+  "journey": "CONSUMER_COMPLAINT",
+  "callerConfirmation": "FOLLOW_UP",
+  "parentRequestId": "prior-request-001",
+  "fields": {
+    "product": "Madhusudan mustard oil",
+    "purchaseArea": "Indore",
+    "issueCategory": "packaging",
+    "description": "The bottle cap was loose when the sealed product arrived.",
+    "productAvailable": true,
+    "batch": "B-2411"
+  },
+  "queue": { "territory": "Madhya Pradesh", "language": "hinglish" }
+}

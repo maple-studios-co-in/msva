@@ -1,0 +1,267 @@
+{
+  "$id": "https://msva.example.invalid/contracts/demo-v1/caller-context.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "anyOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "callId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "identityAssurance": {
+          "const": "UNVERIFIED",
+          "type": "string"
+        },
+        "language": {
+          "enum": [
+            "hi",
+            "en",
+            "hinglish"
+          ],
+          "type": "string"
+        },
+        "match": {
+          "enum": [
+            "NEW",
+            "RETURNING_UNCONFIRMED",
+            "UNCERTAIN"
+          ],
+          "type": "string"
+        },
+        "priorRequests": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "journey": {
+                "enum": [
+                  "CONSUMER_COMPLAINT",
+                  "RETAILER_ENQUIRY",
+                  "DISTRIBUTOR_CASE",
+                  "SALES_LEAD"
+                ],
+                "type": "string"
+              },
+              "summary": {
+                "maxLength": 4000,
+                "minLength": 1,
+                "type": "string"
+              },
+              "truthState": {
+                "const": "RECORDED",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "journey",
+              "truthState",
+              "summary"
+            ],
+            "type": "object"
+          },
+          "maxItems": 0,
+          "minItems": 0,
+          "type": "array"
+        },
+        "territory": {
+          "maxLength": 100,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "callId",
+        "language",
+        "identityAssurance",
+        "match",
+        "priorRequests"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "callerId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "callId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "identityAssurance": {
+          "enum": [
+            "VERIFIED",
+            "DEMO_TRUSTED"
+          ],
+          "type": "string"
+        },
+        "language": {
+          "enum": [
+            "hi",
+            "en",
+            "hinglish"
+          ],
+          "type": "string"
+        },
+        "match": {
+          "enum": [
+            "NEW",
+            "RETURNING_UNCONFIRMED",
+            "UNCERTAIN"
+          ],
+          "type": "string"
+        },
+        "priorRequests": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "journey": {
+                "enum": [
+                  "CONSUMER_COMPLAINT",
+                  "RETAILER_ENQUIRY",
+                  "DISTRIBUTOR_CASE",
+                  "SALES_LEAD"
+                ],
+                "type": "string"
+              },
+              "summary": {
+                "maxLength": 4000,
+                "minLength": 1,
+                "type": "string"
+              },
+              "truthState": {
+                "const": "RECORDED",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "journey",
+              "truthState",
+              "summary"
+            ],
+            "type": "object"
+          },
+          "maxItems": 0,
+          "minItems": 0,
+          "type": "array"
+        },
+        "territory": {
+          "maxLength": 100,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "callId",
+        "language",
+        "identityAssurance",
+        "match",
+        "priorRequests"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "callerId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "callId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "identityAssurance": {
+          "enum": [
+            "VERIFIED",
+            "DEMO_TRUSTED"
+          ],
+          "type": "string"
+        },
+        "language": {
+          "enum": [
+            "hi",
+            "en",
+            "hinglish"
+          ],
+          "type": "string"
+        },
+        "match": {
+          "const": "RETURNING_CONFIRMED",
+          "type": "string"
+        },
+        "priorRequests": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "journey": {
+                "enum": [
+                  "CONSUMER_COMPLAINT",
+                  "RETAILER_ENQUIRY",
+                  "DISTRIBUTOR_CASE",
+                  "SALES_LEAD"
+                ],
+                "type": "string"
+              },
+              "summary": {
+                "maxLength": 4000,
+                "minLength": 1,
+                "type": "string"
+              },
+              "truthState": {
+                "const": "RECORDED",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "journey",
+              "truthState",
+              "summary"
+            ],
+            "type": "object"
+          },
+          "maxItems": 50,
+          "minItems": 1,
+          "type": "array"
+        },
+        "territory": {
+          "maxLength": 100,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "callId",
+        "language",
+        "identityAssurance",
+        "match",
+        "priorRequests"
+      ],
+      "type": "object"
+    }
+  ]
+}

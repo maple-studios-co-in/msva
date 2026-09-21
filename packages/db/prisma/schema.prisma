@@ -27,18 +27,22 @@ enum UserRole {
 }
 
 model User {
-  id          String      @id @default(cuid())
-  email       String      @unique
-  name        String
-  role        UserRole    @default(VIEWER)
-  active      Boolean     @default(true)
-  createdAt   DateTime    @default(now())
-  lastLoginAt DateTime?
-  sessions    Session[]
-  loginCodes  LoginCode[]
-  tickets     Ticket[]    @relation("TicketAssignee")
-  notes       TicketNote[]
-  audits      AuditLog[]
+  id               String            @id @default(cuid())
+  email            String            @unique
+  name             String
+  role             UserRole          @default(VIEWER)
+  active           Boolean           @default(true)
+  createdAt        DateTime          @default(now())
+  lastLoginAt      DateTime?
+  sessions         Session[]
+  loginCodes       LoginCode[]
+  tickets          Ticket[]          @relation("TicketAssignee")
+  notes            TicketNote[]
+  audits           AuditLog[]
+  queueAssignments QueueAssignment[] @relation("QueueAssignmentAssignee")
+  handoffs         Handoff[]         @relation("HandoffAssignee")
+  riskAlerts       RiskAlert[]       @relation("RiskAlertOwner")
+  requestedAssessments CallAssessment[] @relation("CallAssessmentRequester")
 }
 
 model LoginCode {
@@ -90,18 +94,20 @@ enum CallerType {
 }
 
 model Caller {
-  id        String     @id @default(cuid())
-  phone     String     @unique
-  name      String?
-  type      CallerType @default(UNKNOWN)
-  code      String?
-  area      String?
-  route     String?
-  notes     String?
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
-  calls     Call[]
-  tickets   Ticket[]
+  id               String             @id @default(cuid())
+  phone            String             @unique
+  name             String?
+  type             CallerType         @default(UNKNOWN)
+  code             String?
+  area             String?
+  route            String?
+  notes            String?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  calls            Call[]
+  tickets          Ticket[]
+  demoIdentities   DemoCallIdentity[]
+  businessRequests BusinessRequest[]
 }
 
 // ---------------------------------------------------------------------------
@@ -139,26 +145,26 @@ enum CallOutcome {
 model Call {
   // Client-supplied id: the telephony service mints a session id per call
   // and uses it for every lifecycle event, so tools can link to the row.
-  id               String        @id
+  id               String            @id
   provider         CallProvider
-  providerSid      String?       @unique
-  direction        CallDirection @default(INBOUND)
-  isTest           Boolean       @default(false)
-  status           CallStatus    @default(IN_PROGRESS)
-  outcome          CallOutcome   @default(IN_PROGRESS)
+  providerSid      String?           @unique
+  direction        CallDirection     @default(INBOUND)
+  isTest           Boolean           @default(false)
+  status           CallStatus        @default(IN_PROGRESS)
+  outcome          CallOutcome       @default(IN_PROGRESS)
   agentId          String?
-  agent            Agent?        @relation(fields: [agentId], references: [id])
+  agent            Agent?            @relation(fields: [agentId], references: [id])
   callerId         String?
-  caller           Caller?       @relation(fields: [callerId], references: [id])
+  caller           Caller?           @relation(fields: [callerId], references: [id])
   fromNumber       String
   toNumber         String?
   callerName       String?
-  callerType       CallerType    @default(UNKNOWN)
+  callerType       CallerType        @default(UNKNOWN)
   intent           String?
   language         String?
   escalationReason String?
-  collected        Json          @default("{}")
-  startedAt        DateTime      @default(now())
+  collected        Json              @default("{}")
+  startedAt        DateTime          @default(now())
   endedAt          DateTime?
   durationMs       Int?
   recordingKey     String?
@@ -168,6 +174,11 @@ model Call {
   turns            Turn[]
   utterances       Utterance[]
   tickets          Ticket[]
+  demoIdentity     DemoCallIdentity?
+  businessRequests BusinessRequest[]
+  handoffs         Handoff[]
+  riskAssessments  RiskAssessment[]
+  assessments      CallAssessment[]
 
   @@index([startedAt])
   @@index([callerId])
@@ -233,30 +244,34 @@ enum TicketPriority {
 }
 
 model Ticket {
-  id             String         @id @default(cuid())
-  number         Int            @unique @default(autoincrement())
-  callId         String?
-  call           Call?          @relation(fields: [callId], references: [id])
-  callerId       String?
-  caller         Caller?        @relation(fields: [callerId], references: [id])
-  phone          String
-  callerName     String?
-  intent         String
-  priority       TicketPriority @default(MEDIUM)
-  status         TicketStatus   @default(OPEN)
-  summary        String
-  details        Json?
-  assigneeId     String?
-  assignee       User?          @relation("TicketAssignee", fields: [assigneeId], references: [id])
-  slaDueAt       DateTime?
-  callbackStart  DateTime?
-  callbackEnd    DateTime?
-  resolutionCode String?
-  externalRef    String?
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
-  resolvedAt     DateTime?
-  notes          TicketNote[]
+  id                  String               @id @default(cuid())
+  number              Int                  @unique @default(autoincrement())
+  callId              String?
+  call                Call?                @relation(fields: [callId], references: [id])
+  callerId            String?
+  caller              Caller?              @relation(fields: [callerId], references: [id])
+  phone               String
+  callerName          String?
+  intent              String
+  priority            TicketPriority       @default(MEDIUM)
+  status              TicketStatus         @default(OPEN)
+  summary             String
+  details             Json?
+  assigneeId          String?
+  assignee            User?                @relation("TicketAssignee", fields: [assigneeId], references: [id])
+  slaDueAt            DateTime?
+  callbackStart       DateTime?
+  callbackEnd         DateTime?
+  resolutionCode      String?
+  externalRef         String?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  resolvedAt          DateTime?
+  evidenceState       TicketEvidenceState  @default(NOT_REQUESTED)
+  evidenceRequestedAt DateTime?
+  notes               TicketNote[]
+  businessRequests    BusinessRequest[]
+  evidenceAttachments EvidenceAttachment[]
 
   @@index([status, priority])
   @@index([createdAt])
@@ -289,4 +304,269 @@ model AuditLog {
 
   @@index([createdAt])
   @@index([entity, entityId])
+}
+
+// ---------------------------------------------------------------------------
+// Demo journey foundation — passive, additive records only. These models do
+// not perform provider actions or alter a Call outcome.
+// ---------------------------------------------------------------------------
+
+enum IdentityAssurance {
+  UNVERIFIED
+  VERIFIED
+  DEMO_TRUSTED
+}
+
+enum JourneyKind {
+  CONSUMER_COMPLAINT
+  RETAILER_ENQUIRY
+  DISTRIBUTOR_CASE
+  SALES_LEAD
+}
+
+enum CallerConfirmation {
+  NEW
+  FOLLOW_UP
+  SEPARATE
+}
+
+enum BusinessRequestTruthState {
+  RECORDED
+}
+
+enum RequestActionState {
+  RECORDED
+  PENDING_STAFF
+}
+
+enum DemoLanguage {
+  hi
+  en
+  hinglish
+}
+
+enum QueueAssignmentState {
+  PENDING_STAFF
+}
+
+enum CallbackRequestState {
+  REQUESTED
+  PENDING_STAFF
+  CANCELLED
+}
+
+enum TicketEvidenceState {
+  NOT_REQUESTED
+  REQUESTED
+  RECEIVED
+  UNAVAILABLE
+}
+
+enum EvidenceAttachmentState {
+  REQUESTED
+  RECEIVED
+  UNAVAILABLE
+}
+
+enum EvidenceProvenance {
+  STORED
+  FIXTURE
+}
+
+enum HandoffState {
+  REQUESTED
+  ASSIGNED
+  JOINING
+  HUMAN_ACTIVE
+  FAILED
+  TIMED_OUT
+}
+
+enum RiskSentiment {
+  NEUTRAL
+  POSITIVE
+  NEGATIVE
+  UNKNOWN
+}
+
+enum RiskUrgency {
+  ROUTINE
+  POSSIBLE_SAFETY
+  UNKNOWN
+}
+
+enum RiskMode {
+  SHADOW
+}
+
+enum RiskSource {
+  FIXTURE
+  DETECTOR
+}
+
+enum RiskAlertState {
+  PENDING_STAFF
+  ACKNOWLEDGED
+  CLOSED
+}
+
+model DemoCallIdentity {
+  callId          String            @id
+  call            Call              @relation(fields: [callId], references: [id], onDelete: Restrict)
+  callerId        String?
+  caller          Caller?           @relation(fields: [callerId], references: [id], onDelete: Restrict)
+  assurance       IdentityAssurance @default(UNVERIFIED)
+  verifiedAt      DateTime?
+  verificationRef String?
+  fixtureKey      String?
+}
+
+model BusinessRequest {
+  id                 String                    @id @default(cuid())
+  requestId          String                    @unique
+  callId             String
+  call               Call                      @relation(fields: [callId], references: [id], onDelete: Restrict)
+  callerId           String?
+  caller             Caller?                   @relation(fields: [callerId], references: [id], onDelete: Restrict)
+  ticketId           String
+  ticket             Ticket                    @relation(fields: [ticketId], references: [id], onDelete: Restrict)
+  journey            JourneyKind
+  callerConfirmation CallerConfirmation
+  parentRequestId    String?
+  parentRequest      BusinessRequest?          @relation("BusinessRequestParent", fields: [parentRequestId], references: [id], onDelete: Restrict)
+  childRequests      BusinessRequest[]         @relation("BusinessRequestParent")
+  language           DemoLanguage
+  territory          String
+  verificationState  IdentityAssurance         @default(UNVERIFIED)
+  truthState         BusinessRequestTruthState @default(RECORDED)
+  actionState        RequestActionState        @default(PENDING_STAFF)
+  fields             Json
+  payloadCanonical   String
+  payloadHash        String
+  result             Json
+  queueAssignment    QueueAssignment?
+  callbackRequest    CallbackRequest?
+  createdAt          DateTime                  @default(now())
+  updatedAt          DateTime                  @updatedAt
+
+  @@index([callId])
+  @@index([callerId, createdAt])
+  @@index([ticketId])
+  @@index([parentRequestId])
+}
+
+model QueueAssignment {
+  id                String               @id @default(cuid())
+  businessRequestId String               @unique
+  businessRequest   BusinessRequest      @relation(fields: [businessRequestId], references: [id], onDelete: Restrict)
+  territory         String
+  language          DemoLanguage
+  queueKey          String               @default("support")
+  state             QueueAssignmentState @default(PENDING_STAFF)
+  assignedUserId    String?
+  assignedUser      User?                @relation("QueueAssignmentAssignee", fields: [assignedUserId], references: [id], onDelete: Restrict)
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+}
+
+model CallbackRequest {
+  id                String               @id @default(cuid())
+  businessRequestId String               @unique
+  businessRequest   BusinessRequest      @relation(fields: [businessRequestId], references: [id], onDelete: Restrict)
+  state             CallbackRequestState @default(PENDING_STAFF)
+  requestedAt       DateTime             @default(now())
+  preferredWindow   String?
+}
+
+model EvidenceAttachment {
+  id         String                  @id @default(cuid())
+  ticketId   String
+  ticket     Ticket                  @relation(fields: [ticketId], references: [id], onDelete: Restrict)
+  state      EvidenceAttachmentState
+  provenance EvidenceProvenance
+  storageKey String?
+  fixtureRef String?
+  receivedAt DateTime?
+  createdAt  DateTime                @default(now())
+
+  @@index([ticketId])
+}
+
+model Handoff {
+  id             String       @id @default(cuid())
+  callId         String
+  call           Call         @relation(fields: [callId], references: [id], onDelete: Restrict)
+  state          HandoffState
+  version        Int          @default(1)
+  assignedUserId String?
+  assignedUser   User?        @relation("HandoffAssignee", fields: [assignedUserId], references: [id], onDelete: Restrict)
+  requestedAt    DateTime     @default(now())
+  activatedAt    DateTime?
+  failureReason  String?
+
+  @@index([callId])
+}
+
+model RiskAssessment {
+  id        String        @id @default(cuid())
+  callId    String
+  call      Call          @relation(fields: [callId], references: [id], onDelete: Restrict)
+  sentiment RiskSentiment
+  urgency   RiskUrgency
+  mode      RiskMode      @default(SHADOW)
+  source    RiskSource
+  rationale String
+  alert     RiskAlert?
+  createdAt DateTime      @default(now())
+
+  @@index([callId])
+}
+
+model RiskAlert {
+  id               String         @id @default(cuid())
+  riskAssessmentId String         @unique
+  riskAssessment   RiskAssessment @relation(fields: [riskAssessmentId], references: [id], onDelete: Restrict)
+  state            RiskAlertState @default(PENDING_STAFF)
+  ownerId          String?
+  owner            User?          @relation("RiskAlertOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  createdAt        DateTime       @default(now())
+}
+
+enum CallAssessmentStatus {
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+model CallAssessment {
+  id                   String               @id @default(cuid())
+  callId               String
+  call                 Call                 @relation(fields: [callId], references: [id], onDelete: Cascade)
+  inputHash            String
+  requestedModel       String
+  returnedModel        String?
+  rubricVersion        String
+  preprocessingVersion String
+  status               CallAssessmentStatus
+  requestedById        String?
+  requestedBy          User?                @relation("CallAssessmentRequester", fields: [requestedById], references: [id], onDelete: SetNull)
+  attemptToken         String
+  attemptCount         Int                  @default(1)
+  leaseExpiresAt       DateTime?
+  errorCode            String?
+  result               Json?
+  inputCharCount       Int
+  utteranceCount       Int
+  linkedTicketRecorded Boolean              @default(false)
+  inputLanguage        String?
+  promptTokens         Int?
+  completionTokens     Int?
+  requestedAt          DateTime             @default(now())
+  completedAt          DateTime?
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+
+  @@unique([callId, inputHash, requestedModel, rubricVersion])
+  @@index([callId, requestedAt])
+  @@index([status, leaseExpiresAt])
 }

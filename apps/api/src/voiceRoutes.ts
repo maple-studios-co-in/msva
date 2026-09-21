@@ -1,10 +1,13 @@
 import express from "express";
 import { WorkerEventSchema, VoiceLeaseClaimSchema, VoiceLeaseRenewSchema, VoiceToolSchema } from "@msva/contracts";
+import { Prisma } from "@msva/db";
 import { claimVoiceLease, invokeVoiceTool, recordVoiceEvent, renewVoiceLease, VoiceError, voiceContext, voiceToolReceipt } from "./voiceService.js";
 
 const bearer = (request: express.Request) => request.headers.authorization?.startsWith("Bearer ") ? request.headers.authorization.slice(7).trim() : "";
 function fail(response: express.Response, error: unknown) {
   if (error instanceof VoiceError) return response.status(error.status).json({ error: error.code });
+  // Its kind only: messages can quote query arguments, including transcript text.
+  console.error("[voice] request failed", error instanceof Prisma.PrismaClientKnownRequestError ? error.code : error instanceof Error ? error.name : "unknown");
   return response.status(503).json({ error: "VOICE_UNAVAILABLE" });
 }
 

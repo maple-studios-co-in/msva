@@ -5,10 +5,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from typing import Any, Literal
 
-from livekit.agents import Agent, AgentSession, function_tool
+from livekit.agents import Agent, AgentSession, ModelSettings, function_tool, llm
 from livekit.agents.llm import ToolError
 from livekit.agents.voice import ConversationItemAddedEvent, RunContext, SpeechCreatedEvent, UserInputTranscribedEvent
 from livekit.plugins import anthropic, sarvam
@@ -191,6 +191,16 @@ class MadhusudanAgent(Agent):
         self._client = client
         self._lease_guard = lease_guard
         self._context = context
+
+    async def llm_node(self, chat_ctx: llm.ChatContext, tools: list[llm.Tool], model_settings: ModelSettings) -> AsyncIterator[Any]:
+        """Generates nothing once authority has ended. The SDK schedules a reply after every
+        tool call, so silence after a fence must not depend on the session closing first."""
+        if not self._lease_guard.active:
+            return
+        async for chunk in Agent.default.llm_node(self, chat_ctx, tools, model_settings):
+            if not self._lease_guard.active:
+                return
+            yield chunk
 
     @function_tool(raw_schema={
         "name": "create_business_request",

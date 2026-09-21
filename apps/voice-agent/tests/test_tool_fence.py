@@ -49,7 +49,7 @@ def text(value: str) -> list[ChatChunk]:
     return [ChatChunk(id="x", delta=ChoiceDelta(role="assistant", content=value))]
 
 
-async def start_call(tmp_path, scripts, tool_mode):
+async def start_call(tmp_path, scripts, tool_mode, *, close_on_fence=True):
     api = FakeVoiceApi()
     api.add_call()
     api.tool_mode = tool_mode
@@ -62,7 +62,8 @@ async def start_call(tmp_path, scripts, tool_mode):
     closed = asyncio.Event()
     session.on("close", lambda _event: closed.set())
     # The same non-blocking fence main.run_call installs.
-    guard = LeaseGuard(client, writer, renew_seconds=10, lease_seconds=30, on_lost=lambda _code: session.shutdown(drain=False))
+    on_lost = (lambda _code: session.shutdown(drain=False)) if close_on_fence else None
+    guard = LeaseGuard(client, writer, renew_seconds=10, lease_seconds=30, on_lost=on_lost)
     guard.start()
     await session.start(MadhusudanAgent(client, guard, context))
     return api, session, guard, closed, spool
@@ -79,6 +80,19 @@ async def test_an_uncertain_outcome_fences_and_closes_the_session_promptly(tmp_p
     assert len(api.tool_posts) == 1
     failures = [json.loads(row[0]) for row in spool._connection.execute("SELECT payload FROM event_spool").fetchall()]
     assert [event["payload"] for event in failures if event["type"] == "agent.failed"] == [{"code": "TRANSIENT"}]
+
+
+@pytest.mark.asyncio
+async def test_nothing_is_said_after_a_fence_even_before_the_session_closes(tmp_path):
+    # The SDK asks the model for a reply after every tool call; that reply must not depend on
+    # the session closing first.
+    api, session, guard, closed, _spool = await start_call(tmp_path, [tool_call("toolu_A", "milk was spoiled"), text("Recorded.")], "timeout_no_receipt", close_on_fence=False)
+    await session.run(user_input="please record my complaint")
+    assert guard.lost and not closed.is_set()
+    replies = [item.text_content for item in session.history.items if getattr(item, "role", None) == "assistant"]
+    assert replies == [], "no reply may be generated once authority has ended"
+    await guard.stop()
+    await session.aclose()
 
 
 @pytest.mark.asyncio

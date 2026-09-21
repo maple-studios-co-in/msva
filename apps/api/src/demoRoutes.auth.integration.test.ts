@@ -61,12 +61,16 @@ async function demoApp() {
   return { post, close: () => new Promise<void>((resolve) => server.close(() => resolve())) };
 }
 
-it("lets a signed-in console user chat and preview voices", async () => {
+it("lets a signed-in agent chat and preview voices, and no viewer", async () => {
   const app = await demoApp();
   try {
     const viewer = await sessionCookie("VIEWER");
-    expect((await app.post("/api/voice-agent/chat", { callId: "call-123456", message: "hello" }, viewer)).status).toBe(200);
-    expect((await app.post("/api/voice-agent/tts-preview", { voice: "anushka", text: "Namaste" }, viewer)).status).toBe(200);
+    expect((await app.post("/api/voice-agent/chat", { callId: "call-123456", message: "hello" }, viewer)).status).toBe(403);
+    expect((await app.post("/api/voice-agent/tts-preview", { voice: "anushka", text: "Namaste" }, viewer)).status).toBe(403);
+    expect(provider.handleChat).not.toHaveBeenCalled();
+    const agent = await sessionCookie("AGENT");
+    expect((await app.post("/api/voice-agent/chat", { callId: "call-123456", message: "hello" }, agent)).status).toBe(200);
+    expect((await app.post("/api/voice-agent/tts-preview", { voice: "anushka", text: "Namaste" }, agent)).status).toBe(200);
     expect(provider.handleChat).toHaveBeenCalledOnce();
     expect(provider.previewVoice).toHaveBeenCalledOnce();
   } finally {

@@ -66,9 +66,9 @@ const chatSchema = z.object({
   sessionId: z.string().optional()
 });
 
-// The demo's chat and voice preview spend provider credits, so they need a console
-// sign-in (the session cookie the console sets on this origin).
-app.post("/api/voice-agent/chat", authenticate, requireRole("VIEWER"), async (request, response) => {
+// The demo's chat and voice preview spend provider credits, so they need an agent's
+// console sign-in (the session cookie the console sets on this origin).
+app.post("/api/voice-agent/chat", authenticate, requireRole("AGENT"), async (request, response) => {
   const parsed = chatSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ error: "Invalid request", details: parsed.error.flatten() });
@@ -102,7 +102,7 @@ const previewSchema = z.object({
   language: z.string().optional()
 });
 
-app.post("/api/voice-agent/tts-preview", authenticate, requireRole("VIEWER"), async (request, response) => {
+app.post("/api/voice-agent/tts-preview", authenticate, requireRole("AGENT"), async (request, response) => {
   const parsed = previewSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ error: "Invalid request", details: parsed.error.flatten() });

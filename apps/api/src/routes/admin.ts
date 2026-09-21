@@ -75,6 +75,10 @@ adminRouter.post("/auth/verify", async (request, response, next) => {
   if (!parsed.success) return void bad(response, parsed.error);
   try {
     const result = await verifyLoginCode(parsed.data.email, parsed.data.code, trustedNetworkFromRequest(request));
+    if (result && "limited" in result) {
+      response.status(429).set("Retry-After", String(result.retryAfter)).json({ error: "Please wait before trying another code" });
+      return;
+    }
     if (!result) {
       response.status(401).json({ error: "That code is wrong or has expired. Request a new one." });
       return;

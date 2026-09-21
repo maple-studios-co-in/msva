@@ -24,6 +24,19 @@ it("rejects malformed, duplicate, and ambiguous session credentials safely", asy
   expect(tokenFromRequest(request({ cookie: "msva_session=a", authorization: "Bearer b" }))).toBeNull();
 });
 
+it("treats a session as expired at its expiry instant", async () => {
+  const { authenticate } = await import("./auth.js");
+  const expiresAt = new Date("2026-09-21T10:00:00.000Z");
+  vi.useFakeTimers();
+  vi.setSystemTime(expiresAt);
+  findUnique.mockResolvedValue({ id: "session-1", expiresAt, lastSeenAt: expiresAt, user: { id: "user-1", email: "a@example.test", name: "A", role: "AGENT", active: true } });
+  const req = request({ cookie: `msva_session=${"a".repeat(64)}` });
+  const next = vi.fn();
+  await authenticate(req, {} as any, next);
+  expect(next).toHaveBeenCalledOnce();
+  expect(req.user).toBeUndefined();
+});
+
 it("takes the first untrusted hop from a trusted proxy, not a client-supplied prefix", async () => {
   vi.stubEnv("TRUSTED_PROXY_ADDRESSES", "127.0.0.1, 10.0.0.0/8");
   const { trustedNetworkFromRequest } = await import("./auth.js");

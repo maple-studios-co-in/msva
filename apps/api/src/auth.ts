@@ -9,8 +9,8 @@ import { createSmtpLoginCodeDelivery, type LoginCodeDelivery } from "./smtp.js";
 //
 // Email + one-time code. No passwords to leak or reset. A user is created by
 // an admin (or the seed script); they sign in by requesting a 6-digit code
-// for their email, which is delivered by `deliverLoginCode` — console output
-// in development, an email/SMS provider in production (see sendLoginCode).
+// for their email, which is mailed over SMTP (see smtp.ts). Only an HMAC of
+// each code is stored, and only a confirmed send makes a code usable.
 //
 // Sessions are opaque random tokens stored hashed; the browser holds the raw
 // token in an httpOnly cookie. Internal services never use this — they use
@@ -20,6 +20,9 @@ import { createSmtpLoginCodeDelivery, type LoginCodeDelivery } from "./smtp.js";
 export const SESSION_COOKIE = "msva_session";
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const CODE_TTL_MS = 10 * 60 * 1000;
+const MAX_PENDING_DELIVERIES = 2;
+// Longer than the SMTP deadline, so a send that finishes in time can activate.
+const DELIVERY_LEASE_MS = 30_000;
 const isProduction = () => process.env.NODE_ENV === "production";
 
 export type SessionUser = Pick<User, "id" | "email" | "name" | "role">;
@@ -49,6 +52,7 @@ const rateHash = (value: string): string | null => {
 
 export type AuthNetworkContext = { address: string };
 export type LoginCodeRequestResult = { ok: true; devCode?: string } | { ok: false; unavailable: true } | { ok: false; limited: true; retryAfter: number };
+export type LoginCodeVerifyResult = { token: string; user: SessionUser } | null | { limited: true; retryAfter: number };
 let deliveryOverride: LoginCodeDelivery | null | undefined;
 /** Test-only injection point; production uses configured SMTP. */
 export const setLoginCodeDeliveryForTest = (delivery: LoginCodeDelivery | null | undefined) => { deliveryOverride = delivery; };
@@ -116,17 +120,33 @@ export function trustedNetworkFromRequest(request: express.Request): AuthNetwork
   return { address: peer };
 }
 
+const RATE_CLEANUP_BATCH = 100;
 const windowStart = (now: Date, ms: number) => new Date(Math.floor(now.getTime() / ms) * ms);
-async function reserveRate(scope: string, key: string, limit: number, windowMs: number, now = new Date()): Promise<number | null> {
-  const keyHash = rateHash(key);
-  if (!keyHash) return null;
-  const start = windowStart(now, windowMs);
-  const bucket = await prisma.authRateBucket.upsert({
-    where: { scope_keyHash_windowStart: { scope, keyHash, windowStart: start } },
-    create: { scope, keyHash, windowStart: start, count: 1, expiresAt: new Date(start.getTime() + windowMs + 86_400_000) },
-    update: { count: { increment: 1 } }
+type RateLimit = { scope: string; key: string; limit: number; windowMs: number };
+async function reserveRates(limits: RateLimit[], now = new Date()): Promise<number | null> {
+  const prepared = limits.map((limit) => ({ ...limit, keyHash: rateHash(limit.key), start: windowStart(now, limit.windowMs) }));
+  if (prepared.some((limit) => !limit.keyHash)) return null;
+  return prisma.$transaction(async (tx) => {
+    // Stable lock order across keys, so concurrent multi-bucket reservations
+    // cannot deadlock and every counter in the group moves together.
+    for (const limit of [...prepared].sort((a, b) => `${a.scope}:${a.keyHash}`.localeCompare(`${b.scope}:${b.keyHash}`))) {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${limit.scope}:${limit.keyHash}`}))`;
+    }
+    let retryAfter: number | null = null;
+    for (const limit of prepared) {
+      const keyHash = limit.keyHash!;
+      const bucket = await tx.authRateBucket.upsert({
+        where: { scope_keyHash_windowStart: { scope: limit.scope, keyHash, windowStart: limit.start } },
+        create: { scope: limit.scope, keyHash, windowStart: limit.start, count: 1, expiresAt: new Date(limit.start.getTime() + limit.windowMs + 86_400_000) },
+        update: { count: { increment: 1 } }
+      });
+      if (bucket.count > limit.limit) retryAfter = Math.max(retryAfter ?? 0, Math.max(1, Math.ceil((limit.start.getTime() + limit.windowMs - now.getTime()) / 1000)));
+    }
+    // Denied attempts stay counted. Expired buckets (a day past their window)
+    // are removed in small batches rather than all at once on a hot path.
+    await tx.$executeRaw`DELETE FROM "AuthRateBucket" WHERE "id" IN (SELECT "id" FROM "AuthRateBucket" WHERE "expiresAt" < ${now} LIMIT ${RATE_CLEANUP_BATCH} FOR UPDATE SKIP LOCKED)`;
+    return retryAfter;
   });
-  return bucket.count > limit ? Math.max(1, Math.ceil((start.getTime() + windowMs - now.getTime()) / 1000)) : null;
 }
 
 function parseCookies(header: string | undefined): Record<string, string> | null {
@@ -149,8 +169,25 @@ function parseCookies(header: string | undefined): Record<string, string> | null
   return out;
 }
 
-// Pluggable delivery. Replace the body with an email/SMS provider call when
-// one is chosen; the console fallback keeps local development working.
+/**
+ * A confirmed send makes this code the user's only usable one. A code that was
+ * superseded by a newer request, reclaimed or expired stays unusable, so a late
+ * completion can never replace or revoke the newest code.
+ */
+async function activateLoginCode(userId: string, id: string): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${userId} FOR UPDATE`;
+    const now = new Date();
+    const current = await tx.loginCode.findFirst({ where: { id, userId, deliveryState: "PENDING", deliveryLeaseExpiresAt: { gt: now } } });
+    if (!current) return;
+    await tx.loginCode.updateMany({ where: { userId, id: { not: id }, usedAt: null, deliveryState: "DELIVERED" }, data: { deliveryState: "FAILED" } });
+    await tx.loginCode.update({ where: { id }, data: { deliveryState: "DELIVERED", deliveredAt: now, deliveryLeaseExpiresAt: null } });
+  });
+}
+
+// Codes are mailed outside the response path, at most two at a time across
+// every API process, so response timing never reveals whether an address can
+// sign in. The raw code lives only in memory for the duration of the send.
 export async function requestLoginCode(
   rawEmail: string,
   network: AuthNetworkContext = { address: "unknown" }
@@ -158,10 +195,13 @@ export async function requestLoginCode(
   const email = rawEmail.trim().toLowerCase();
   const delivery = loginCodeDelivery();
   if (isProduction() && (!delivery || !process.env.AUTH_CODE_HASH_KEY || !process.env.AUTH_RATE_HASH_KEY)) return { ok: false, unavailable: true };
-  const minute = await reserveRate("request-email-minute", email, 1, 60_000);
-  const hour = await reserveRate("request-email-hour", email, 5, 3_600_000);
-  const ip = await reserveRate("request-ip-hour", network.address, 30, 3_600_000);
-  if (minute || hour || ip) return { ok: false, limited: true, retryAfter: Math.max(minute ?? 0, hour ?? 0, ip ?? 0) };
+  const retryAfter = await reserveRates([
+    { scope: "request-email-minute", key: email, limit: 1, windowMs: 60_000 },
+    { scope: "request-email-hour", key: email, limit: 5, windowMs: 3_600_000 },
+    { scope: "request-ip-hour", key: network.address, limit: 30, windowMs: 3_600_000 },
+    { scope: "request-global-hour", key: "global", limit: 100, windowMs: 3_600_000 }
+  ]);
+  if (retryAfter) return { ok: false, limited: true, retryAfter };
   const user = await prisma.user.findFirst({ where: { email, active: true } });
   // Always respond OK so the endpoint cannot be used to enumerate users.
   if (!user) return { ok: true };
@@ -172,16 +212,30 @@ export async function requestLoginCode(
   const expiresAt = new Date(Date.now() + CODE_TTL_MS);
   const hash = codeHash(id, code);
   if (!hash) return { ok: false, unavailable: true };
-  await prisma.$transaction(async (tx) => {
+  const admitted = await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"auth-delivery-cap"}))`;
+    const now = new Date();
+    // A crashed process leaves PENDING rows behind; their lease bounds how long
+    // they hold capacity. They never become usable.
+    await tx.loginCode.updateMany({ where: { deliveryState: "PENDING", deliveryLeaseExpiresAt: { lte: now } }, data: { deliveryState: "FAILED", deliveryLeaseExpiresAt: null } });
+    if (await tx.loginCode.count({ where: { deliveryState: "PENDING", deliveryLeaseExpiresAt: { gt: now } } }) >= MAX_PENDING_DELIVERIES) return false;
+    await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${user.id} FOR UPDATE`;
     await tx.loginCode.updateMany({ where: { userId: user.id, usedAt: null, deliveryState: "PENDING" }, data: { deliveryState: "FAILED", deliveryLeaseExpiresAt: null } });
-    await tx.loginCode.create({ data: { id, userId: user.id, codeHash: hash, expiresAt, deliveryLeaseExpiresAt: new Date(Date.now() + 30_000) } });
+    await tx.loginCode.create({ data: { id, userId: user.id, codeHash: hash, expiresAt, deliveryLeaseExpiresAt: new Date(now.getTime() + DELIVERY_LEASE_MS) } });
+    return true;
   });
-  void delivery.send({ recipient: email, code, expiresAt }).then(async () => {
-    await prisma.$transaction(async (tx) => {
-      await tx.loginCode.updateMany({ where: { userId: user.id, id: { not: id }, usedAt: null, deliveryState: "DELIVERED" }, data: { deliveryState: "FAILED" } });
-      await tx.loginCode.updateMany({ where: { id, deliveryState: "PENDING" }, data: { deliveryState: "DELIVERED", deliveredAt: new Date(), deliveryLeaseExpiresAt: null } });
+  // At capacity the response is identical and no usable code exists.
+  if (!admitted) return { ok: true };
+  void delivery.send({ recipient: email, code, expiresAt })
+    .then(() => activateLoginCode(user.id, id))
+    .catch(async () => {
+      console.warn("[auth] login code delivery failed");
+      await prisma.loginCode.updateMany({ where: { id, deliveryState: "PENDING" }, data: { deliveryState: "FAILED", deliveryLeaseExpiresAt: null } });
+    })
+    .catch(() => {
+      // The database is unreachable as well: the PENDING lease expires and the
+      // next request reclaims it. An uncertain send is never retried.
     });
-  }).catch(async () => { await prisma.loginCode.updateMany({ where: { id, deliveryState: "PENDING" }, data: { deliveryState: "FAILED", deliveryLeaseExpiresAt: null } }); });
   const echo = process.env.NODE_ENV === "development" && process.env.AUTH_DEV_ECHO === "1";
   return echo ? { ok: true, devCode: code } : { ok: true };
 }
@@ -190,41 +244,40 @@ export async function verifyLoginCode(
   rawEmail: string,
   code: string,
   network: AuthNetworkContext = { address: "unknown" }
-): Promise<{ token: string; user: SessionUser } | null> {
+): Promise<LoginCodeVerifyResult> {
   const email = rawEmail.trim().toLowerCase();
   if (!/^\d{6}$/.test(code)) return null;
-  const emailLimit = await reserveRate("verify-email", email, 10, 600_000);
-  const ipLimit = await reserveRate("verify-ip", network.address, 60, 600_000);
-  if (emailLimit || ipLimit) return null;
-  const user = await prisma.user.findFirst({ where: { email, active: true } });
-  if (!user) return null;
-
-  const candidate = await prisma.loginCode.findFirst({
-    where: { userId: user.id, usedAt: null, deliveryState: "DELIVERED", attempts: { lt: 5 }, expiresAt: { gt: new Date() } },
-    orderBy: { createdAt: "desc" }
-  });
-  if (!candidate) return null;
-
-  const expected = Buffer.from(candidate.codeHash, "hex");
-  const candidateHash = codeHash(candidate.id, code);
-  if (!candidateHash) return null;
-  const given = Buffer.from(candidateHash, "hex");
-  if (expected.length !== given.length || !timingSafeEqual(expected, given)) {
-    await prisma.loginCode.updateMany({ where: { id: candidate.id, usedAt: null, deliveryState: "DELIVERED", attempts: { lt: 5 } }, data: { attempts: { increment: 1 } } });
-    return null;
-  }
-
+  // Without both keys no code can be checked and no attempt can be throttled.
+  if (!process.env.AUTH_CODE_HASH_KEY || !process.env.AUTH_RATE_HASH_KEY) return null;
+  const retryAfter = await reserveRates([{ scope: "verify-email", key: email, limit: 10, windowMs: 600_000 }, { scope: "verify-ip", key: network.address, limit: 60, windowMs: 600_000 }]);
+  if (retryAfter) return { limited: true, retryAfter };
   const token = randomBytes(32).toString("hex");
-  const consumed = await prisma.$transaction(async (tx) => {
-    const claimed = await tx.loginCode.updateMany({ where: { id: candidate.id, usedAt: null, deliveryState: "DELIVERED", expiresAt: { gt: new Date() } }, data: { usedAt: new Date() } });
-    if (claimed.count !== 1) return false;
-    await tx.session.create({ data: { userId: user.id, tokenHash: sha256(token), expiresAt: new Date(Date.now() + SESSION_TTL_MS) } });
-    await tx.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
-    return true;
+  // Everything that authorizes the login is read after the user and code rows
+  // are locked, with the clock sampled after the locks are held. A wrong code
+  // returns (not throws) so its attempt increment commits.
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.findFirst({ where: { email } });
+    if (!user) return null;
+    await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${user.id} FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "LoginCode" WHERE "userId" = ${user.id} FOR UPDATE`;
+    const now = new Date();
+    const currentUser = await tx.user.findUnique({ where: { id: user.id } });
+    if (!currentUser?.active) return null;
+    const candidate = await tx.loginCode.findFirst({ where: { userId: user.id, usedAt: null, deliveryState: "DELIVERED", attempts: { lt: 5 }, expiresAt: { gt: now } }, orderBy: { createdAt: "desc" } });
+    if (!candidate) return null;
+    const candidateHash = codeHash(candidate.id, code);
+    const expected = Buffer.from(candidate.codeHash, "hex");
+    const given = candidateHash ? Buffer.from(candidateHash, "hex") : Buffer.alloc(0);
+    if (expected.length !== given.length || !timingSafeEqual(expected, given)) {
+      await tx.loginCode.update({ where: { id: candidate.id }, data: { attempts: { increment: 1 } } });
+      return null;
+    }
+    const claimed = await tx.loginCode.updateMany({ where: { id: candidate.id, usedAt: null, deliveryState: "DELIVERED", attempts: { lt: 5 }, expiresAt: { gt: now } }, data: { usedAt: now } });
+    if (claimed.count !== 1) return null;
+    await tx.session.create({ data: { userId: currentUser.id, tokenHash: sha256(token), expiresAt: new Date(now.getTime() + SESSION_TTL_MS) } });
+    await tx.user.update({ where: { id: currentUser.id }, data: { lastLoginAt: now } });
+    return { token, user: { id: currentUser.id, email: currentUser.email, name: currentUser.name, role: currentUser.role } };
   });
-  if (!consumed) return null;
-
-  return { token, user: { id: user.id, email: user.email, name: user.name, role: user.role } };
 }
 
 export async function revokeSession(token: string): Promise<void> {
@@ -268,7 +321,7 @@ export async function authenticate(
       where: { tokenHash: sha256(token) },
       include: { user: true }
     });
-    if (!session || session.expiresAt < new Date() || !session.user.active) return next();
+    if (!session || session.expiresAt <= new Date() || !session.user.active) return next();
     request.user = {
       id: session.user.id,
       email: session.user.email,

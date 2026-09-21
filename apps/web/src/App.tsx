@@ -39,6 +39,7 @@ import {
   YAxis
 } from "recharts";
 import {
+  consoleSignedIn,
   failsafeAudioUrl,
   getAnalytics,
   getDemoCalls,
@@ -1187,6 +1188,15 @@ export function App() {
   const [sampleError, setSampleError] = useState<string | null>(null);
   const [demoError, setDemoError] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
+  const [signedIn, setSignedIn] = useState<boolean | null>(null);
+
+  // Calls, the text demo and the voice playground need a console sign-in.
+  useEffect(() => {
+    let disposed = false;
+    consoleSignedIn().then((value) => { if (!disposed) setSignedIn(value); }, () => { if (!disposed) setSignedIn(false); });
+    return () => { disposed = true; };
+  }, []);
+  const needsSignIn = signedIn === false && (tab === "call" || tab === "demo" || tab === "voices");
 
   // Sample data is optional; its availability never gates live call data.
   useEffect(() => {
@@ -1253,6 +1263,11 @@ export function App() {
           </div>
         </header>
 
+        {needsSignIn && (
+          <div className="error-box" role="alert">
+            Browser calls, the text demo and the voice playground use paid speech and model services, so they need a console sign-in. <a href="/console.html">Sign in</a>, then come back to this page.
+          </div>
+        )}
         {tab === "dashboard" && <LiveCallsDashboard />}
         {tab === "sample" && (analytics ? <Dashboard analytics={analytics} /> : sampleError ? (
           <div className="error-box" role="alert">{sampleError} <button type="button" onClick={() => setRetry((value) => value + 1)}>Retry</button></div>

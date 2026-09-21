@@ -2,8 +2,13 @@ import type { AnalyticsResponse, ChatResponse, ConversationState, DemoCall, Live
 
 const apiBase = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:4100";
 
+// Calls, the text demo and the voice playground use paid speech and model services,
+// so their routes need the console's session cookie.
+export const SIGN_IN_REQUIRED = "Sign in to the console (/console.html) to use this.";
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${apiBase}${path}`, {
+    credentials: "include",
     ...init,
     headers: {
       "Content-Type": "application/json",
@@ -11,11 +16,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     }
   });
 
+  if (response.status === 401) {
+    throw new Error(SIGN_IN_REQUIRED);
+  }
   if (!response.ok) {
     throw new Error(`Request failed: ${response.status}`);
   }
 
   return response.json() as Promise<T>;
+}
+
+/** Whether this browser holds a console session. */
+export async function consoleSignedIn(): Promise<boolean> {
+  const response = await fetch(`${apiBase}/api/admin/me`, { credentials: "include" });
+  return response.ok;
 }
 
 export function getAnalytics(): Promise<AnalyticsResponse> {

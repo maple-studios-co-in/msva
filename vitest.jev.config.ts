@@ -5,6 +5,7 @@ export default defineConfig({
     include: ["apps/api/src/**/*.integration.test.ts"],
     exclude: ["apps/api/src/**/*.voice.integration.test.ts"],
     environment: "node",
+    fileParallelism: false,
     passWithNoTests: false,
     reporters: ["default"]
   }

@@ -1,7 +1,7 @@
 import type { CallAssessmentResponse } from "@msva/shared";
 
 export type AssessmentView = {
-  kind: "unavailable" | "ineligible" | "ready" | "running" | "interrupted" | "failed" | "stale" | "succeeded";
+  kind: "unavailable" | "ineligible" | "ready" | "queued" | "running" | "interrupted" | "failed" | "stale" | "succeeded";
   headline: string;
   detail: string;
   liveMessage: string | null;
@@ -38,6 +38,36 @@ export function assessmentView(response: CallAssessmentResponse, canAssess: bool
     };
   }
 
+  const automatic = response.automaticJob;
+  if (automatic && (automatic.state === "PENDING" || (automatic.state === "RUNNING" && !automatic.stalled))) {
+    const running = automatic.state === "RUNNING";
+    return {
+      kind: "queued",
+      headline: running ? "Automatic assessment running" : "Automatic assessment queued",
+      detail: running ? "A post-call assessment is running for the saved transcript." : "A post-call assessment will run after final call details settle.",
+      liveMessage: running ? "Automatic assessment running. Results will appear here." : "Automatic assessment queued. Results will appear here.",
+      canRequest: canAssess,
+      actionLabel: canAssess ? "Run assessment" : null,
+      shouldPoll: true,
+      showResult: savedResult
+    };
+  }
+  if (automatic?.stalled) {
+    return {
+      kind: "interrupted", headline: "Automatic assessment was interrupted",
+      detail: "The automatic assessment worker lease expired before a result was saved.",
+      liveMessage: null, canRequest: canAssess, actionLabel: canAssess ? "Run assessment" : null,
+      shouldPoll: false, showResult: savedResult
+    };
+  }
+  if (automatic && (automatic.state === "FAILED" || automatic.state === "SKIPPED")) {
+    return {
+      kind: "failed", headline: "Automatic assessment was not completed",
+      detail: automatic.state === "SKIPPED" ? "Automatic assessment was not queued because the queue was full." : "Automatic assessment needs attention before it can be retried.",
+      liveMessage: null, canRequest: canAssess, actionLabel: canAssess ? "Run assessment" : null,
+      shouldPoll: false, showResult: savedResult
+    };
+  }
   const assessment = response.assessment;
   if (!assessment) {
     return {
@@ -80,6 +110,11 @@ export function assessmentView(response: CallAssessmentResponse, canAssess: bool
 }
 
 export function assessmentWakeDelay(response: CallAssessmentResponse, now: Date): number | null {
+  const automatic = response.automaticJob;
+  if (automatic && (automatic.state === "PENDING" || (automatic.state === "RUNNING" && !automatic.stalled))) {
+    if (automatic.state === "RUNNING" && automatic.leaseExpiresAt && new Date(automatic.leaseExpiresAt).getTime() <= now.getTime()) return null;
+    return POLL_INTERVAL_MS;
+  }
   const assessment = response.assessment;
   if (!assessment) return null;
   if (assessment.status === "RUNNING") {

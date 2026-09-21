@@ -35,6 +35,24 @@ const succeeded: NonNullable<CallAssessmentResponse["assessment"]> = {
 };
 
 describe("assessmentView", () => {
+  it("polls a queued automatic job before an assessment row exists while keeping manual assessment available", () => {
+    const response = {
+      ...base,
+      automaticJob: { state: "PENDING" as const, dueAt: "2026-09-21T10:00:10.000Z", attempts: 0, reason: null, leaseExpiresAt: null, stalled: false }
+    };
+
+    expect(assessmentView(response, true, new Date("2026-09-21T10:00:00.000Z"))).toMatchObject({ kind: "queued", shouldPoll: true, canRequest: true, actionLabel: "Run assessment" });
+    expect(assessmentWakeDelay(response, new Date("2026-09-21T10:00:00.000Z"))).toBe(2500);
+  });
+
+  it("shows a stalled automatic worker without disabling the manual action", () => {
+    const response = {
+      ...base,
+      automaticJob: { state: "RUNNING" as const, dueAt: "2026-09-21T10:00:00.000Z", attempts: 1, reason: "LEASE_EXPIRED", leaseExpiresAt: "2026-09-21T10:00:01.000Z", stalled: true }
+    };
+    expect(assessmentView(response, true, new Date("2026-09-21T10:01:00.000Z"))).toMatchObject({ kind: "interrupted", shouldPoll: false, canRequest: true, actionLabel: "Run assessment" });
+  });
+
   it("shows a polite live status and keeps polling during an unexpired assessment", () => {
     const view = assessmentView({
       ...base,

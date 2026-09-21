@@ -2,9 +2,11 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import express from "express";
 import { PrismaClient } from "@msva/db";
+import { WorkerEventSchema } from "@msva/contracts";
 import { createVoiceSession, recordVoiceDispatch, workerParticipantIdentity } from "./voiceService.js";
 import { voiceRouter } from "./voiceRoutes.js";
 import { internalRouter } from "./routes/internal.js";
+import runtimeReplayCorpus from "./fixtures/voice-v1-replay-corpus.json" with { type: "json" };
 
 const databaseUrl = process.env.MSVA_VOICE_TEST_DATABASE_URL;
 if (!databaseUrl) throw new Error("MSVA_VOICE_TEST_DATABASE_URL is required");
@@ -42,12 +44,19 @@ describe("voice worker mounted HTTP contract", () => {
     });
     expect(leaseClaim.status).toBe(200);
     const lease = await leaseClaim.json() as { token: string; agentEpoch: number };
+    const sourceEvents = runtimeReplayCorpus.map((event) => WorkerEventSchema.parse(event));
     const occurredAt = new Date().toISOString();
-    const events = [
-      { schemaVersion: 1, eventId: randomUUID(), callId, agentEpoch: lease.agentEpoch, sourceSequence: 1, occurredAt, type: "agent.ready", payload: { participantId: workerParticipantIdentity(callId) } },
-      { schemaVersion: 1, eventId: randomUUID(), callId, agentEpoch: lease.agentEpoch, sourceSequence: 2, occurredAt, type: "transcript.final", payload: { segmentId: "caller-1", revision: 1, speaker: "CALLER", participantId: "caller", sequence: 1, text: "hello", language: "en", startMs: null, endMs: null } },
-      { schemaVersion: 1, eventId: randomUUID(), callId, agentEpoch: lease.agentEpoch, sourceSequence: 3, occurredAt, type: "transcript.flushed", payload: { lastSourceSequence: 2 } }
-    ];
+    const events = sourceEvents.map((event) => ({
+      ...event,
+      callId,
+      agentEpoch: lease.agentEpoch,
+      occurredAt,
+      payload: event.type === "agent.ready"
+        ? { participantId: workerParticipantIdentity(callId) }
+        : event.type === "transcript.final"
+          ? { ...event.payload, participantId: "caller" }
+          : event.payload
+    }));
     for (const event of events) {
       const response = await fetch(`${baseUrl}/calls/${callId}/events`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${lease.token}` }, body: JSON.stringify(event) });
       expect(response.status).toBe(200);

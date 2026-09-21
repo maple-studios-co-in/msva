@@ -1,7 +1,13 @@
 import { z } from "zod";
 
-const id = z.string().min(1).max(128);
-const text = z.string().min(1).max(4_000);
+/**
+ * Text PostgreSQL can store: no NUL and no unpaired UTF-16 surrogate. Anything
+ * else would fail in the database on every retry, so it is refused here.
+ */
+export const WELL_FORMED_TEXT = /^(?:[^\u0000\uD800-\uDFFF]|[\uD800-\uDBFF][\uDC00-\uDFFF])*$/;
+const id = z.string().min(1).max(128).regex(WELL_FORMED_TEXT);
+const text = z.string().min(1).max(4_000).regex(WELL_FORMED_TEXT);
+const language = z.string().min(1).max(32).regex(WELL_FORMED_TEXT);
 const occurredAt = z.string().datetime({ offset: true });
 // Wire integers are stored in PostgreSQL INT4 columns.
 const INT4_MAX = 2_147_483_647;
@@ -17,7 +23,7 @@ export const VoiceContextSchema = z.strictObject({
 });
 const Envelope = { schemaVersion: z.literal(1), eventId: id, callId: id, agentEpoch: positive, sourceSequence: positive, occurredAt };
 export const WorkerEventSchema = z.discriminatedUnion("type", [
-  z.strictObject({ ...Envelope, type: z.literal("transcript.final"), payload: z.strictObject({ segmentId: id, revision: positive, speaker: z.enum(["CALLER", "AGENT", "HUMAN"]), participantId: id, sequence: positive, text, startMs: offsetMs, endMs: offsetMs, language: z.string().min(1).max(32) }) }),
+  z.strictObject({ ...Envelope, type: z.literal("transcript.final"), payload: z.strictObject({ segmentId: id, revision: positive, speaker: z.enum(["CALLER", "AGENT", "HUMAN"]), participantId: id, sequence: positive, text, startMs: offsetMs, endMs: offsetMs, language }) }),
   z.strictObject({ ...Envelope, type: z.literal("agent.ready"), payload: z.strictObject({ participantId: id }) }),
   z.strictObject({ ...Envelope, type: z.literal("agent.failed"), payload: z.strictObject({ code: z.enum(["CONFIGURATION", "TRANSIENT", "FATAL", "LEASE_LOST"]) }) }),
   z.strictObject({ ...Envelope, type: z.literal("control.ack"), payload: z.strictObject({ controlId: id, state: z.enum(["PAUSED", "STOPPED"]) }) }),

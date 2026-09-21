@@ -11,16 +11,19 @@
     "agentParticipantId": {
       "maxLength": 128,
       "minLength": 1,
+      "pattern": "^(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
       "type": "string"
     },
     "callerParticipantId": {
       "maxLength": 128,
       "minLength": 1,
+      "pattern": "^(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
       "type": "string"
     },
     "callId": {
       "maxLength": 128,
       "minLength": 1,
+      "pattern": "^(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
       "type": "string"
     },
     "language": {
@@ -43,6 +46,7 @@
     "roomName": {
       "maxLength": 128,
       "minLength": 1,
+      "pattern": "^(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
       "type": "string"
     }
   },

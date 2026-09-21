@@ -13,11 +13,13 @@
         "callId": {
           "maxLength": 128,
           "minLength": 1,
+          "pattern": "^(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
           "type": "string"
         },
         "eventId": {
           "maxLength": 128,
           "minLength": 1,
+          "pattern": "^(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
           "type": "string"
         },
         "occurredAt": {
@@ -43,11 +45,13 @@
             "language": {
               "maxLength": 32,
               "minLength": 1,
+              "pattern": "^(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
               "type": "string"
             },
             "participantId": {
               "maxLength": 128,
               "minLength": 1,
+              "pattern": "^(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
               "type": "string"
             },
             "revision": {
@@ -58,6 +62,7 @@
             "segmentId": {
               "maxLength": 128,
               "minLength": 1,
+              "pattern": "^(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
               "type": "string"
             },
             "sequence": {
@@ -88,6 +93,7 @@
             "text": {
               "maxLength": 4000,
               "minLength": 1,
+              "pattern": "^(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
               "type": "string"
             }
           },
@@ -139,11 +145,13 @@
         "callId": {
           "maxLength": 128,
           "minLength": 1,
+          "pattern": "^(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
           "type": "string"
         },
         "eventId": {
           "maxLength": 128,
           "minLength": 1,
+          "pattern": "^(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
           "type": "string"
         },
         "occurredAt": {
@@ -157,6 +165,7 @@
             "participantId": {
               "maxLength": 128,
               "minLength": 1,
+              "pattern": "^(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
               "type": "string"
             }
           },
@@ -202,11 +211,13 @@
         "callId": {
           "maxLength": 128,
           "minLength": 1,
+          "pattern": "^(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
           "type": "string"
         },
         "eventId": {
           "maxLength": 128,
           "minLength": 1,
+          "pattern": "^(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
           "type": "string"
         },
         "occurredAt": {
@@ -269,11 +280,13 @@
         "callId": {
           "maxLength": 128,
           "minLength": 1,
+          "pattern": "^(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
           "type": "string"
         },
         "eventId": {
           "maxLength": 128,
           "minLength": 1,
+          "pattern": "^(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
           "type": "string"
         },
         "occurredAt": {
@@ -287,6 +300,7 @@
             "controlId": {
               "maxLength": 128,
               "minLength": 1,
+              "pattern": "^(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
               "type": "string"
             },
             "state": {
@@ -340,11 +354,13 @@
         "callId": {
           "maxLength": 128,
           "minLength": 1,
+          "pattern": "^(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
           "type": "string"
         },
         "eventId": {
           "maxLength": 128,
           "minLength": 1,
+          "pattern": "^(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
           "type": "string"
         },
         "occurredAt": {

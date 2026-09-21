@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { DemoRequestError, Prisma, PrismaClient, createBusinessRequest, prisma, type CallOutcome } from "@msva/db";
-import { CreateRequestInputSchema, type CreateRequestResult, type VoiceLease, type WorkerEvent } from "@msva/contracts";
+import { CreateRequestInputSchema, WELL_FORMED_TEXT, type CreateRequestResult, type VoiceLease, type WorkerEvent } from "@msva/contracts";
 import { markPostCallAssessmentDirty } from "./assessmentJobs.js";
 
 const LEASE_MS = 30_000;
@@ -423,6 +423,12 @@ export async function sweepVoiceSessions(db: PrismaClient = prisma): Promise<num
   return closed;
 }
 
+/** Whether every string in a JSON value, keys included, can be stored. */
+const storable = (value: unknown): boolean => typeof value === "string" ? WELL_FORMED_TEXT.test(value)
+  : Array.isArray(value) ? value.every(storable)
+  : value !== null && typeof value === "object" ? Object.entries(value).every(([key, item]) => WELL_FORMED_TEXT.test(key) && storable(item))
+  : true;
+
 const TOOL_ERROR_STATUS: Record<string, number> = { INVALID_REQUEST: 400, CALL_NOT_FOUND: 404, IDENTITY_REQUIRED: 403, PARENT_NOT_ACCESSIBLE: 403, IDEMPOTENCY_CONFLICT: 409 };
 type StoredToolResult = CreateRequestResult | { error: string };
 function storedResult(result: Prisma.JsonValue | null): StoredToolResult | null {
@@ -438,7 +444,7 @@ export async function invokeVoiceTool(input: { callId: string; invocationId: str
   // A bounded, stable request identity per invocation, whatever its length.
   const args = input.arguments && typeof input.arguments === "object" && !Array.isArray(input.arguments) ? input.arguments as Record<string, unknown> : null;
   const parsed = args ? CreateRequestInputSchema.safeParse({ ...args, callId: input.callId, requestId: `voice:${hash(`${input.callId}:${input.invocationId}`).slice(0, 48)}` }) : null;
-  const request = parsed?.success ? parsed.data : null;
+  const request = parsed?.success && storable(input.arguments) ? parsed.data : null;
   type Prepared = { kind: "replay"; result: CreateRequestResult } | { kind: "run"; canonicalPayload: string };
   const prepared = await serializable(db, async (tx): Promise<Prepared> => {
     const session = await authenticatedSession(tx, input.callId, token); const lease = currentAuthority(session, new Date());

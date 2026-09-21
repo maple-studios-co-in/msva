@@ -11,6 +11,7 @@
     "callId": {
       "maxLength": 128,
       "minLength": 1,
+      "pattern": "^(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
       "type": "string"
     },
     "expiresAt": {

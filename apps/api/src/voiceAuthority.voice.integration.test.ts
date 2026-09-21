@@ -387,7 +387,9 @@ describe("business tools", () => {
 
   it("refuses invalid arguments before recording anything", async () => {
     const call = await liveCall();
-    for (const args of [null, ["a list"], { ...complaint, journey: "NOT_A_JOURNEY" }]) {
+    // Text PostgreSQL cannot store is refused too, instead of failing on every retry.
+    const unstorable = [String.fromCharCode(0), String.fromCharCode(0xd800)].map((bad) => ({ ...complaint, fields: { ...complaint.fields, description: `Leaking${bad}` } }));
+    for (const args of [null, ["a list"], { ...complaint, journey: "NOT_A_JOURNEY" }, ...unstorable]) {
       await expect(tool(call, "invalid", args)).rejects.toMatchObject({ status: 400, code: "INVALID_TOOL_ARGUMENTS" });
     }
     expect(await db.toolInvocation.count()).toBe(0);

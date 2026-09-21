@@ -90,6 +90,11 @@ describe("voice worker mounted HTTP contract", () => {
     expect((await send("GET", `/calls/${call.callId}/context`, `Bearer ${lease.token}`)).status).toBe(200);
     const overflow = { schemaVersion: 1, eventId: randomUUID(), callId: call.callId, agentEpoch: lease.agentEpoch, sourceSequence: 2_147_483_648, occurredAt: new Date().toISOString(), type: "agent.ready", payload: { participantId: workerParticipantIdentity(call.callId) } };
     expect((await send("POST", `/calls/${call.callId}/events`, `Bearer ${lease.token}`, overflow)).status).toBe(400);
+    // Text PostgreSQL cannot store is refused at once rather than failing on every retry.
+    for (const bad of [String.fromCharCode(0), String.fromCharCode(0xd800)]) {
+      const unstorable = { ...overflow, eventId: randomUUID(), sourceSequence: 1, type: "transcript.final", payload: { segmentId: "segment", revision: 1, speaker: "CALLER", participantId: "caller", sequence: 1, text: `doodh${bad}`, language: "en" } };
+      expect((await send("POST", `/calls/${call.callId}/events`, `Bearer ${lease.token}`, unstorable)).status).toBe(400);
+    }
     const followUp = { journey: "CONSUMER_COMPLAINT", callerConfirmation: "FOLLOW_UP", parentRequestId: "missing-request", fields: { product: "Oil", purchaseArea: "Indore", issueCategory: "quality", description: "Leaking", productAvailable: true }, queue: { territory: "MP", language: "hi" } };
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const rejected = await send("POST", `/calls/${call.callId}/tools`, `Bearer ${lease.token}`, { invocationId: "follow-up", agentEpoch: lease.agentEpoch, name: "create_business_request", arguments: followUp });

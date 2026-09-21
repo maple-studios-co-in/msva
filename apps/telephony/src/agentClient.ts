@@ -3,7 +3,8 @@ import type { ChatStreamEvent, ConversationState } from "@msva/shared";
 // ---------------------------------------------------------------------------
 // Agent client
 //
-// Thin SSE consumer for the API's `/api/voice-agent/chat/stream` endpoint.
+// Thin SSE consumer for the API's service-only `/api/internal/agent/chat/stream`
+// endpoint, authenticated with INTERNAL_API_TOKEN.
 // Yielding `ChatStreamEvent`s lets the telephony pipeline pipe tokens
 // straight into the TTS adapter without buffering the full reply.
 // ---------------------------------------------------------------------------

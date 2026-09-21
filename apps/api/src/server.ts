@@ -7,7 +7,7 @@ import { z } from "zod";
 import { createSampleAnalytics } from "./sampleAnalytics.js";
 import { demoCalls, findDemoCall } from "./demoCalls.js";
 import { BULBUL_V3_VOICES, previewVoice } from "./sarvamPreview.js";
-import { getActiveModel, getLlmEnabled, handleChat, initialState, setLlmEnabled, streamChat } from "./voiceAgent.js";
+import { getActiveModel, getLlmEnabled, handleChat, initialState, setLlmEnabled } from "./voiceAgent.js";
 import { DEMO_FAILSAFE_AUDIO_PATH, demoFailsafeAvailable, loadDemoFailsafe } from "./demoFailsafe.js";
 import { databaseReady } from "@msva/db";
 import { adminRouter } from "./routes/admin.js";
@@ -74,34 +74,6 @@ app.post("/api/voice-agent/chat", async (request, response) => {
 
   const result = await handleChat(parsed.data.callId, parsed.data.message, parsed.data.state, parsed.data.sessionId);
   response.json(result);
-});
-
-// Server-Sent Events stream of ChatStreamEvent. The browser demo can switch
-// to this endpoint to get token-by-token replies; the telephony service
-// consumes the underlying `streamChat` generator directly (no HTTP hop).
-app.post("/api/voice-agent/chat/stream", async (request, response) => {
-  const parsed = chatSchema.safeParse(request.body);
-  if (!parsed.success) {
-    response.status(400).json({ error: "Invalid request", details: parsed.error.flatten() });
-    return;
-  }
-
-  response.setHeader("Content-Type", "text/event-stream");
-  response.setHeader("Cache-Control", "no-cache, no-transform");
-  response.setHeader("Connection", "keep-alive");
-  response.flushHeaders?.();
-
-  try {
-    for await (const event of streamChat(parsed.data.callId, parsed.data.message, parsed.data.state, parsed.data.sessionId)) {
-      response.write(`data: ${JSON.stringify(event)}\n\n`);
-    }
-  } catch (error) {
-    response.write(
-      `data: ${JSON.stringify({ type: "error", message: error instanceof Error ? error.message : "stream error" })}\n\n`
-    );
-  } finally {
-    response.end();
-  }
 });
 
 // ---------------------------------------------------------------------------

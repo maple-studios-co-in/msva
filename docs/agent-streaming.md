@@ -44,7 +44,7 @@ Guarantees:
                                                 streaming TTS)
 ```
 
-The browser demo today uses `handleChat()` via `POST /api/voice-agent/chat`. To get token-by-token replies in the dashboard, switch the client to consume `POST /api/voice-agent/chat/stream` with `EventSource` or `fetch` + a reader loop. The telephony service uses the SSE endpoint over HTTP (see `apps/telephony/src/agentClient.ts`) which keeps the two services independently deployable.
+The browser demo today uses `handleChat()` via `POST /api/voice-agent/chat`. The SSE stream is served only to services: the telephony service calls `POST /api/internal/agent/chat/stream` with the `x-internal-token` header (see `apps/telephony/src/agentClient.ts`), which keeps the two services independently deployable. There is no public stream route; token-by-token replies in the dashboard would need one behind the console's sign-in.
 
 ## Inside the generator
 

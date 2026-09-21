@@ -48,6 +48,29 @@ it("mounts the strict internal agent route before the legacy internal router", a
   }
 });
 
+it("has no public agent stream route", async () => {
+  const streamChat = vi.fn(async function* () { yield { type: "final", state: {}, source: "fallback" }; });
+  vi.doMock("./voiceAgent.js", () => ({
+    streamChat,
+    getActiveModel: () => "test",
+    getLlmEnabled: () => false,
+    handleChat: vi.fn(),
+    initialState: vi.fn(),
+    setLlmEnabled: vi.fn()
+  }));
+  const { createApp } = await import("./server.js");
+  const testServer = await serve(createApp());
+  try {
+    const response = await fetch(`${testServer.url}/api/voice-agent/chat/stream`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ callId: "call-123456", message: "hello" })
+    });
+    expect(response.status).toBe(404);
+    expect(streamChat).not.toHaveBeenCalled();
+  } finally {
+    await testServer.close();
+  }
+});
+
 it("fails closed through the mounted login route when production SMTP is unavailable", async () => {
   vi.stubEnv("NODE_ENV", "production");
   const { createApp } = await import("./server.js");

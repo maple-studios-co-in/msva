@@ -780,6 +780,9 @@ enum AssessmentJobState {
   SKIPPED
 }
 
+// Durable, provider-independent post-call assessment work.  The result itself
+// remains keyed in CallAssessment so manual and automatic callers share the
+// same fingerprint cache and attempt fencing.
 model AssessmentJob {
   id                String             @id @default(cuid())
   callId            String
@@ -803,6 +806,8 @@ model AssessmentJob {
   @@index([leaseExpiresAt])
 }
 
+// Exactly two rows are created lazily and leased with CAS updates. They are
+// shared by every API process, unlike an in-memory semaphore.
 model AssessmentWorkerSlot {
   slot           Int      @id
   ownerToken     String?
@@ -811,6 +816,7 @@ model AssessmentWorkerSlot {
   updatedAt      DateTime @updatedAt
 }
 
+// A singleton cursor keeps reconciliation bounded and rotating across calls.
 model AssessmentReconciliationCursor {
   id          String   @id
   endedAt     DateTime?

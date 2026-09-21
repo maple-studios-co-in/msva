@@ -1,3 +1,4 @@
+import addressparser from "nodemailer/lib/addressparser";
 import MailComposer from "nodemailer/lib/mail-composer";
 import SMTPConnection, { type SMTPConnectionOptions } from "nodemailer/lib/smtp-connection";
 
@@ -7,17 +8,28 @@ export type LoginCodeDelivery = {
 
 export type SmtpDeliverySettings = {
   connection: SMTPConnectionOptions;
+  /** The From header, which may carry a display name. */
   from: string;
+  /** The bare address the SMTP envelope uses. */
+  envelopeFrom: string;
   auth?: { user: string; pass: string };
   deadlineMs: number;
 };
+
+/** Exactly one mailbox, as a header value and its bare envelope address. */
+function parseSender(value: string): { header: string; address: string } | null {
+  const parsed = addressparser(value, { flatten: true });
+  const mailbox = parsed.length === 1 ? parsed[0] : undefined;
+  if (!mailbox?.address || !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(mailbox.address)) return null;
+  return { header: value, address: mailbox.address };
+}
 
 const DELIVERY_DEADLINE_MS = 20_000;
 
 /** Validated server-side SMTP settings, or null when sign-in mail is not configured. */
 export function smtpSettingsFromEnv(): SmtpDeliverySettings | null {
   const host = process.env.SMTP_HOST?.trim();
-  const from = process.env.SMTP_FROM?.trim();
+  const from = parseSender(process.env.SMTP_FROM?.trim() ?? "");
   const port = Number(process.env.SMTP_PORT);
   const tlsMode = process.env.SMTP_TLS_MODE;
   const user = process.env.SMTP_USER;
@@ -36,13 +48,16 @@ export function smtpSettingsFromEnv(): SmtpDeliverySettings | null {
       requireTLS: tlsMode === "starttls",
       ignoreTLS: false,
       opportunisticTLS: false,
+      // Explicit, so NODE_TLS_REJECT_UNAUTHORIZED=0 cannot switch certificate checks off.
+      tls: { rejectUnauthorized: true, minVersion: "TLSv1.2" },
       connectionTimeout: 10_000,
       greetingTimeout: 10_000,
       socketTimeout: 15_000,
       logger: false,
       debug: false
     },
-    from,
+    from: from.header,
+    envelopeFrom: from.address,
     auth: user && password ? { user, pass: password } : undefined,
     deadlineMs: DELIVERY_DEADLINE_MS
   };
@@ -82,7 +97,7 @@ export function smtpLoginCodeDelivery(settings: SmtpDeliverySettings): LoginCode
           fail = reject;
           timer = setTimeout(() => reject(new Error("SMTP delivery deadline exceeded")), settings.deadlineMs);
           connection.connect(() => {
-            const sendMessage = () => connection.send({ from: settings.from, to: [recipient] }, message, (error) => (error ? reject(error) : resolve()));
+            const sendMessage = () => connection.send({ from: settings.envelopeFrom, to: [recipient] }, message, (error) => (error ? reject(error) : resolve()));
             if (settings.auth) connection.login(settings.auth, (error) => (error ? reject(error) : sendMessage()));
             else sendMessage();
           });
@@ -94,7 +109,12 @@ export function smtpLoginCodeDelivery(settings: SmtpDeliverySettings): LoginCode
         // After a failure or the deadline, close() unpipes any unfinished message
         // and sends nothing further, so a late server reply cannot complete it.
         if (delivered) connection.quit();
-        else connection.close();
+        else {
+          connection.close();
+          // close() only half-closes a connected socket; release it outright.
+          const socket = connection._socket;
+          if (socket && !socket.destroyed) socket.destroy();
+        }
       }
     }
   };

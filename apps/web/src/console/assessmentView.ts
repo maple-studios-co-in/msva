@@ -39,6 +39,46 @@ export function assessmentView(response: CallAssessmentResponse, canAssess: bool
   }
 
   const automatic = response.automaticJob;
+  const automaticActive = Boolean(automatic && (automatic.state === "PENDING" || (automatic.state === "RUNNING" && !automatic.stalled)));
+  const assessment = response.assessment;
+  // A successful manual result is authoritative when current. A historical
+  // success must stay visibly stale even while the queue prepares its update.
+  if (assessment?.status === "SUCCEEDED") {
+    if (!response.current) {
+      return {
+        kind: "stale", headline: "Saved assessment is stale",
+        detail: `Transcript or recorded facts changed; assess again before relying on this result.${automaticActive ? " Automatic assessment queued to refresh it." : ""}`,
+        liveMessage: null, canRequest: canAssess, actionLabel: canAssess ? "Assess again" : null,
+        shouldPoll: automaticActive, showResult: assessment.result !== null
+      };
+    }
+    return {
+      kind: "succeeded", headline: "Assessment saved", detail: "Advisory AI assessment — review the transcript.",
+      liveMessage: null, canRequest: canAssess, actionLabel: canAssess ? "Assess again" : null, shouldPoll: false, showResult: assessment.result !== null
+    };
+  }
+  if (assessment?.status === "RUNNING") {
+    const leaseActive = assessment.leaseExpiresAt !== null && new Date(assessment.leaseExpiresAt).getTime() > now.getTime();
+    if (leaseActive) {
+      return {
+        kind: "running", headline: "Assessment running", detail: "A supervisor requested an advisory assessment of the saved transcript.",
+        liveMessage: "Assessment running. Results will appear here.", canRequest: false, actionLabel: null, shouldPoll: true, showResult: false
+      };
+    }
+    return {
+      kind: "interrupted", headline: "Assessment was interrupted", detail: "The assessment lease expired before a result was saved.",
+      liveMessage: null, canRequest: canAssess, actionLabel: canAssess ? "Try assessment again" : null,
+      shouldPoll: false, showResult: false
+    };
+  }
+  if (assessment?.status === "FAILED") {
+    const cooldown = assessmentWakeDelay(response, now);
+    return {
+      kind: "failed", headline: "Assessment could not be completed", detail: assessment.retryable ? "No advisory result was saved. Review the transcript and try again if needed." : "No advisory result was saved. Retry will be available shortly.",
+      liveMessage: null, canRequest: canAssess && assessment.retryable, actionLabel: canAssess && assessment.retryable ? "Try assessment again" : null,
+      shouldPoll: cooldown !== null, showResult: false
+    };
+  }
   if (automatic && (automatic.state === "PENDING" || (automatic.state === "RUNNING" && !automatic.stalled))) {
     const running = automatic.state === "RUNNING";
     return {
@@ -68,45 +108,13 @@ export function assessmentView(response: CallAssessmentResponse, canAssess: bool
       shouldPoll: false, showResult: savedResult
     };
   }
-  const assessment = response.assessment;
   if (!assessment) {
     return {
       kind: "ready", headline: "No assessment saved", detail: "Sends this saved transcript to TypeSafe AI for advisory assessment.",
       liveMessage: null, canRequest: canAssess, actionLabel: canAssess ? "Run assessment" : null, shouldPoll: false, showResult: false
     };
   }
-  if (assessment.status === "RUNNING") {
-    const leaseActive = assessment.leaseExpiresAt !== null && new Date(assessment.leaseExpiresAt).getTime() > now.getTime();
-    if (leaseActive) {
-      return {
-        kind: "running", headline: "Assessment running", detail: "A supervisor requested an advisory assessment of the saved transcript.",
-        liveMessage: "Assessment running. Results will appear here.", canRequest: false, actionLabel: null, shouldPoll: true, showResult: false
-      };
-    }
-    return {
-      kind: "interrupted", headline: "Assessment was interrupted", detail: "The assessment lease expired before a result was saved.",
-      liveMessage: null, canRequest: canAssess, actionLabel: canAssess ? "Try assessment again" : null,
-      shouldPoll: false, showResult: false
-    };
-  }
-  if (assessment.status === "FAILED") {
-    const cooldown = assessmentWakeDelay(response, now);
-    return {
-      kind: "failed", headline: "Assessment could not be completed", detail: assessment.retryable ? "No advisory result was saved. Review the transcript and try again if needed." : "No advisory result was saved. Retry will be available shortly.",
-      liveMessage: null, canRequest: canAssess && assessment.retryable, actionLabel: canAssess && assessment.retryable ? "Try assessment again" : null,
-      shouldPoll: cooldown !== null, showResult: false
-    };
-  }
-  if (!response.current) {
-    return {
-      kind: "stale", headline: "Saved assessment is stale", detail: "Transcript or recorded facts changed; assess again before relying on this result.",
-      liveMessage: null, canRequest: canAssess, actionLabel: canAssess ? "Assess again" : null, shouldPoll: false, showResult: assessment.result !== null
-    };
-  }
-  return {
-    kind: "succeeded", headline: "Assessment saved", detail: "Advisory AI assessment — review the transcript.",
-    liveMessage: null, canRequest: canAssess, actionLabel: canAssess ? "Assess again" : null, shouldPoll: false, showResult: assessment.result !== null
-  };
+  return { kind: "ready", headline: "No assessment saved", detail: "Sends this saved transcript to TypeSafe AI for advisory assessment.", liveMessage: null, canRequest: canAssess, actionLabel: canAssess ? "Run assessment" : null, shouldPoll: false, showResult: false };
 }
 
 export function assessmentWakeDelay(response: CallAssessmentResponse, now: Date): number | null {

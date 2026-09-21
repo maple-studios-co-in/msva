@@ -112,7 +112,7 @@ type ClaimedWork = {
   token: string;
 };
 
-async function claimWork(now: Date, excludedCallIds: string[] = []): Promise<ClaimedWork | null> {
+async function claimWorkOnce(eligibleAt: Date, now: Date, excludedCallIds: string[] = []): Promise<ClaimedWork | null> {
   const token = randomUUID();
   return prisma.$transaction(async (tx) => {
     await ensureSlots(tx);
@@ -135,7 +135,7 @@ async function claimWork(now: Date, excludedCallIds: string[] = []): Promise<Cla
     });
     if (slotClaimed.count !== 1) return null;
     const candidate = await tx.assessmentJob.findFirst({
-      where: { state: "PENDING", dueAt: { lte: now }, ...(excludedCallIds.length ? { callId: { notIn: excludedCallIds } } : {}) },
+      where: { state: "PENDING", dueAt: { lte: eligibleAt }, ...(excludedCallIds.length ? { callId: { notIn: excludedCallIds } } : {}) },
       orderBy: [{ dueAt: "asc" }, { createdAt: "asc" }]
     });
     if (!candidate) {
@@ -143,7 +143,7 @@ async function claimWork(now: Date, excludedCallIds: string[] = []): Promise<Cla
       return null;
     }
     const claimed = await tx.assessmentJob.updateMany({
-      where: { id: candidate.id, state: "PENDING", generation: candidate.generation, dueAt: { lte: now } },
+      where: { id: candidate.id, state: "PENDING", generation: candidate.generation, dueAt: { lte: eligibleAt } },
       data: { state: "RUNNING", claimedGeneration: candidate.generation, leaseToken: token, leaseExpiresAt: new Date(now.getTime() + LEASE_MS), reason: null }
     });
     if (claimed.count !== 1) {
@@ -152,7 +152,20 @@ async function claimWork(now: Date, excludedCallIds: string[] = []): Promise<Cla
     }
     await tx.assessmentWorkerSlot.updateMany({ where: { slot: free.slot, ownerToken: token }, data: { jobId: candidate.id } });
     return { job: { ...candidate, leaseToken: token, leaseExpiresAt: new Date(now.getTime() + LEASE_MS) }, slot: free.slot, token };
-  }, { isolationLevel: "Serializable" });
+  });
+}
+
+async function claimWork(eligibleAt: Date, now: Date, excludedCallIds: string[] = []): Promise<ClaimedWork | null> {
+  // Serializable claims may conflict when independent workers race for the
+  // same slot. Retry the short transaction; no provider request has started.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await claimWorkOnce(eligibleAt, new Date(), excludedCallIds);
+    } catch (error) {
+      if (attempt === 2) throw error;
+    }
+  }
+  return null;
 }
 
 async function releaseWork(work: ClaimedWork, data: {
@@ -200,16 +213,50 @@ async function releaseWork(work: ClaimedWork, data: {
   });
 }
 
-async function reserveProviderAttempt(work: ClaimedWork): Promise<number | null> {
-  const reserved = await prisma.assessmentJob.updateMany({
-    where: {
-      id: work.job.id, state: "RUNNING", leaseToken: work.token,
-      claimedGeneration: work.job.generation, generation: work.job.generation,
-      attempts: { lt: MAX_ATTEMPTS }
-    },
-    data: { attempts: { increment: 1 } }
+async function reserveProviderAttempt(work: ClaimedWork, expectedInputHash: string): Promise<number | "STALE" | null> {
+  return prisma.$transaction(async (tx) => {
+    const now = new Date();
+    const call = await readAssessmentSnapshot(tx, work.job.callId);
+    if (!call) return "STALE";
+    const snapshot = buildAssessmentSnapshot(call);
+    if (!snapshot.eligibility.eligible || snapshot.inputHash !== expectedInputHash) return "STALE";
+    const expiresAt = new Date(now.getTime() + LEASE_MS);
+    const slot = await tx.assessmentWorkerSlot.updateMany({
+      where: { slot: work.slot, ownerToken: work.token, jobId: work.job.id, leaseExpiresAt: { gt: now } },
+      data: { leaseExpiresAt: expiresAt }
+    });
+    if (slot.count !== 1) return null;
+    const reserved = await tx.assessmentJob.updateMany({
+      where: {
+        id: work.job.id, state: "RUNNING", leaseToken: work.token,
+        claimedGeneration: work.job.generation, generation: work.job.generation,
+        leaseExpiresAt: { gt: now }, attempts: { lt: MAX_ATTEMPTS }
+      },
+      data: { attempts: { increment: 1 }, leaseExpiresAt: expiresAt }
+    });
+    return reserved.count === 1 ? work.job.attempts + 1 : null;
   });
-  return reserved.count === 1 ? work.job.attempts + 1 : null;
+}
+
+async function renewLaunchLease(work: ClaimedWork, expectedInputHash: string): Promise<boolean> {
+  return prisma.$transaction(async (tx) => {
+    const now = new Date();
+    const call = await readAssessmentSnapshot(tx, work.job.callId);
+    if (!call) return false;
+    const snapshot = buildAssessmentSnapshot(call);
+    if (!snapshot.eligibility.eligible || snapshot.inputHash !== expectedInputHash) return false;
+    const expiresAt = new Date(now.getTime() + LEASE_MS);
+    const job = await tx.assessmentJob.updateMany({
+      where: { id: work.job.id, state: "RUNNING", leaseToken: work.token, claimedGeneration: work.job.generation, generation: work.job.generation, leaseExpiresAt: { gt: now } },
+      data: { leaseExpiresAt: expiresAt }
+    });
+    if (job.count !== 1) return false;
+    const slot = await tx.assessmentWorkerSlot.updateMany({
+      where: { slot: work.slot, ownerToken: work.token, jobId: work.job.id, leaseExpiresAt: { gt: now } },
+      data: { leaseExpiresAt: expiresAt }
+    });
+    return slot.count === 1;
+  });
 }
 
 async function processWork(work: ClaimedWork, now: Date): Promise<void> {
@@ -218,10 +265,11 @@ async function processWork(work: ClaimedWork, now: Date): Promise<void> {
   const call = await readAssessmentSnapshot(prisma, work.job.callId);
   const snapshot = isEligibleForAutomatic(call, automatic.startAt);
   if (!snapshot || !snapshot.inputHash) return releaseWork(work, { state: "FAILED", reason: "NO_LONGER_ELIGIBLE" });
+  const inputHash = snapshot.inputHash;
   if (work.job.lastInputHash && work.job.lastInputHash !== snapshot.inputHash) {
     return releaseWork(work, { state: "PENDING", dueAt: new Date(now.getTime() + SETTLE_MS), replaceInputHash: snapshot.inputHash });
   }
-  const existing = await prisma.callAssessment.findUnique({ where: { callId_inputHash_requestedModel_rubricVersion: { callId: work.job.callId, inputHash: snapshot.inputHash, requestedModel: "jev-1.13.0", rubricVersion: "msva-post-call-v2" } } });
+  const existing = await prisma.callAssessment.findUnique({ where: { callId_inputHash_requestedModel_rubricVersion: { callId: work.job.callId, inputHash, requestedModel: "jev-1.13.0", rubricVersion: "msva-post-call-v2" } } });
   if (existing?.status === "SUCCEEDED") return releaseWork(work, { state: "SUCCEEDED", reason: null });
   if (existing?.status === "RUNNING" && existing.leaseExpiresAt && existing.leaseExpiresAt > now) {
     return releaseWork(work, { state: "PENDING", dueAt: existing.leaseExpiresAt, reason: "ASSESSMENT_LEASE_ACTIVE" });
@@ -229,9 +277,13 @@ async function processWork(work: ClaimedWork, now: Date): Promise<void> {
   // Reserve before the request can reach the provider. A crash after this
   // point is conservatively charged to the immutable snapshot's three-attempt
   // budget, so restart recovery cannot create an unbounded provider loop.
-  const attempt = await reserveProviderAttempt(work);
+  const attempt = await reserveProviderAttempt(work, inputHash);
+  if (attempt === "STALE") return releaseWork(work, { state: "PENDING", dueAt: new Date(Date.now() + SETTLE_MS), replaceInputHash: snapshot.inputHash });
   if (attempt === null) return releaseWork(work, { state: "FAILED", reason: "MAX_ATTEMPTS" });
-  const result = await requestCallAssessment(work.job.callId, null, { trigger: "AUTO_POST_CALL", expectedInputHash: snapshot.inputHash });
+  const result = await requestCallAssessment(work.job.callId, null, {
+    trigger: "AUTO_POST_CALL", expectedInputHash: inputHash,
+    beforeInvoke: () => renewLaunchLease(work, inputHash)
+  });
   if (result.stale) return releaseWork(work, { state: "PENDING", dueAt: new Date(now.getTime() + SETTLE_MS), reason: null, releaseReservation: true });
   if (result.pending) {
     const lease = result.response?.assessment?.leaseExpiresAt;
@@ -289,11 +341,13 @@ export async function runAssessmentTick(now = new Date()): Promise<{ claimed: nu
   for (let index = 0; index < 2; index++) {
     let work: ClaimedWork | null = null;
     try {
-      work = await claimWork(now, claimedCallIds);
+      // Reconciliation can be slow. Never derive a lease from the tick's
+      // start timestamp; each claim gets a fresh wall-clock lease.
+      work = await claimWork(now, new Date(), claimedCallIds);
       if (!work) break;
       claimed++;
       claimedCallIds.push(work.job.callId);
-      await processWork(work, now);
+      await processWork(work, new Date());
       completed++;
     } catch {
       if (work) await releaseWork(work, { state: "PENDING", dueAt: new Date(now.getTime() + 30_000), reason: "PROVIDER_UNAVAILABLE" });

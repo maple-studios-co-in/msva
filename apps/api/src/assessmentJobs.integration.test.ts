@@ -190,4 +190,5 @@ describe("automatic post-call queue", () => {
 
     expect(await db.assessmentJob.findUniqueOrThrow({ where: { callId_kind: { callId, kind: "POST_CALL" } } })).toMatchObject({ state: "SKIPPED", reason: "QUEUE_CAPACITY" });
   });
+
 });

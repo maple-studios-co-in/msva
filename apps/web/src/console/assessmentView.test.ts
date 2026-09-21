@@ -53,6 +53,23 @@ describe("assessmentView", () => {
     expect(assessmentView(response, true, new Date("2026-09-21T10:01:00.000Z"))).toMatchObject({ kind: "interrupted", shouldPoll: false, canRequest: true, actionLabel: "Run assessment" });
   });
 
+  it("keeps a historical result visibly stale while its replacement is queued", () => {
+    const response = {
+      ...base, assessment: succeeded, current: false,
+      automaticJob: { state: "PENDING" as const, dueAt: "2026-09-21T10:00:10.000Z", attempts: 0, reason: null, leaseExpiresAt: null, stalled: false }
+    };
+    expect(assessmentView(response, true, new Date())).toMatchObject({ kind: "stale", shouldPoll: true, showResult: true, liveMessage: null });
+    expect(assessmentView(response, true, new Date()).detail).toContain("Automatic assessment queued");
+  });
+
+  it("keeps a current manual success ahead of a terminal automatic job", () => {
+    const response = {
+      ...base, assessment: succeeded, current: true,
+      automaticJob: { state: "FAILED" as const, dueAt: "2026-09-21T10:00:10.000Z", attempts: 1, reason: "AUTH_FAILED", leaseExpiresAt: null, stalled: false }
+    };
+    expect(assessmentView(response, true, new Date())).toMatchObject({ kind: "succeeded", showResult: true, shouldPoll: false });
+  });
+
   it("shows a polite live status and keeps polling during an unexpired assessment", () => {
     const view = assessmentView({
       ...base,

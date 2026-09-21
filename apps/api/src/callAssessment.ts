@@ -433,6 +433,8 @@ async function finishAttempt(record: AssessmentRecord, result: ProviderResult | 
 export type AssessmentInvocationOptions = {
   trigger: "MANUAL" | "AUTO_POST_CALL";
   expectedInputHash?: string;
+  // Internal automatic-worker fence, never derived from HTTP input.
+  beforeInvoke?: () => Promise<boolean>;
 };
 
 export type AssessmentRequestResult = {
@@ -461,6 +463,20 @@ export async function requestCallAssessment(
   }
   const claim = await claimAssessment(call, snapshot, requestedById, options.trigger);
   if (!claim.invoke) return { found: true, unavailable: false, pending: claim.record.status === "RUNNING", invoked: false, response: { capability: capabilityFor(config), eligibility: snapshot.eligibility, assessment: toCallAssessmentDto(claim.record), current: claim.record.inputHash === snapshot.inputHash } };
+  // Claiming creates an await boundary. Re-read before launch so a late final
+  // turn/ticket cannot send a snapshot that is already known to be stale.
+  if (options.expectedInputHash) {
+    const latestCall = await callSnapshot(callId);
+    const latestSnapshot = latestCall ? buildAssessmentSnapshot(latestCall) : null;
+    if (!latestSnapshot?.eligibility.eligible || latestSnapshot.inputHash !== options.expectedInputHash) {
+      await finishAttempt(claim.record, null, "INPUT_CHANGED");
+      return { found: Boolean(latestCall), unavailable: false, pending: false, stale: true, response: latestSnapshot ? { capability: capabilityFor(config), eligibility: latestSnapshot.eligibility, assessment: null, current: false } : undefined };
+    }
+  }
+  if (options.beforeInvoke && !await options.beforeInvoke()) {
+    await finishAttempt(claim.record, null, "INPUT_CHANGED");
+    return { found: true, unavailable: false, pending: false, stale: true, response: { capability: capabilityFor(config), eligibility: snapshot.eligibility, assessment: null, current: false } };
+  }
   try {
     const result = await invokeJev(snapshot.input, config);
     await finishAttempt(claim.record, result, null);

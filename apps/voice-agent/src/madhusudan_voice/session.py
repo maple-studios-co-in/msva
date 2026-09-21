@@ -244,6 +244,7 @@ class MadhusudanAgent(Agent):
             # Without a durable intent a later retry could duplicate the effect.
             guard.fail_closed("FATAL")
             raise ToolError("The request cannot be recorded on this call.") from error
+        guard.writer.tool_intents.add(invocation_id)
         if committed is not None:
             return committed
         try:

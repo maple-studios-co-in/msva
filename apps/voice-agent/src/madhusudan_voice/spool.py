@@ -9,7 +9,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 from uuid import uuid4
 
 from cryptography.fernet import Fernet, InvalidToken, MultiFernet
@@ -362,10 +362,10 @@ class EventSpool:
             db.execute("INSERT INTO tool_intent(call_id,agent_epoch,logical_id,name,arguments,invocation_id,state,created_at) VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?)", (call_id, agent_epoch, logical_id, name, body, invocation_id, time.time()))
             return invocation_id, None
 
-    def drop_tool_intents(self, call_id: str, agent_epoch: int) -> int:
-        """Releases a finished call's tool intents: it can make no further tool call."""
+    def drop_tool_intents(self, invocation_ids: Iterable[str]) -> int:
+        """Releases the tool intents a finished call recorded: it can make no further tool call."""
         with self._write() as db:
-            return db.execute("DELETE FROM tool_intent WHERE call_id=? AND agent_epoch=?", (call_id, agent_epoch)).rowcount
+            return sum(db.execute("DELETE FROM tool_intent WHERE invocation_id=?", (invocation_id,)).rowcount for invocation_id in invocation_ids)
 
     def complete_tool_intent(self, invocation_id: str, receipt: dict[str, Any]) -> None:
         with self._write() as db:

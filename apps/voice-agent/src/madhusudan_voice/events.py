@@ -19,6 +19,9 @@ class EventWriter:
         self.agent_participant_id = agent_participant_id
         # Set once an event could not be stored: the stream has a gap from then on.
         self.evidence_lost = False
+        # Invocation IDs of the tool intents this call recorded. Another job can share the
+        # call and epoch (a re-claim returns the same lease), so only these are released.
+        self.tool_intents: set[str] = set()
 
     async def emit(self, event_type: str, payload: dict[str, Any]) -> str:
         return self.append(event_type, payload)

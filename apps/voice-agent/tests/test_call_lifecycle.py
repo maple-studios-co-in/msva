@@ -128,7 +128,7 @@ def test_the_worker_starts_only_with_a_replay_key_that_reads_its_spool(tmp_path,
 
 
 @pytest.mark.asyncio
-async def test_a_finished_call_releases_its_tool_intents(tmp_path):
+async def test_a_finished_call_releases_only_the_tool_intents_it_recorded(tmp_path):
     from madhusudan_voice.api import Lease, VoiceApiClient
     from madhusudan_voice.events import EventWriter
     from madhusudan_voice.main import CallRuntime
@@ -138,11 +138,14 @@ async def test_a_finished_call_releases_its_tool_intents(tmp_path):
         return EventSpool(tmp_path / "spool.sqlite3", max_events=100, max_bytes=1_000_000, replay_key=KEY)
 
     spool = open_spool()
-    for call_id in ("call-1", "call-2"):
-        spool.tool_intent(call_id=call_id, agent_epoch=1, logical_id="toolu_A", name="create_business_request", arguments={"journey": "SALES_LEAD"})
+    intent = {"call_id": "call-1", "agent_epoch": 1, "name": "create_business_request", "arguments": {"journey": "SALES_LEAD"}}
+    ours, _ = spool.tool_intent(logical_id="toolu_A", **intent)
+    # Another job holding the same call and epoch (a re-claim returns the same lease).
+    theirs, _ = spool.tool_intent(logical_id="toolu_B", **intent)
     client = VoiceApiClient(BASE, worker_credential="worker-token")
-    runtime = CallRuntime(client, spool, writer=EventWriter(spool, client, Lease("call-1", 1, "2030-01-01T00:00:00Z", "lease-token")))
-    await runtime.finalize(1)
+    writer = EventWriter(spool, client, Lease("call-1", 1, "2030-01-01T00:00:00Z", "lease-token"))
+    writer.tool_intents.add(ours)
+    await CallRuntime(client, spool, writer=writer).finalize(1)
     reopened = open_spool()
-    assert reopened._connection.execute("SELECT call_id FROM tool_intent").fetchall() == [("call-2",)]
+    assert reopened._connection.execute("SELECT invocation_id FROM tool_intent").fetchall() == [(theirs,)]
     reopened.close()

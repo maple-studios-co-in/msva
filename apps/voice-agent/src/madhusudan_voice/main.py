@@ -99,11 +99,10 @@ class CallRuntime:
             logger.warning("voice call finalization failed: %s", type(error).__name__)
         finally:
             if self.writer is not None:
-                lease = self.writer.lease
                 try:
                     # Its intents only kept tool calls idempotent during the call; now they
                     # would hold spool room that live calls need.
-                    self.spool.drop_tool_intents(lease.call_id, lease.agent_epoch)
+                    self.spool.drop_tool_intents(self.writer.tool_intents)
                 except Exception as error:  # noqa: BLE001 - closing below must still happen
                     logger.warning("voice tool intents were not released: %s", type(error).__name__)
             self.spool.close()

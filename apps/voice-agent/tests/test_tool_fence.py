@@ -105,6 +105,8 @@ async def test_a_definite_rejection_goes_back_to_the_model_without_ending_the_ca
     assert len(api.tool_posts) == 1
     outputs = [item for item in session.history.items if getattr(item, "type", None) == "function_call_output"]
     assert outputs and outputs[0].is_error
+    # The call's own intent is remembered, so finishing the call releases exactly it.
+    assert guard.writer.tool_intents == {api.tool_posts[0]["invocationId"]}
     await guard.stop()
     await session.aclose()
 

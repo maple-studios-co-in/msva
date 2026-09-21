@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { PrismaClient } from "@msva/db";
-import { claimVoiceLease, createVoiceSession, prepareBrowserAdmission, recordVoiceDispatch, recordVoiceEvent, renewVoiceLease, revokeAdmissions, VoiceError, voiceContext } from "./voiceService.js";
+import { claimVoiceLease, createVoiceSession, invokeVoiceTool, prepareBrowserAdmission, recordVoiceDispatch, recordVoiceEvent, renewVoiceLease, revokeAdmissions, VoiceError, voiceContext } from "./voiceService.js";
 
 const databaseUrl = process.env.MSVA_VOICE_TEST_DATABASE_URL;
 if (!databaseUrl) throw new Error("MSVA_VOICE_TEST_DATABASE_URL is required");
@@ -37,5 +37,12 @@ describe("voice session persistence", () => {
   });
   it("does not disclose context after an expired lease", async () => {
     const item = await session(); const row = await db.voiceSession.findUniqueOrThrow({ where: { id: item.id } }); const lease = await claimVoiceLease({ callId: item.callId, roomName: row.roomName, dispatchId: "dispatch", participantId: "agent" }, worker, db); await db.voiceLease.updateMany({ where: { sessionId: item.id }, data: { expiresAt: new Date(Date.now() - 1) } }); await expect(voiceContext(item.callId, lease.token, db)).rejects.toMatchObject({ code: "LEASE_EXPIRED" } satisfies Partial<VoiceError>);
+  });
+  it("stores a tool intent and returns the same receipt after a lost-response retry", async () => {
+    const item = await session(); const row = await db.voiceSession.findUniqueOrThrow({ where: { id: item.id } }); const lease = await claimVoiceLease({ callId: item.callId, roomName: row.roomName, dispatchId: "dispatch", participantId: "agent" }, worker, db);
+    const arguments_ = { journey: "CONSUMER_COMPLAINT", callerConfirmation: "NEW", fields: { product: "Oil", purchaseArea: "Indore", issueCategory: "quality", description: "Leaking", productAvailable: true }, queue: { territory: "MP", language: "hi" } };
+    const first = await invokeVoiceTool({ callId: item.callId, invocationId: "tool-1", agentEpoch: 1, name: "create_business_request", arguments: arguments_ }, lease.token, db);
+    const replay = await invokeVoiceTool({ callId: item.callId, invocationId: "tool-1", agentEpoch: 1, name: "create_business_request", arguments: arguments_ }, lease.token, db);
+    expect(replay).toEqual(first); expect(await db.toolInvocation.findFirstOrThrow({ where: { sessionId: item.id } })).toMatchObject({ status: "COMMITTED" });
   });
 });

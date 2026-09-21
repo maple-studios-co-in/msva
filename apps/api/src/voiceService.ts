@@ -131,13 +131,13 @@ export async function invokeVoiceTool(input: { callId: string; invocationId: str
   if (!input.arguments || typeof input.arguments !== "object" || Array.isArray(input.arguments)) throw new VoiceError(400, "INVALID_TOOL_ARGUMENTS");
   const command = { ...(input.arguments as Record<string, unknown>), callId: input.callId, requestId: `voice:${input.callId}:${input.invocationId}` };
   const parsed = CreateRequestInputSchema.safeParse(command); if (!parsed.success) throw new VoiceError(400, "INVALID_TOOL_ARGUMENTS");
-  const result = await createBusinessRequest(db, parsed.data);
   return serializable(db, async (tx) => {
     const session = await lockedSession(tx, input.callId); const lease = activeLease(session, token, now);
     if (lease.agentEpoch !== input.agentEpoch || session.state !== "ACTIVE" || session.ownershipMode !== "AI") throw new VoiceError(409, "LEASE_STALE");
     const existing = await tx.toolInvocation.findUniqueOrThrow({ where: { sessionId_invocationId: { sessionId: session.id, invocationId: input.invocationId } } });
     if (existing.canonicalPayload !== prepared.canonicalPayload) throw new VoiceError(409, "INVOCATION_CONFLICT");
     if (existing.status === "COMMITTED" && existing.result) return existing.result as unknown as CreateRequestResult;
+    const result = await createBusinessRequest(tx, parsed.data);
     await tx.toolInvocation.update({ where: { id: existing.id }, data: { status: "COMMITTED", result: result as unknown as Prisma.InputJsonValue } });
     return result;
   });

@@ -233,6 +233,9 @@ async function issueLoginCode(email: string, delivery: LoginCodeDelivery): Promi
   if (!hash) return null;
   const admitted = await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"auth-delivery-cap"}))`;
+    // The user's row before any code rows, the order verification uses, so a
+    // request and a verification for the same user cannot deadlock.
+    await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${user.id} FOR UPDATE`;
     const now = new Date();
     // A crashed process leaves sends behind; their lease bounds how long they
     // hold capacity, and a code whose send never finished never becomes usable.
@@ -240,7 +243,6 @@ async function issueLoginCode(email: string, delivery: LoginCodeDelivery): Promi
     if (await tx.loginCode.count({ where: { deliveryLeaseExpiresAt: { gt: now } } }) >= MAX_PENDING_DELIVERIES) return false;
     // Old codes go in bounded batches, chosen once (see reserveRates).
     await tx.$executeRaw`WITH doomed AS MATERIALIZED (SELECT "id" FROM "LoginCode" WHERE "createdAt" < ${new Date(now.getTime() - CODE_RETENTION_MS)} AND "deliveryLeaseExpiresAt" IS NULL LIMIT ${CODE_PURGE_BATCH} FOR UPDATE SKIP LOCKED) DELETE FROM "LoginCode" AS code USING doomed WHERE code."id" = doomed."id"`;
-    await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${user.id} FOR UPDATE`;
     // Older codes still pending can no longer be activated; their sends keep their slots.
     await tx.loginCode.updateMany({ where: { userId: user.id, usedAt: null, deliveryState: "PENDING" }, data: { deliveryState: "FAILED" } });
     await tx.loginCode.create({ data: { id, userId: user.id, codeHash: hash, expiresAt, deliveryLeaseExpiresAt: new Date(now.getTime() + DELIVERY_LEASE_MS) } });

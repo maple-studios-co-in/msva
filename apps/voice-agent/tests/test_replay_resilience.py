@@ -167,20 +167,25 @@ async def test_a_companion_whose_passes_fail_stops_beating(tmp_path):
     assert not heartbeat.exists()
 
 
-def test_live_evidence_is_retried_every_couple_of_seconds_and_history_backs_off(tmp_path):
+def test_retries_follow_how_long_a_credential_has_been_expired(tmp_path):
+    from datetime import UTC, datetime
+
     from madhusudan_voice.spool import LIVE_RETRY_SECONDS
 
-    spool = spool_at(tmp_path)
-    queue(spool, "call-live", 1)
-    spool.enqueue(event_id="call-old-1", call_id="call-old", payload={"eventId": "call-old-1", "sourceSequence": 1, "type": "agent.ready"},
-        credential=ReplayCredential("call-old", 1, "token-old", "2020-01-01T00:00:00Z"))
     now = time.time()
-    for _ in range(6):
-        spool.retry("call-live-1", now=now)
-        spool.retry("call-old-1", now=now)
+    stamp = lambda seconds: datetime.fromtimestamp(now + seconds, UTC).isoformat()
+    spool = spool_at(tmp_path)
+    for call_id, expires_at in (("call-live", stamp(60)), ("call-recent", stamp(-10)), ("call-old", "2020-01-01T00:00:00Z")):
+        spool.enqueue(event_id=f"{call_id}-1", call_id=call_id, payload={"eventId": f"{call_id}-1", "sourceSequence": 1, "type": "agent.ready"},
+            credential=ReplayCredential(call_id, 1, f"token-{call_id}", expires_at))
+        for _ in range(6):
+            spool.retry(f"{call_id}-1", now=now)
     due = dict(spool._connection.execute("SELECT event_id, next_attempt_at FROM event_spool").fetchall())
+    # A live call is retried every couple of seconds; evidence caught in an outage waits
+    # about as long as its credential has been expired, however many attempts it had.
     assert due["call-live-1"] == now + LIVE_RETRY_SECONDS
-    assert due["call-old-1"] == now + 2 ** 6
+    assert due["call-recent-1"] == now + 10
+    assert due["call-old-1"] == now + 300
 
 
 @pytest.mark.asyncio

@@ -29,12 +29,12 @@ RETENTION_SECONDS = REPLAY_WINDOW_SECONDS + MAX_CALL_SECONDS
 LIVE_RETRY_SECONDS = 2
 
 
-def _expired(expires_at: str, now: float) -> bool:
-    """Whether a credential's expiry (ISO 8601) has passed; an unreadable one counts as passed."""
+def _expiry(expires_at: str) -> float | None:
+    """A credential's expiry (ISO 8601) in wall-clock seconds, or None when unreadable."""
     try:
-        return datetime.fromisoformat(expires_at).timestamp() <= now
+        return datetime.fromisoformat(expires_at).timestamp()
     except (TypeError, ValueError):
-        return True
+        return None
 
 
 class SpoolCapacityError(RuntimeError):
@@ -371,9 +371,15 @@ class EventSpool:
             row = db.execute("SELECT attempts, expires_at FROM event_spool WHERE event_id=?", (event_id,)).fetchone()
             if row:
                 attempts = int(row[0]) + 1
-                delay = min(300, 2 ** min(attempts, 8))
-                if not _expired(row[1], now):
-                    delay = min(delay, LIVE_RETRY_SECONDS)
+                expiry = _expiry(row[1])
+                if expiry is None:
+                    delay = float(min(300, 2 ** min(attempts, 8)))
+                elif expiry > now:
+                    delay = float(LIVE_RETRY_SECONDS)
+                else:
+                    # Settled history backs off with the time since its credential expired,
+                    # so evidence caught in an outage goes out soon after the API is back.
+                    delay = min(300.0, max(float(LIVE_RETRY_SECONDS), now - expiry))
                 db.execute("UPDATE event_spool SET attempts=?, next_attempt_at=? WHERE event_id=?", (attempts, now + delay, event_id))
 
     def prune(self, *, now: float | None = None, retention_seconds: float = RETENTION_SECONDS, batch: int = 1000) -> dict[str, int]:

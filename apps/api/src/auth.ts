@@ -1,4 +1,5 @@
 import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
+import { BlockList, isIPv4, isIPv6 } from "node:net";
 import type express from "express";
 import { prisma, type User, type UserRole } from "@msva/db";
 import { createSmtpLoginCodeDelivery, type LoginCodeDelivery } from "./smtp.js";
@@ -53,13 +54,66 @@ let deliveryOverride: LoginCodeDelivery | null | undefined;
 export const setLoginCodeDeliveryForTest = (delivery: LoginCodeDelivery | null | undefined) => { deliveryOverride = delivery; };
 const loginCodeDelivery = () => deliveryOverride === undefined ? createSmtpLoginCodeDelivery() : deliveryOverride;
 
+const MAX_FORWARDED_HEADER = 512;
+const MAX_FORWARDED_HOPS = 16;
+
+/** One spelling per address, so equivalent IPv4/IPv6 forms share a rate bucket. */
+export function canonicalIp(value: string): string | null {
+  const raw = value.trim();
+  if (!raw || raw.length > 64 || raw.includes("%")) return null;
+  if (isIPv4(raw)) return raw;
+  if (!isIPv6(raw)) return null;
+  let host: string;
+  try {
+    host = new URL(`http://[${raw}]`).hostname.slice(1, -1);
+  } catch {
+    return null;
+  }
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(host);
+  if (!mapped) return host;
+  const high = Number.parseInt(mapped[1]!, 16);
+  const low = Number.parseInt(mapped[2]!, 16);
+  return `${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`;
+}
+
+let trustedProxyCache: { source: string; list: BlockList } | undefined;
+/** TRUSTED_PROXY_ADDRESSES lists proxy addresses or CIDRs; invalid entries grant no trust. */
+function trustedProxies(): BlockList {
+  const source = process.env.TRUSTED_PROXY_ADDRESSES ?? "";
+  if (trustedProxyCache?.source === source) return trustedProxyCache.list;
+  const list = new BlockList();
+  for (const entry of source.split(",").map((value) => value.trim()).filter(Boolean)) {
+    const [address = "", prefix] = entry.split("/");
+    const canonical = canonicalIp(address);
+    if (!canonical) continue;
+    const family = isIPv4(canonical) ? "ipv4" : "ipv6";
+    if (prefix === undefined) list.addAddress(canonical, family);
+    else if (/^\d{1,3}$/.test(prefix) && Number(prefix) <= (family === "ipv4" ? 32 : 128)) list.addSubnet(canonical, Number(prefix), family);
+  }
+  trustedProxyCache = { source, list };
+  return list;
+}
+const isTrustedProxy = (address: string) => trustedProxies().check(address, isIPv4(address) ? "ipv4" : "ipv6");
+
+/**
+ * Client address for throttling. Forwarded headers count only when the socket
+ * peer is a trusted proxy; the chain is walked from the nearest hop and the
+ * first untrusted address wins, so a client-supplied prefix cannot choose it.
+ * Anything malformed falls back to the peer, sharing the proxy's bucket.
+ */
 export function trustedNetworkFromRequest(request: express.Request): AuthNetworkContext {
-  const socketAddress = request.socket.remoteAddress?.replace(/^::ffff:/, "") ?? "unknown";
-  const trusted = new Set((process.env.TRUSTED_PROXY_ADDRESSES ?? "").split(",").map((value) => value.trim()).filter(Boolean));
+  const peer = canonicalIp(request.socket.remoteAddress ?? "");
+  if (!peer) return { address: "unknown" };
   const forwarded = request.get("x-forwarded-for");
-  if (!trusted.has(socketAddress) || !forwarded || forwarded.length > 512) return { address: socketAddress };
-  const candidate = forwarded.split(",")[0]?.trim().replace(/^::ffff:/, "");
-  return candidate && /^[0-9a-f:.]+$/i.test(candidate) ? { address: candidate } : { address: socketAddress };
+  if (!forwarded || forwarded.length > MAX_FORWARDED_HEADER || !isTrustedProxy(peer)) return { address: peer };
+  const hops = forwarded.split(",");
+  if (hops.length > MAX_FORWARDED_HOPS) return { address: peer };
+  for (let index = hops.length - 1; index >= 0; index -= 1) {
+    const hop = canonicalIp(hops[index]!);
+    if (!hop) return { address: peer };
+    if (!isTrustedProxy(hop)) return { address: hop };
+  }
+  return { address: peer };
 }
 
 const windowStart = (now: Date, ms: number) => new Date(Math.floor(now.getTime() / ms) * ms);

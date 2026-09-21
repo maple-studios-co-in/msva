@@ -46,10 +46,25 @@ const wss = new WebSocketServer({ noServer: true });
 
 const REFUSALS = { 401: "Unauthorized", 403: "Forbidden", 503: "Service Unavailable" } as const;
 
+/**
+ * The request target's path and query, or null when it does not parse. It is read
+ * against a fixed base, never the client's Host header, and never throws: this runs
+ * for every upgrade, before any check, where an exception would stop the service.
+ */
+function requestTarget(url: string | undefined): URL | null {
+  if (url === undefined) return null;
+  try {
+    return new URL(url, "http://telephony");
+  } catch {
+    return null;
+  }
+}
+
 server.on("upgrade", (request, socket, head) => {
   const { url } = request;
-  const browser = url !== undefined && new URL(url, "http://telephony").pathname === "/browser";
-  if (!url || !(url.startsWith("/voice") || browser)) {
+  const target = requestTarget(url);
+  const browser = target?.pathname === "/browser";
+  if (!url || !target || !(url.startsWith("/voice") || browser)) {
     socket.destroy();
     return;
   }
@@ -76,7 +91,11 @@ server.on("upgrade", (request, socket, head) => {
 });
 
 wss.on("connection", (ws, request) => {
-  const url = new URL(request.url ?? "/voice", `http://${request.headers.host}`);
+  const url = requestTarget(request.url);
+  if (!url) {
+    ws.terminate();
+    return;
+  }
 
   // -------------------------------------------------------------------------
   // Browser call transport (/browser). The web app's "Live Call" screen

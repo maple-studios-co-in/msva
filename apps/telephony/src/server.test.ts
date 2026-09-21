@@ -1,4 +1,4 @@
-import type { AddressInfo } from "node:net";
+import net, { type AddressInfo } from "node:net";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 
@@ -115,3 +115,38 @@ it("leaves the carrier's media stream to the carrier", async () => {
     await service.close();
   }
 });
+
+
+/** Sends a raw upgrade request and resolves with the status line of the answer, or "" when the socket is just closed. */
+function rawUpgrade(url: string, target: string, host: string): Promise<string> {
+  const { port } = new URL(url);
+  return new Promise((resolve) => {
+    let received = "";
+    const socket = net.connect(Number(port), "127.0.0.1", () => {
+      socket.write(`GET ${target} HTTP/1.1\r\nHost: ${host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n`
+        + "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n");
+    });
+    socket.on("data", (chunk) => {
+      received += chunk.toString("latin1");
+      if (received.includes("\r\n\r\n")) socket.destroy();
+    });
+    socket.on("error", () => undefined);
+    socket.on("close", () => resolve(received.split("\r\n")[0] ?? ""));
+  });
+}
+
+it("survives upgrade requests whose target or host does not parse", async () => {
+  fakeApi(() => Response.json({ error: "Sign in required" }, { status: 401 }));
+  const service = await telephony();
+  try {
+    for (const target of ["//[/browser", "//[/voice", "//user@[/browser?call=x", "http://[/browser"]) {
+      expect(await rawUpgrade(service.url, target, "127.0.0.1")).toBe("");
+    }
+    // A carrier stream with a host that is not a valid URL host still gets a socket, and nothing breaks.
+    expect(await rawUpgrade(service.url, "/voice?call=sim-1", "a b")).toMatch(/^HTTP\/1\.1 101 /);
+    expect(await upgrade(`${service.url}/voice?call=sim-2`, {})).toBe("open");
+  } finally {
+    await service.close();
+  }
+});
+

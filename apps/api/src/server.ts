@@ -13,6 +13,7 @@ import { adminRouter } from "./routes/admin.js";
 import { internalRouter } from "./routes/internal.js";
 import { createLiveCallsHandler } from "./liveCalls.js";
 import { voiceRouter } from "./voiceRoutes.js";
+import { apiErrorHandler } from "./httpErrors.js";
 import { startAssessmentWorker } from "./assessmentWorker.js";
 
 const app = express();
@@ -191,10 +192,7 @@ app.get("/api/voice-agent/demo-failsafe/audio", (_request, response) => {
   });
 });
 
-app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
-  console.error(error);
-  response.status(500).json({ error: "Internal server error" });
-});
+app.use(apiErrorHandler);
 
 const server = app.listen(port, () => {
   console.log(`MSVA API running on http://localhost:${port}`);

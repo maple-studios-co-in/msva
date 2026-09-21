@@ -188,8 +188,10 @@ async function reserveRates(limits: RateLimit[], now = new Date()): Promise<numb
   // Expired buckets (a day past their window) are removed in small batches,
   // outside the reservation so it holds no bucket meanwhile. The batch is
   // chosen once: as an IN subquery, Postgres may re-run it for every candidate
-  // row, and each run skips the rows already deleted.
-  await prisma.$executeRaw`WITH doomed AS MATERIALIZED (SELECT "id" FROM "AuthRateBucket" WHERE "expiresAt" < ${now}::timestamptz AT TIME ZONE 'UTC' LIMIT ${RATE_CLEANUP_BATCH} FOR UPDATE SKIP LOCKED) DELETE FROM "AuthRateBucket" AS bucket USING doomed WHERE bucket."id" = doomed."id"`;
+  // row, and each run skips the rows already deleted. It is housekeeping, so a
+  // failure must not fail a request whose reservation has already committed.
+  await prisma.$executeRaw`WITH doomed AS MATERIALIZED (SELECT "id" FROM "AuthRateBucket" WHERE "expiresAt" < ${now}::timestamptz AT TIME ZONE 'UTC' LIMIT ${RATE_CLEANUP_BATCH} FOR UPDATE SKIP LOCKED) DELETE FROM "AuthRateBucket" AS bucket USING doomed WHERE bucket."id" = doomed."id"`
+    .catch(() => console.warn("[auth] expired rate bucket cleanup failed"));
   if (!refused) return null;
   // Retry after the longest wait among the limits that are full.
   return refusedBy.reduce((wait, limit) => Math.max(wait, Math.ceil((limit.start.getTime() + limit.windowMs - now.getTime()) / 1000)), 1);

@@ -410,6 +410,21 @@ describe("shared throttles", () => {
     expect(await db.loginCode.findUnique({ where: { id: old.id } })).toBeNull();
   });
 
+  it("answers a reserved request even when expired-bucket cleanup fails", async () => {
+    await db.authRateBucket.create({ data: { scope: "old", keyHash: "expired", windowStart: new Date(0), count: 1, expiresAt: new Date(Date.now() - 60_000) } });
+    await db.$executeRawUnsafe(`CREATE FUNCTION fail_rate_bucket_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'auth test cleanup failure'; END; $$`);
+    await db.$executeRawUnsafe(`CREATE TRIGGER fail_rate_bucket_delete BEFORE DELETE ON "AuthRateBucket" FOR EACH ROW EXECUTE FUNCTION fail_rate_bucket_delete()`);
+    try {
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const auth = await authWithFakeDelivery(async () => undefined);
+      expect(await auth.requestLoginCode("cleanup@example.test", network(96))).toEqual({ ok: true });
+      expect(await auth.verifyLoginCode("cleanup@example.test", "123456", network(96))).toBeNull();
+    } finally {
+      await db.$executeRawUnsafe(`DROP TRIGGER IF EXISTS fail_rate_bucket_delete ON "AuthRateBucket"`);
+      await db.$executeRawUnsafe(`DROP FUNCTION IF EXISTS fail_rate_bucket_delete()`);
+    }
+  });
+
   it("removes expired buckets in bounded batches", async () => {
     const expired = new Date(Date.now() - 60_000);
     await db.authRateBucket.createMany({

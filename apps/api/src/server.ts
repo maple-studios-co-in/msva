@@ -12,6 +12,7 @@ import { databaseReady } from "@msva/db";
 import { adminRouter } from "./routes/admin.js";
 import { internalRouter } from "./routes/internal.js";
 import { createLiveCallsHandler } from "./liveCalls.js";
+import { voiceRouter } from "./voiceRoutes.js";
 
 const app = express();
 const port = Number(process.env.PORT ?? 4100);
@@ -37,6 +38,7 @@ app.get("/health", async (_request, response) => {
 });
 
 app.use("/api/internal", internalRouter);
+app.use("/api/internal/voice/v1", voiceRouter);
 app.use("/api/admin", adminRouter);
 app.get("/api/live-calls", createLiveCallsHandler());
 

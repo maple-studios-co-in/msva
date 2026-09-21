@@ -1,0 +1,60 @@
+{
+  "$id": "https://msva.example.invalid/contracts/voice-v1/VoiceContext",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "agentEpoch": {
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991,
+      "type": "integer"
+    },
+    "agentParticipantId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "type": "string"
+    },
+    "callerParticipantId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "type": "string"
+    },
+    "callId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "type": "string"
+    },
+    "language": {
+      "maxLength": 32,
+      "minLength": 1,
+      "type": "string"
+    },
+    "permittedTools": {
+      "items": {
+        "const": "create_business_request",
+        "type": "string"
+      },
+      "maxItems": 1,
+      "type": "array"
+    },
+    "prompt": {
+      "maxLength": 2000,
+      "type": "string"
+    },
+    "roomName": {
+      "maxLength": 128,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "callId",
+    "roomName",
+    "agentEpoch",
+    "callerParticipantId",
+    "agentParticipantId",
+    "language",
+    "permittedTools",
+    "prompt"
+  ],
+  "type": "object"
+}

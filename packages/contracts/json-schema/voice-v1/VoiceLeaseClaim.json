@@ -1,0 +1,34 @@
+{
+  "$id": "https://msva.example.invalid/contracts/voice-v1/VoiceLeaseClaim",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "callId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "type": "string"
+    },
+    "dispatchId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "type": "string"
+    },
+    "participantId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "type": "string"
+    },
+    "roomName": {
+      "maxLength": 128,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "callId",
+    "roomName",
+    "dispatchId",
+    "participantId"
+  ],
+  "type": "object"
+}

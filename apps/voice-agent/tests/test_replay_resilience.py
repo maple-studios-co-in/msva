@@ -172,7 +172,8 @@ def test_retries_follow_how_long_a_credential_has_been_expired(tmp_path):
 
     from madhusudan_voice.spool import LIVE_RETRY_SECONDS
 
-    now = time.time()
+    # Whole seconds, so an expiry survives its trip through ISO 8601 exactly.
+    now = float(int(time.time()))
     stamp = lambda seconds: datetime.fromtimestamp(now + seconds, UTC).isoformat()
     spool = spool_at(tmp_path)
     for call_id, expires_at in (("call-live", stamp(60)), ("call-recent", stamp(-10)), ("call-old", "2020-01-01T00:00:00Z")):

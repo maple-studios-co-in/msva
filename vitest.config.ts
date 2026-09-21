@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 
 // Single root config for the whole workspace. Tests live next to the code they
 // cover as *.test.ts, so a reader opening a module can see its contract in the
@@ -6,6 +6,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     include: ["apps/**/src/**/*.test.ts", "packages/**/src/**/*.test.ts"],
+    exclude: [...configDefaults.exclude, "**/*.integration.test.ts"],
     environment: "node",
     passWithNoTests: false,
     reporters: ["default"]

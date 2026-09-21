@@ -412,6 +412,48 @@
   overflow-wrap: anywhere;
 }
 
+.co-meta div small {
+  display: block;
+  color: var(--ms-ink-muted);
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.co-assessment-state {
+  background: var(--ms-surface);
+  border: 1px solid var(--ms-border);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+
+.co-assessment-state > p {
+  color: var(--ms-ink-soft);
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 5px 0 10px;
+}
+
+.co-assessment-state.running {
+  border-color: var(--ms-pink-soft);
+}
+
+.co-assessment-state.failed,
+.co-assessment-state.interrupted,
+.co-assessment-state.stale {
+  border-color: var(--ms-cream-deep);
+}
+
+.co-assessment-result {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.co-assessment-result .co-hint {
+  margin: 0;
+}
+
 /* Transcript */
 .co-transcript {
   display: flex;

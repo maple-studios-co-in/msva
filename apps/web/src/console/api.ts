@@ -1,3 +1,5 @@
+import type { CallAssessmentResponse } from "@msva/shared";
+
 // ---------------------------------------------------------------------------
 // Console API client — thin wrapper over /api/admin/*.
 //
@@ -186,6 +188,10 @@ export const api = {
 
   calls: (params: Record<string, string | number | undefined>, signal?: AbortSignal) => call<Paged<CallRow>>(`/api/admin/calls${qs(params)}`, { signal }),
   call: (id: string, signal?: AbortSignal) => call<CallDetail>(`/api/admin/calls/${encodeURIComponent(id)}`, { signal }),
+  callAssessment: (id: string, signal?: AbortSignal) =>
+    call<CallAssessmentResponse>(`/api/admin/calls/${encodeURIComponent(id)}/assessment`, { signal }),
+  assessCall: (id: string, signal?: AbortSignal) =>
+    call<CallAssessmentResponse>(`/api/admin/calls/${encodeURIComponent(id)}/assessment`, { method: "POST", body: "{}", signal }),
   patchCall: (id: string, body: { isTest?: boolean }) =>
     call<CallDetail>(`/api/admin/calls/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) }),
 

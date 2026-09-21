@@ -15,6 +15,7 @@ if (new URL(databaseUrl).searchParams.get("application_name") !== "msva-foundati
 }
 const repoRoot = new URL("../../..", import.meta.url);
 const initMigration = new URL("../prisma/migrations/20260905140843_init/migration.sql", import.meta.url);
+const jevMigration = new URL("../prisma/migrations/20260920202258_add_call_assessment/migration.sql", import.meta.url);
 const demoMigration = new URL("../prisma/migrations/20260921000000_demo_journeys/migration.sql", import.meta.url);
 
 const schemas: string[] = [];
@@ -48,6 +49,28 @@ afterEach(async () => {
 });
 
 describe("demo journeys migration", () => {
+  it("preserves Jev call assessments when demo records are added", async () => {
+    const schema = schemaName();
+    schemas.push(schema);
+    await execFileAsync(psql, ["-X", "-q", "-v", "ON_ERROR_STOP=1", "-d", databaseUrl!, "-c", `CREATE SCHEMA ${schema}`]);
+
+    await applyFile(schema, initMigration);
+    await applyFile(schema, jevMigration);
+    await psqlRun(schema, [
+      "-c",
+      `INSERT INTO "Caller" ("id", "phone", "createdAt", "updatedAt") VALUES ('caller-jev', '+919999999998', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+       INSERT INTO "Call" ("id", "provider", "fromNumber", "callerId") VALUES ('call-jev', 'BROWSER', '+919999999998', 'caller-jev');
+       INSERT INTO "User" ("id", "email", "name") VALUES ('user-jev', 'jev@example.test', 'Jev Reviewer');
+       INSERT INTO "CallAssessment" ("id", "callId", "inputHash", "requestedModel", "rubricVersion", "preprocessingVersion", "status", "requestedById", "attemptToken", "inputCharCount", "utteranceCount", "updatedAt") VALUES ('assessment-jev', 'call-jev', 'hash-jev', 'model-jev', 'rubric-v1', 'preprocess-v1', 'SUCCEEDED', 'user-jev', 'attempt-jev', 42, 3, CURRENT_TIMESTAMP);`
+    ]);
+
+    const before = await scalar(schema, `SELECT row_to_json(a)::text FROM "CallAssessment" a WHERE a.id = 'assessment-jev'`);
+    await applyFile(schema, demoMigration);
+    const after = await scalar(schema, `SELECT row_to_json(a)::text FROM "CallAssessment" a WHERE a.id = 'assessment-jev'`);
+
+    expect(after).toBe(before);
+  });
+
   it("preserves representative legacy rows, timestamps, outcomes, and ticket sequence", async () => {
     const schema = schemaName();
     schemas.push(schema);

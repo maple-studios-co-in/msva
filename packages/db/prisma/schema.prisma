@@ -635,6 +635,8 @@ model VoiceSession {
   authorizationVersion  Int                @default(1)
   currentEpoch          Int                @default(0)
   finalWatermark        Int                @default(0)
+  eventCount            Int                @default(0)
+  eventBytes            Int                @default(0)
   version               Int                @default(1)
   startedAt             DateTime           @default(now())
   endedAt               DateTime?

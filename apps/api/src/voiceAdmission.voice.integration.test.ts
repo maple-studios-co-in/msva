@@ -42,6 +42,10 @@ async function listener(call: Call, who: Staff) {
 const connect = (call: Call, who: Staff, participantIdentity: string, grants: { publish: boolean; subscribe: boolean } = { publish: false, subscribe: false }, protocol: "v0" | "v1" = "v1") =>
   authorizeSignalConnection({ tokenClaims: { subject: participantIdentity, room: call.roomName, roomJoin: true, ...grants }, sessionTokenHash: sha256(who.token), origin: "https://console.test", protocol, reconnect: false, participantSid: null }, db);
 const removals = (admissionId: string) => db.mediaControlIntent.count({ where: { admissionId, kind: "REMOVE" } });
+const lockWaiter = () => vi.waitFor(async () => {
+  const [row] = await db.$queryRaw<{ waiting: bigint }[]>`SELECT count(*) AS waiting FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`;
+  expect(Number(row!.waiting)).toBeGreaterThan(0);
+}, { timeout: 5_000, interval: 20 });
 /** Lets a control whose retry is scheduled later run now, as if the wait had passed. */
 const due = (id: string) => db.mediaControlIntent.update({ where: { id }, data: { nextAttemptAt: new Date(Date.now() - 1) } });
 
@@ -64,6 +68,24 @@ describe("connection renewal", () => {
     await expect(renewSignalConnection(connection, db)).rejects.toMatchObject({ code: "CONNECTION_REVOKED" });
     expect(await db.voiceAdmission.findUniqueOrThrow({ where: { id: admission.id } })).toMatchObject({ state: "REVOKING" });
     expect(await removals(admission.id)).toBe(1);
+  });
+
+  it.each(["renewal", "SID confirmation"] as const)("judges the connection lease by the time after waiting for its lock (%s)", async (action) => {
+    const call = await liveCall(); const who = await staff();
+    const admission = await listener(call, who);
+    const connection = await connect(call, who, admission.participantIdentity);
+    await db.voiceAdmission.update({ where: { id: admission.id }, data: { connectionLeaseExpiresAt: new Date(Date.now() + 300) } });
+    let pending!: Promise<unknown>;
+    await db.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "VoiceAdmission" WHERE "id" = ${admission.id} FOR UPDATE`;
+      pending = action === "renewal" ? renewSignalConnection(connection, db) : confirmSignalParticipant({ ...connection, participantSid: "PA_late" }, db);
+      await lockWaiter();
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }, { timeout: 15_000 });
+    await expect(pending).rejects.toMatchObject({ code: "CONNECTION_STALE" });
+    const after = await db.voiceAdmission.findUniqueOrThrow({ where: { id: admission.id } });
+    expect(after.participantSid).toBeNull();
+    expect(after.connectionLeaseExpiresAt!.getTime()).toBeLessThan(Date.now());
   });
 
   it("keeps the caller admitted while the call waits for staff recovery", async () => {

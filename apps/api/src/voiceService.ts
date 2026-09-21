@@ -567,19 +567,20 @@ export async function authorizeSignalConnection(input: { tokenClaims: VerifiedBr
 }
 
 type ConnectionRef = { admissionId: string; connectionEpoch: number; connectionOwner: string };
-async function ownedConnection(tx: Prisma.TransactionClient, input: ConnectionRef, now: Date) {
+async function ownedConnection(tx: Prisma.TransactionClient, input: ConnectionRef) {
   const admission = await lockedAdmission(tx, { id: input.admissionId });
+  // Judged by the time after the lock is held, not before waiting for it.
+  const now = new Date();
   if (!admission || admission.connectionEpoch !== input.connectionEpoch || admission.connectionOwner !== input.connectionOwner
     || !admission.connectionLeaseExpiresAt || admission.connectionLeaseExpiresAt <= now
     || (admission.state !== "CONNECTING" && admission.state !== "ACTIVE")) throw new VoiceError(409, "CONNECTION_STALE");
-  return admission;
+  return { admission, now };
 }
 
 /** Extends a live connection only after re-checking its authorization; a failed check revokes it. */
 export async function renewSignalConnection(input: ConnectionRef, db: PrismaClient = prisma) {
   return committed(db, async (tx) => {
-    const now = new Date();
-    const admission = await ownedConnection(tx, input, now);
+    const { admission, now } = await ownedConnection(tx, input);
     const verdict = await admissionVerdict(tx, admission, now);
     if (!verdict.ok) { await revokeAdmissions(tx, { admissionId: admission.id, reason: verdict.reason }, now); return deny(409, "CONNECTION_REVOKED"); }
     const connectionLeaseExpiresAt = new Date(now.getTime() + CONNECTION_MS);
@@ -591,7 +592,7 @@ export async function renewSignalConnection(input: ConnectionRef, db: PrismaClie
 /** Records the SFU participant SID of the owned connection, for later reconnect checks. */
 export async function confirmSignalParticipant(input: ConnectionRef & { participantSid: string }, db: PrismaClient = prisma): Promise<void> {
   await serializable(db, async (tx) => {
-    await ownedConnection(tx, input, new Date());
+    await ownedConnection(tx, input);
     await tx.voiceAdmission.update({ where: { id: input.admissionId }, data: { participantSid: input.participantSid } });
   });
 }

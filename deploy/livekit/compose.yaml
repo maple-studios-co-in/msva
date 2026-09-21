@@ -17,12 +17,13 @@ services:
   livekit:
     image: livekit/livekit-server:v1.13.7
     restart: unless-stopped
-    command: ["--config", "/etc/livekit/livekit.yaml"]
+    command: ["sh", "/etc/livekit/start-livekit.sh"]
     env_file:
       - path: .env
         required: false
     volumes:
-      - ./livekit.yaml:/etc/livekit/livekit.yaml:ro
+      - ./livekit.yaml:/etc/livekit/livekit.yaml.template:ro
+      - ./start-livekit.sh:/etc/livekit/start-livekit.sh:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -52,7 +53,7 @@ services:
         condition: service_healthy
       livekit:
         condition: service_started
-    networks: [media-private]
+    networks: [media-private, provider-egress]
     expose: ["8081"]
     healthcheck:
       test: ["CMD-SHELL", "python -c \"from urllib.request import urlopen; urlopen('http://127.0.0.1:8081/', timeout=3)\""]
@@ -64,7 +65,7 @@ services:
   sip:
     image: livekit/sip:v1.13.0
     restart: unless-stopped
-    profiles: ["sip"]
+    profiles: ["sip-unimplemented"]
     env_file:
       - path: .env
         required: false
@@ -73,13 +74,15 @@ services:
     volumes:
       - ./sip.yaml:/etc/livekit/sip.yaml:ro
     command: ["--config", "/etc/livekit/sip.yaml"]
-    network_mode: host
-    # SIP is intentionally not in the default profile. Host networking and these
-    # public ranges require a separately approved carrier/firewall runbook.
+    networks: [media-private]
+    # Intentionally unsupported: host networking is required for public RTP/SIP
+    # ranges and cannot resolve Docker's private Redis service. Do not enable this
+    # profile until the carrier/firewall and DNS runbook is implemented.
 
 networks:
   media-private:
     internal: true
+  provider-egress:
 
 volumes:
   redis-data:

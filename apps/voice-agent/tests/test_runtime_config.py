@@ -59,6 +59,7 @@ def enabled_env(tmp_path: Path) -> dict[str, str]:
         "ANTHROPIC_API_KEY": "anthropic",
         "VOICE_INTERNAL_API_URL": "https://api.example/api/internal/voice/v1",
         "VOICE_WORKER_CREDENTIAL": "worker-token",
+        "VOICE_REPLAY_CREDENTIAL_KEY": "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
         "VOICE_STT_MODE": "realtime",
         "VOICE_SPOOL_PATH": str(tmp_path / "spool.db"),
     }

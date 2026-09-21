@@ -38,9 +38,11 @@ docker compose --env-file deploy/livekit/.env -f deploy/livekit/compose.yaml up 
 docker compose --env-file deploy/livekit/.env -f deploy/livekit/compose.yaml --profile voice up -d voice-agent
 ```
 
-The current workstation's Docker daemon was unavailable during implementation, so no container,
-media, browser microphone, DNS/TLS, TURN, provider, SIP, or carrier call is represented as
-validated by these files.
+The configuration renderer creates `/run/livekit/livekit.yaml` at startup from secret-store
+environment values with mode `0600`; the checked-in file contains no literal `$` credential
+placeholders. The worker receives a separate egress network for the MSVA API and providers; in
+production, host egress policy must restrict it to the MSVA API, Sarvam, and Anthropic over
+approved DNS/TLS destinations. Raw LiveKit signaling/admin `:7880` remains private.
 
 Do not publish raw `:7880` through Caddy/nginx or directly on a host. A local permission probe
 showed that a self-hosted LiveKit refreshed token can reconnect with newly granted permissions after
@@ -65,7 +67,7 @@ of rollback. The existing Exotel media-stream route remains separately operated 
 
 ## SIP profile
 
-`sip` is an optional, disabled `host`-network profile using `livekit/sip:v1.13.0`. It requires
-public carrier-approved SIP signaling and UDP RTP reachability before it can be started; no trunk,
-dispatch rule, provider configuration, or call is created here. Official defaults require SIP
-5060 and RTP UDP 10000-20000, in addition to trusted WebRTC/TURN reachability.
+`sip` is intentionally an unsupported `sip-unimplemented` profile using `livekit/sip:v1.13.0`.
+Host networking is required for public RTP/SIP ranges but cannot use Docker's private Redis DNS.
+No trunk, dispatch rule, provider configuration, or call is created here. It remains disabled until
+a carrier/firewall/DNS runbook and rendered SIP configuration exist.

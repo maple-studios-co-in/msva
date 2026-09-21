@@ -18,7 +18,9 @@ class EventWriter:
         self._source_sequence = 0
 
     async def emit(self, event_type: str, payload: dict[str, Any]) -> str:
-        self._source_sequence += 1
+        self._source_sequence = self.spool.next_sequence(
+            call_id=self.lease.call_id, agent_epoch=self.lease.agent_epoch
+        )
         event_id = str(uuid4())
         event = {
             "schemaVersion": 1,
@@ -32,9 +34,33 @@ class EventWriter:
         }
         # Persistence precedes every delivery attempt. Payloads contain only event metadata/text,
         # never audio bytes or HTTP headers.
-        self.spool.enqueue(event_id=event_id, call_id=self.lease.call_id, payload=event)
-        await self.client.flush_spool(self.spool, self.lease)
+        self.spool.enqueue(
+            event_id=event_id,
+            call_id=self.lease.call_id,
+            payload=event,
+            credential=self.client.replay_credential(self.lease),
+        )
         return event_id
+
+    @property
+    def last_source_sequence(self) -> int:
+        return self._source_sequence
+
+    async def emit_agent_transcript(self, *, text: str, language: str) -> str:
+        if not text.strip() or len(text) > 4000:
+            raise ValueError("agent transcript text must be non-empty and at most 4000 characters")
+        return await self.emit(
+            "transcript.final",
+            {
+                "segmentId": f"agent:{self.lease.agent_epoch}:{self._source_sequence + 1}",
+                "revision": 1,
+                "speaker": "AGENT",
+                "participantId": None,
+                "sequence": self._source_sequence + 1,
+                "text": text,
+                "language": language,
+            },
+        )
 
     async def emit_final_transcript(
         self,

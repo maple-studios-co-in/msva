@@ -53,6 +53,7 @@ class RuntimeConfig:
     anthropic_api_key: str | None
     internal_api_url: str | None
     worker_credential: str | None
+    replay_credential_key: str | None
     spool_path: Path
     spool_max_events: int
     spool_max_bytes: int
@@ -62,7 +63,6 @@ class RuntimeConfig:
     lease_renew_seconds: int
     stt_mode: str
     agent_name: str
-    dispatch_id: str
 
     @classmethod
     def from_env(cls, env: dict[str, str]) -> "RuntimeConfig":
@@ -77,6 +77,7 @@ class RuntimeConfig:
             anthropic_api_key=None,
             internal_api_url=None,
             worker_credential=None,
+            replay_credential_key=None,
             spool_path=spool_path,
             spool_max_events=_positive_int(env, "VOICE_SPOOL_MAX_EVENTS", 10_000),
             spool_max_bytes=_positive_int(env, "VOICE_SPOOL_MAX_BYTES", 52_428_800),
@@ -86,7 +87,6 @@ class RuntimeConfig:
             lease_renew_seconds=_positive_int(env, "VOICE_LEASE_RENEW_SECONDS", 10),
             stt_mode=env.get("VOICE_STT_MODE", "disabled"),
             agent_name=env.get("VOICE_AGENT_NAME", "madhusudan-support-v1"),
-            dispatch_id=env.get("VOICE_DISPATCH_ID", "madhusudan-support-v1"),
         )
         if not enabled:
             return base
@@ -94,7 +94,7 @@ class RuntimeConfig:
             raise RuntimeDisabled("VOICE_LEASE_RENEW_SECONDS must be less than VOICE_LEASE_SECONDS")
         if base.stt_mode != "realtime":
             raise RuntimeDisabled("VOICE_STT_MODE=realtime is required for the LiveKit call path")
-        if base.agent_name != "madhusudan-support-v1" or base.dispatch_id != base.agent_name:
+        if base.agent_name != "madhusudan-support-v1":
             raise RuntimeDisabled("only the explicit madhusudan-support-v1 dispatch is supported")
         return cls(
             **{
@@ -108,6 +108,7 @@ class RuntimeConfig:
                     _required(env, "VOICE_INTERNAL_API_URL"), "VOICE_INTERNAL_API_URL"
                 ),
                 "worker_credential": _required(env, "VOICE_WORKER_CREDENTIAL"),
+                "replay_credential_key": _required(env, "VOICE_REPLAY_CREDENTIAL_KEY"),
             }
         )
 

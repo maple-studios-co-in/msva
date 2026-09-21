@@ -42,11 +42,12 @@ async def test_locked_runtime_constructs_the_supported_agent_server_and_session(
             "ANTHROPIC_API_KEY": "anthropic",
             "VOICE_INTERNAL_API_URL": "https://api.example/api/internal/voice/v1",
             "VOICE_WORKER_CREDENTIAL": "worker-token",
+            "VOICE_REPLAY_CREDENTIAL_KEY": "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
             "VOICE_SPOOL_PATH": str(tmp_path / "spool.sqlite3"),
         }
     )
 
     assert build_server(config) is not None
-    session = create_session(config)
+    session = create_session(config, "hinglish")
     assert session is not None
     await session.aclose()

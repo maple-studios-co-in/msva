@@ -8,11 +8,12 @@ import asyncio
 from collections.abc import Mapping
 
 from livekit.agents import AgentServer, JobContext, JobRequest, cli
+from livekit.agents.voice.room_io.types import RoomOptions
 
-from .api import VoiceApiClient
+from .api import DispatchPending, ReplayDrainer, VoiceApiClient, VoiceApiError
 from .config import RuntimeConfig, RuntimeDisabled
 from .events import EventWriter
-from .session import LeaseGuard, MadhusudanAgent, TranscriptObserver, create_session
+from .session import AgentSpeechObserver, LeaseGuard, MadhusudanAgent, TranscriptObserver, canonical_language, create_session
 from .spool import EventSpool
 
 
@@ -61,48 +62,70 @@ def build_server(config: RuntimeConfig) -> AgentServer:
         room_name = ctx.job.room.name
         await ctx.connect()
         client = VoiceApiClient(str(config.internal_api_url), worker_credential=str(config.worker_credential))
-        spool = EventSpool(config.spool_path, max_events=config.spool_max_events, max_bytes=config.spool_max_bytes)
+        spool = EventSpool(config.spool_path, max_events=config.spool_max_events, max_bytes=config.spool_max_bytes, replay_key=str(config.replay_credential_key))
+        drainer = ReplayDrainer(client, spool)
+        drainer.start()
         try:
-            lease = await client.claim_lease(
-                call_id=call_id,
-                room_name=room_name,
-                dispatch_id=config.dispatch_id,
-                participant_id=ctx.local_participant_identity,
-            )
+            # Dispatch persistence can lag LiveKit's accepted job. Retry only the explicit,
+            # non-authorising DISPATCH_PENDING 503; mismatches remain terminal.
+            for attempt in range(4):
+                try:
+                    lease = await client.claim_lease(call_id=call_id, room_name=room_name,
+                        dispatch_id=ctx.job.dispatch_id, participant_id=ctx.local_participant_identity)
+                    break
+                except DispatchPending:
+                    if attempt == 3:
+                        raise
+                    await asyncio.sleep(0.25 * (attempt + 1))
             context = await client.context(lease)
             if context.room_name != room_name or context.agent_participant_id != ctx.local_participant_identity:
                 raise RuntimeDisabled("MSVA context does not match the dispatched LiveKit participant")
             writer = EventWriter(spool, client, lease)
             await writer.emit("agent.ready", {"participantId": ctx.local_participant_identity})
-            session = create_session(config)
+            session = create_session(config, canonical_language(context.language))
+            stopped = asyncio.Event()
             async def stop_speech() -> None:
                 await session.interrupt(force=True)
+                await session.aclose()
+                stopped.set()
 
             guard = LeaseGuard(
                 client, writer, renew_seconds=config.lease_renew_seconds, on_lost=stop_speech
             )
-            stopped = asyncio.Event()
-
-            async def on_shutdown(_: str) -> None:
-                stopped.set()
-
-            ctx.add_shutdown_callback(on_shutdown)
             guard.start()
-            observer = TranscriptObserver(writer, context, on_failure=stop_speech)
+            observer = TranscriptObserver(writer, context, on_failure=guard.fail_closed)
+            agent_speech = AgentSpeechObserver(writer, canonical_language(context.language), on_failure=guard.fail_closed)
             session.on("user_input_transcribed", observer.handle)
+            session.on("conversation_item_added", agent_speech.conversation)
+            session.on("speech_created", agent_speech.speech)
+            session.on("error", lambda *_: asyncio.create_task(guard.fail_closed(), name="voice-provider-fence"))
+            session.on("close", lambda *_: stopped.set())
             try:
                 await session.start(
                     room=ctx.room,
                     agent=MadhusudanAgent(client, guard, context),
+                    room_options=RoomOptions(
+                        participant_identity=context.caller_participant_id,
+                        text_input=False,
+                        close_on_disconnect=True,
+                    ),
                     record=False,
                 )
                 await stopped.wait()
             finally:
                 await guard.stop()
+                await observer.drain(min(10, config.drain_timeout_seconds))
+                await agent_speech.drain(min(10, config.drain_timeout_seconds))
                 if guard.lost:
                     # The API may be unavailable; the event is persisted first and replayed later.
                     await writer.emit("agent.failed", {"code": "LEASE_RENEWAL_FAILED"})
+                await writer.emit("agent.final_watermark", {"sourceSequence": writer.last_source_sequence})
         finally:
+            try:
+                await drainer.drain(min(10, config.drain_timeout_seconds))
+            except (TimeoutError, VoiceApiError):
+                pass
+            await drainer.stop()
             spool.close()
             await client.aclose()
 

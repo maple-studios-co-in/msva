@@ -1,8 +1,6 @@
 # Production-template values. This file does not provision DNS, TLS, TURN, or firewall rules.
-port: 7880
-bind_addresses: ["0.0.0.0"]
-keys:
-  "$LIVEKIT_API_KEY": "$LIVEKIT_API_SECRET"
+# This template is rendered by start-livekit.sh into a root-only runtime file.
+# Credentials intentionally do not use literal shell placeholders in YAML.
 redis:
   address: redis:6379
 rtc:

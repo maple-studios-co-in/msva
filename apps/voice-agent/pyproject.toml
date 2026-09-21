@@ -4,11 +4,12 @@ version = "0.1.0"
 description = "Fail-closed LiveKit runtime for the Madhusudan voice agent"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+  "cryptography>=45,<46",
   "httpx>=0.28,<0.29",
   "jsonschema[format]>=4.23,<5",
   "livekit-agents[anthropic,sarvam]>=1.8,<1.9",
   "pytest>=8,<9",
-  "pytest-asyncio>=0.24,<1"
+  "pytest-asyncio>=0.24,<1",
 ]
 
 [tool.pytest.ini_options]

@@ -5,10 +5,10 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
-from uuid import uuid4
+from datetime import UTC, datetime
 
 from livekit.agents import Agent, AgentSession, function_tool
-from livekit.agents.voice import UserInputTranscribedEvent
+from livekit.agents.voice import ConversationItemAddedEvent, SpeechCreatedEvent, UserInputTranscribedEvent
 from livekit.plugins import anthropic, sarvam
 
 from .api import CallContext, Lease, VoiceApiClient
@@ -50,19 +50,30 @@ class LeaseGuard:
                 pass
 
     def require_active(self) -> None:
-        if not self.active:
+        expires_at = datetime.fromisoformat(self.writer.lease.expires_at.replace("Z", "+00:00"))
+        if not self.active or datetime.now(UTC) >= expires_at:
             raise LeaseLost("lease renewal failed; business tools are disabled")
+
+    async def fail_closed(self) -> None:
+        if self.lost:
+            return
+        self.active = False
+        self.lost = True
+        if self.on_lost is not None:
+            await self.on_lost()
 
     async def _run(self) -> None:
         while self.active:
-            await asyncio.sleep(self.renew_seconds)
+            expires_at = datetime.fromisoformat(self.writer.lease.expires_at.replace("Z", "+00:00"))
+            wait = min(self.renew_seconds, max(0, (expires_at - datetime.now(UTC)).total_seconds()))
+            if wait == 0:
+                await self.fail_closed()
+                return
+            await asyncio.sleep(wait)
             try:
                 renewed = await self.client.renew(self.writer.lease)
             except Exception:
-                self.active = False
-                self.lost = True
-                if self.on_lost is not None:
-                    await self.on_lost()
+                await self.fail_closed()
                 return
             self.writer.update_lease(renewed)
 
@@ -87,12 +98,20 @@ class MadhusudanAgent(Agent):
         self._lease_guard.require_active()
         if "create_business_request" not in self._context.permitted_tools:
             raise LeaseLost("create_business_request is not permitted for this call")
-        return await self._client.invoke_tool(
+        invocation_id = self._client.record_tool_intent(
+            self._lease_guard.writer.spool,
             self._lease_guard.writer.lease,
-            invocation_id=str(uuid4()),
             name="create_business_request",
             arguments=request,
         )
+        result = await self._client.invoke_tool(
+            self._lease_guard.writer.lease,
+            invocation_id=invocation_id,
+            name="create_business_request",
+            arguments=request,
+        )
+        self._lease_guard.writer.spool.complete_tool_intent(invocation_id, result)
+        return result
 
 
 class TranscriptObserver:
@@ -106,12 +125,13 @@ class TranscriptObserver:
         self._sequence = 0
         self._texts: dict[str, str] = {}
         self._revisions: dict[str, int] = {}
+        self._tasks: set[asyncio.Task[None]] = set()
 
     def handle(self, event: UserInputTranscribedEvent) -> None:
         if not event.is_final or not event.transcript.strip():
             return
-        if event.speaker_id is not None and event.speaker_id != self.context.caller_participant_id:
-            return
+        # speaker_id is provider diarization, not a LiveKit participant identity. RoomOptions
+        # pins audio input to the caller; never use provider speaker labels as authorization.
         segment_id = event.item_id
         if not segment_id:
             self._generated_segments += 1
@@ -121,10 +141,17 @@ class TranscriptObserver:
         self._texts[segment_id] = event.transcript
         self._revisions[segment_id] = self._revisions.get(segment_id, 0) + 1
         self._sequence += 1
-        asyncio.create_task(
+        task = asyncio.create_task(
             self._persist(event, segment_id, self._revisions[segment_id], self._sequence),
             name="voice-final-transcript",
         )
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def drain(self, timeout_seconds: float) -> None:
+        if self._tasks:
+            async with asyncio.timeout(timeout_seconds):
+                await asyncio.gather(*self._tasks)
 
     async def _persist(
         self, event: UserInputTranscribedEvent, segment_id: str, revision: int, sequence: int
@@ -143,12 +170,57 @@ class TranscriptObserver:
             await self.on_failure()
 
 
-def create_session(config: RuntimeConfig) -> AgentSession:
+class AgentSpeechObserver:
+    """Records assistant text only after its corresponding LiveKit speech playout completes."""
+
+    def __init__(self, writer: EventWriter, language: str, on_failure: Callable[[], Awaitable[None]]) -> None:
+        self.writer, self.language, self.on_failure = writer, language, on_failure
+        self._pending: list[str] = []
+        self._tasks: set[asyncio.Task[None]] = set()
+
+    def conversation(self, event: ConversationItemAddedEvent) -> None:
+        item = event.item
+        if getattr(item, "role", None) == "assistant" and (text := getattr(item, "raw_text_content", "")):
+            self._pending.append(text)
+
+    def speech(self, event: SpeechCreatedEvent) -> None:
+        task = asyncio.create_task(self._after_playout(event), name="voice-agent-playout-evidence")
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _after_playout(self, event: SpeechCreatedEvent) -> None:
+        try:
+            await event.speech_handle.wait_for_playout()
+            if event.speech_handle.interrupted:
+                return
+            while self._pending:
+                await self.writer.emit_agent_transcript(text=self._pending.pop(0), language=self.language)
+        except Exception:
+            await self.on_failure()
+
+    async def drain(self, timeout_seconds: float) -> None:
+        if self._tasks:
+            async with asyncio.timeout(timeout_seconds):
+                await asyncio.gather(*self._tasks)
+
+
+def canonical_language(value: str) -> str:
+    normalized = value.lower().replace("_", "-")
+    if normalized.startswith("hi"):
+        return "hi"
+    if normalized.startswith("en"):
+        return "en"
+    if normalized in {"hinglish", "hi-en", "en-hi"}:
+        return "hinglish"
+    return "unknown"
+
+
+def create_session(config: RuntimeConfig, language: str) -> AgentSession:
     """Construct the SDK-supported Sarvam + Claude pipeline from a locked dependency set."""
     config.require_enabled()
     return AgentSession(
         stt=sarvam.STTRealtime(
-            language="hi-IN",
+            language="hi-IN" if canonical_language(language) in {"hi", "hinglish"} else "en-IN",
             sample_rate=16000,
             api_key=config.sarvam_api_key,
         ),
@@ -158,7 +230,7 @@ def create_session(config: RuntimeConfig) -> AgentSession:
             max_tokens=512,
         ),
         tts=sarvam.TTS(
-            target_language_code="hi-IN",
+            target_language_code="hi-IN" if canonical_language(language) in {"hi", "hinglish"} else "en-IN",
             model="bulbul:v3",
             speech_sample_rate=22050,
             api_key=config.sarvam_api_key,

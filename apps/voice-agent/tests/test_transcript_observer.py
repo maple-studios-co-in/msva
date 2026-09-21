@@ -25,12 +25,15 @@ async def test_observer_persists_final_caller_only_and_revisions_item_ids():
     observer = TranscriptObserver(writer, context, on_failure=lambda: asyncio.sleep(0))
 
     observer.handle(UserInputTranscribedEvent(transcript="draft", is_final=False, item_id="segment-1"))
-    observer.handle(UserInputTranscribedEvent(transcript="ignored", is_final=True, speaker_id="agent-1"))
+    # Provider speaker labels are not participant identities. The session's RoomOptions
+    # pins audio to caller-1, so this observer must not make an authorization decision.
+    observer.handle(UserInputTranscribedEvent(transcript="accepted", is_final=True, speaker_id="agent-1"))
     observer.handle(UserInputTranscribedEvent(transcript="first", is_final=True, item_id="segment-1", speaker_id="caller-1"))
     observer.handle(UserInputTranscribedEvent(transcript="corrected", is_final=True, item_id="segment-1", speaker_id="caller-1"))
     await asyncio.sleep(0)
 
     assert [(call["text"], call["revision"], call["sequence"]) for call in writer.calls] == [
-        ("first", 1, 1),
-        ("corrected", 2, 2),
+        ("accepted", 1, 1),
+        ("first", 1, 2),
+        ("corrected", 2, 3),
     ]

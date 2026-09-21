@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { PrismaClient } from "@msva/db";
-import { claimVoiceLease, createVoiceSession, invokeVoiceTool, prepareBrowserAdmission, recordVoiceDispatch, recordVoiceEvent, renewVoiceLease, revokeAdmissions, VoiceError, voiceContext, workerParticipantIdentity } from "./voiceService.js";
+import { claimVoiceLease, createVoiceSession, finalizeVoiceSession, invokeVoiceTool, prepareBrowserAdmission, recordVoiceDispatch, recordVoiceEvent, renewVoiceLease, revokeAdmissions, VoiceError, voiceContext, workerParticipantIdentity } from "./voiceService.js";
 
 const databaseUrl = process.env.MSVA_VOICE_TEST_DATABASE_URL;
 if (!databaseUrl) throw new Error("MSVA_VOICE_TEST_DATABASE_URL is required");
@@ -68,5 +68,64 @@ describe("voice session persistence", () => {
     await recordVoiceEvent(event("two", 2, 2, "new"), lease.token, db);
     expect(await db.utterance.findFirstOrThrow({ where: { callId: item.callId, seq: 1 } })).toMatchObject({ text: "new" });
     await expect(recordVoiceEvent({ schemaVersion: 1, eventId: "flush", callId: item.callId, agentEpoch: 1, sourceSequence: 3, occurredAt: new Date().toISOString(), type: "transcript.flushed", payload: { lastSourceSequence: 999 } }, lease.token, db)).rejects.toMatchObject({ code: "FLUSH_WATERMARK_INVALID" } satisfies Partial<VoiceError>);
+  });
+  it("drains ready, final, and flush in one strict live stream and invalidates an old checkpoint", async () => {
+    const item = await session();
+    const row = await db.voiceSession.findUniqueOrThrow({ where: { id: item.id } });
+    const lease = await claimVoiceLease({ callId: item.callId, roomName: row.roomName, dispatchId: "dispatch", participantId: workerParticipantIdentity(item.callId) }, worker, db);
+    const at = new Date().toISOString();
+    await recordVoiceEvent({ schemaVersion: 1, eventId: "ready-1", callId: item.callId, agentEpoch: 1, sourceSequence: 1, occurredAt: at, type: "agent.ready", payload: { participantId: workerParticipantIdentity(item.callId) } }, lease.token, db);
+    await recordVoiceEvent({ schemaVersion: 1, eventId: "final-2", callId: item.callId, agentEpoch: 1, sourceSequence: 2, occurredAt: at, type: "transcript.final", payload: { segmentId: "segment", revision: 1, speaker: "CALLER", participantId: "caller", sequence: 1, text: "first", language: "hi" } }, lease.token, db);
+    await recordVoiceEvent({ schemaVersion: 1, eventId: "flush-3", callId: item.callId, agentEpoch: 1, sourceSequence: 3, occurredAt: at, type: "transcript.flushed", payload: { lastSourceSequence: 2 } }, lease.token, db);
+    expect((await db.voiceSession.findUniqueOrThrow({ where: { id: item.id } })).finalWatermark).toBe(2);
+    await recordVoiceEvent({ schemaVersion: 1, eventId: "revision-4", callId: item.callId, agentEpoch: 1, sourceSequence: 4, occurredAt: at, type: "transcript.final", payload: { segmentId: "segment", revision: 2, speaker: "CALLER", participantId: "caller", sequence: 1, text: "revised", language: "hi" } }, lease.token, db);
+    expect((await db.voiceSession.findUniqueOrThrow({ where: { id: item.id } })).finalWatermark).toBe(0);
+    await expect(finalizeVoiceSession(item.callId, db)).rejects.toMatchObject({ code: "EVIDENCE_INCOMPLETE" } satisfies Partial<VoiceError>);
+    await recordVoiceEvent({ schemaVersion: 1, eventId: "flush-5", callId: item.callId, agentEpoch: 1, sourceSequence: 5, occurredAt: at, type: "transcript.flushed", payload: { lastSourceSequence: 4 } }, lease.token, db);
+    await finalizeVoiceSession(item.callId, db);
+    expect(await db.call.findUniqueOrThrow({ where: { id: item.callId } })).toMatchObject({ status: "COMPLETED", outcome: "RESOLVED_BY_VA" });
+  });
+  it("accepts retained expired ready, final, and flush as evidence without restoring authority", async () => {
+    const item = await session();
+    const row = await db.voiceSession.findUniqueOrThrow({ where: { id: item.id } });
+    const lease = await claimVoiceLease({ callId: item.callId, roomName: row.roomName, dispatchId: "dispatch", participantId: workerParticipantIdentity(item.callId) }, worker, db);
+    await db.voiceLease.updateMany({ where: { sessionId: item.id }, data: { expiresAt: new Date(Date.now() - 500) } });
+    const at = new Date().toISOString();
+    await recordVoiceEvent({ schemaVersion: 1, eventId: "expired-ready", callId: item.callId, agentEpoch: 1, sourceSequence: 1, occurredAt: at, type: "agent.ready", payload: { participantId: workerParticipantIdentity(item.callId) } }, lease.token, db);
+    await recordVoiceEvent({ schemaVersion: 1, eventId: "expired-final", callId: item.callId, agentEpoch: 1, sourceSequence: 2, occurredAt: at, type: "transcript.final", payload: { segmentId: "offline", revision: 1, speaker: "CALLER", participantId: "caller", sequence: 1, text: "offline evidence", language: "hi" } }, lease.token, db);
+    await recordVoiceEvent({ schemaVersion: 1, eventId: "expired-flush", callId: item.callId, agentEpoch: 1, sourceSequence: 3, occurredAt: at, type: "transcript.flushed", payload: { lastSourceSequence: 2 } }, lease.token, db);
+    expect(await db.voiceEvent.count({ where: { sessionId: item.id } })).toBe(3);
+    expect((await db.voiceSession.findUniqueOrThrow({ where: { id: item.id } })).state).toBe("ACTIVE");
+    await expect(renewVoiceLease(item.callId, 1, lease.token, db)).rejects.toMatchObject({ code: "LEASE_EXPIRED" } satisfies Partial<VoiceError>);
+  });
+  it("records an old fatal as evidence but never reopens or fences terminal human ownership", async () => {
+    const item = await session();
+    const row = await db.voiceSession.findUniqueOrThrow({ where: { id: item.id } });
+    const lease = await claimVoiceLease({ callId: item.callId, roomName: row.roomName, dispatchId: "dispatch", participantId: workerParticipantIdentity(item.callId) }, worker, db);
+    const endedAt = new Date();
+    await db.voiceSession.update({ where: { id: item.id }, data: { state: "ENDED", ownershipMode: "HUMAN", endedAt } });
+    await db.voiceLease.updateMany({ where: { sessionId: item.id }, data: { expiresAt: new Date(Date.now() - 500) } });
+    await recordVoiceEvent({ schemaVersion: 1, eventId: "old-fatal", callId: item.callId, agentEpoch: 1, sourceSequence: 1, occurredAt: endedAt.toISOString(), type: "agent.failed", payload: { code: "FATAL" } }, lease.token, db);
+    expect(await db.voiceSession.findUniqueOrThrow({ where: { id: item.id } })).toMatchObject({ state: "ENDED", ownershipMode: "HUMAN" });
+    expect(await db.call.findUniqueOrThrow({ where: { id: item.callId } })).not.toMatchObject({ status: "FAILED" });
+  });
+  it("rejects human impersonation, changed equal revisions, and cross-segment projection overwrite", async () => {
+    const item = await session();
+    const row = await db.voiceSession.findUniqueOrThrow({ where: { id: item.id } });
+    const lease = await claimVoiceLease({ callId: item.callId, roomName: row.roomName, dispatchId: "dispatch", participantId: workerParticipantIdentity(item.callId) }, worker, db);
+    const at = new Date().toISOString();
+    await expect(recordVoiceEvent({ schemaVersion: 1, eventId: "human", callId: item.callId, agentEpoch: 1, sourceSequence: 1, occurredAt: at, type: "transcript.final", payload: { segmentId: "human", revision: 1, speaker: "HUMAN", participantId: "operator", sequence: 1, text: "forged", language: "hi" } }, lease.token, db)).rejects.toMatchObject({ code: "PARTICIPANT_MISMATCH" } satisfies Partial<VoiceError>);
+    await recordVoiceEvent({ schemaVersion: 1, eventId: "segment-a", callId: item.callId, agentEpoch: 1, sourceSequence: 1, occurredAt: at, type: "transcript.final", payload: { segmentId: "a", revision: 1, speaker: "CALLER", participantId: "caller", sequence: 1, text: "original", language: "hi" } }, lease.token, db);
+    await expect(recordVoiceEvent({ schemaVersion: 1, eventId: "same-revision-different-body", callId: item.callId, agentEpoch: 1, sourceSequence: 2, occurredAt: at, type: "transcript.final", payload: { segmentId: "a", revision: 1, speaker: "CALLER", participantId: "caller", sequence: 1, text: "mutated", language: "hi" } }, lease.token, db)).rejects.toMatchObject({ code: "SEGMENT_REVISION_CONFLICT" } satisfies Partial<VoiceError>);
+    await expect(recordVoiceEvent({ schemaVersion: 1, eventId: "other-segment-same-order", callId: item.callId, agentEpoch: 1, sourceSequence: 2, occurredAt: at, type: "transcript.final", payload: { segmentId: "b", revision: 1, speaker: "CALLER", participantId: "caller", sequence: 1, text: "overwrite", language: "hi" } }, lease.token, db)).rejects.toMatchObject({ code: "SEGMENT_SEQUENCE_CONFLICT" } satisfies Partial<VoiceError>);
+    expect(await db.utterance.findFirstOrThrow({ where: { callId: item.callId, seq: 1 } })).toMatchObject({ text: "original" });
+  });
+  it("rejects future and beyond-retention evidence even with an authentic token", async () => {
+    const item = await session();
+    const row = await db.voiceSession.findUniqueOrThrow({ where: { id: item.id } });
+    const lease = await claimVoiceLease({ callId: item.callId, roomName: row.roomName, dispatchId: "dispatch", participantId: workerParticipantIdentity(item.callId) }, worker, db);
+    await expect(recordVoiceEvent({ schemaVersion: 1, eventId: "future", callId: item.callId, agentEpoch: 1, sourceSequence: 1, occurredAt: new Date(Date.now() + 6_000).toISOString(), type: "agent.ready", payload: { participantId: workerParticipantIdentity(item.callId) } }, lease.token, db)).rejects.toMatchObject({ code: "EVENT_TIME_INVALID" } satisfies Partial<VoiceError>);
+    await db.voiceLease.updateMany({ where: { sessionId: item.id }, data: { expiresAt: new Date(Date.now() - 24 * 60 * 60 * 1000 - 1) } });
+    await expect(recordVoiceEvent({ schemaVersion: 1, eventId: "too-old", callId: item.callId, agentEpoch: 1, sourceSequence: 1, occurredAt: new Date().toISOString(), type: "agent.ready", payload: { participantId: workerParticipantIdentity(item.callId) } }, lease.token, db)).rejects.toMatchObject({ code: "LEASE_EXPIRED" } satisfies Partial<VoiceError>);
   });
 });

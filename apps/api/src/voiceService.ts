@@ -1,9 +1,11 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { Prisma, PrismaClient, createBusinessRequest, prisma } from "@msva/db";
 import { CreateRequestInputSchema, type CreateRequestResult, type VoiceLease, type WorkerEvent } from "@msva/contracts";
+import { markPostCallAssessmentDirty } from "./assessmentJobs.js";
 
 const LEASE_MS = 30_000;
 const REPLAY_MS = 24 * 60 * 60 * 1000;
+const CLOCK_SKEW_MS = 5_000;
 const CONNECTION_MS = 10_000;
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 export const workerParticipantIdentity = (callId: string) => `msva-agent-${hash(callId).slice(0, 32)}`;
@@ -50,11 +52,16 @@ async function lockedSession(tx: VoiceDb, callId: string) {
   if (!session) throw new VoiceError(404, "CALL_NOT_FOUND");
   return session;
 }
-function activeLease(session: Awaited<ReturnType<typeof lockedSession>>, token: string, now: Date, evidence = false) {
+function activeLease(session: Awaited<ReturnType<typeof lockedSession>>, token: string, now: Date) {
   if (!session.lease || !tokenEquals(`Bearer ${token}`, leaseToken(session.id, session.lease.agentEpoch)) || hash(token) !== session.lease.tokenHash) throw new VoiceError(401, "LEASE_INVALID");
   if (session.lease.expiresAt > now) return session.lease;
-  if (evidence && now.getTime() - session.lease.expiresAt.getTime() <= REPLAY_MS) return session.lease;
   throw new VoiceError(409, "LEASE_EXPIRED");
+}
+function authenticatedEventLease(session: Awaited<ReturnType<typeof lockedSession>>, token: string, now: Date) {
+  if (!session.lease || !tokenEquals(`Bearer ${token}`, leaseToken(session.id, session.lease.agentEpoch)) || hash(token) !== session.lease.tokenHash) throw new VoiceError(401, "LEASE_INVALID");
+  const cutoff = session.endedAt && session.endedAt < session.lease.expiresAt ? session.endedAt : session.lease.expiresAt;
+  if (now.getTime() > cutoff.getTime() + REPLAY_MS) throw new VoiceError(409, "LEASE_EXPIRED");
+  return { lease: session.lease, cutoff, hasAuthority: session.lease.expiresAt > now && session.state === "ACTIVE" && session.ownershipMode === "AI" };
 }
 
 export async function createVoiceSession(input: { requestId: string; callId: string; ownerUserId?: string; ownerSessionId?: string; language?: string; callerParticipantId: string }, db: PrismaClient = prisma) {
@@ -116,10 +123,17 @@ export async function renewVoiceLease(callId: string, epoch: number, token: stri
 
 export async function recordVoiceEvent(event: WorkerEvent, token: string, db: PrismaClient = prisma, now = new Date()) {
   return serializable(db, async (tx) => {
-    const session = await lockedSession(tx, event.callId); const checkedAt = new Date(); const evidence = event.type === "transcript.final"; const lease = activeLease(session, token, checkedAt, evidence);
+    const session = await lockedSession(tx, event.callId);
+    const checkedAt = new Date();
+    const { lease, cutoff, hasAuthority } = authenticatedEventLease(session, token, checkedAt);
     if (lease.agentEpoch !== event.agentEpoch) throw new VoiceError(403, "EPOCH_MISMATCH");
     const occurredAt = new Date(event.occurredAt);
-    if (!Number.isFinite(occurredAt.getTime()) || occurredAt > checkedAt || occurredAt < lease.createdAt || (lease.expiresAt <= checkedAt && occurredAt > lease.expiresAt)) throw new VoiceError(409, "EVENT_TIME_INVALID");
+    const isFlush = event.type === "transcript.flushed";
+    const latestAllowed = isFlush ? cutoff.getTime() + REPLAY_MS : cutoff.getTime() + CLOCK_SKEW_MS;
+    if (!Number.isFinite(occurredAt.getTime())
+      || occurredAt.getTime() < lease.createdAt.getTime() - CLOCK_SKEW_MS
+      || occurredAt.getTime() > checkedAt.getTime() + CLOCK_SKEW_MS
+      || occurredAt.getTime() > latestAllowed) throw new VoiceError(409, "EVENT_TIME_INVALID");
     const canonicalBody = stable(event); const bodyHash = hash(canonicalBody);
     const byId = await tx.voiceEvent.findUnique({ where: { sessionId_eventId: { sessionId: session.id, eventId: event.eventId } } });
     if (byId) { if (byId.bodyHash !== bodyHash) throw new VoiceError(409, "EVENT_CONFLICT"); return { eventId: event.eventId, status: "duplicate" as const }; }
@@ -130,31 +144,48 @@ export async function recordVoiceEvent(event: WorkerEvent, token: string, db: Pr
     if (event.type === "transcript.final") {
       const expected = event.payload.speaker === "CALLER" ? caller?.identity : event.payload.speaker === "AGENT" ? agent?.identity : undefined;
       if (!expected || expected !== event.payload.participantId) throw new VoiceError(403, "PARTICIPANT_MISMATCH");
-      const highest = await tx.transcriptSegment.aggregate({ where: { sessionId: session.id, segmentId: event.payload.segmentId }, _max: { revision: true } });
-      const current = !highest._max.revision || event.payload.revision >= highest._max.revision;
+      const revisions = await tx.transcriptSegment.findMany({ where: { sessionId: session.id, segmentId: event.payload.segmentId }, orderBy: { revision: "desc" } });
+      const sameRevision = revisions.find((segment) => segment.revision === event.payload.revision);
+      const immutableChanged = (segment: typeof revisions[number]) => segment.speaker !== event.payload.speaker
+        || segment.participantId !== event.payload.participantId
+        || segment.sequence !== event.payload.sequence;
+      if (revisions.some(immutableChanged)) throw new VoiceError(409, "SEGMENT_IDENTITY_CONFLICT");
+      if (sameRevision && (sameRevision.text !== event.payload.text
+        || sameRevision.startMs !== (event.payload.startMs ?? null)
+        || sameRevision.endMs !== (event.payload.endMs ?? null)
+        || sameRevision.language !== event.payload.language)) throw new VoiceError(409, "SEGMENT_REVISION_CONFLICT");
+      const sequenceOwner = await tx.transcriptSegment.findFirst({
+        where: { sessionId: session.id, sequence: event.payload.sequence, segmentId: { not: event.payload.segmentId }, isCurrent: true }
+      });
+      if (sequenceOwner) throw new VoiceError(409, "SEGMENT_SEQUENCE_CONFLICT");
+      const highestRevision = revisions[0]?.revision;
+      const current = highestRevision === undefined || event.payload.revision > highestRevision;
       if (current) await tx.transcriptSegment.updateMany({ where: { sessionId: session.id, segmentId: event.payload.segmentId, isCurrent: true }, data: { isCurrent: false } });
-      await tx.transcriptSegment.create({ data: { sessionId: session.id, segmentId: event.payload.segmentId, revision: event.payload.revision, speaker: event.payload.speaker, participantId: event.payload.participantId, sequence: event.payload.sequence, text: event.payload.text, startMs: event.payload.startMs ?? null, endMs: event.payload.endMs ?? null, language: event.payload.language, isCurrent: current } });
+      if (!sameRevision) await tx.transcriptSegment.create({ data: { sessionId: session.id, segmentId: event.payload.segmentId, revision: event.payload.revision, speaker: event.payload.speaker, participantId: event.payload.participantId, sequence: event.payload.sequence, text: event.payload.text, startMs: event.payload.startMs ?? null, endMs: event.payload.endMs ?? null, language: event.payload.language, isCurrent: current } });
       if (current) {
         const projection = await tx.utterance.findFirst({ where: { callId: event.callId, seq: event.payload.sequence } });
         if (projection) await tx.utterance.update({ where: { id: projection.id }, data: { speaker: event.payload.speaker, text: event.payload.text, atMs: event.payload.endMs ?? null } });
         else await tx.utterance.create({ data: { callId: event.callId, seq: event.payload.sequence, speaker: event.payload.speaker, text: event.payload.text, atMs: event.payload.endMs ?? null } });
+        if (session.finalWatermark > 0) await tx.voiceSession.update({ where: { id: session.id }, data: { finalWatermark: 0 } });
+        await markPostCallAssessmentDirty(tx, event.callId, checkedAt);
       }
     }
     if (event.type === "agent.ready" && event.payload.participantId !== agent?.identity) throw new VoiceError(403, "PARTICIPANT_MISMATCH");
     if (event.type === "control.ack") {
-      const control = await tx.mediaControlIntent.findUnique({ where: { id: event.payload.controlId } });
-      if (!control || control.status !== "RUNNING") throw new VoiceError(409, "CONTROL_ACK_INVALID");
-      await tx.mediaControlIntent.update({ where: { id: control.id }, data: { status: "CONFIRMED", leaseExpiresAt: null } });
+      const control = await tx.mediaControlIntent.findUnique({ where: { id: event.payload.controlId }, include: { admission: { select: { voiceSessionId: true } } } });
+      if (!control || control.admission.voiceSessionId !== session.id) throw new VoiceError(409, "CONTROL_ACK_INVALID");
+      if (hasAuthority && control.status === "RUNNING") await tx.mediaControlIntent.update({ where: { id: control.id }, data: { status: "CONFIRMED", leaseExpiresAt: null } });
     }
     await tx.voiceEvent.create({ data: { sessionId: session.id, eventId: event.eventId, agentEpoch: event.agentEpoch, sourceSequence: event.sourceSequence, canonicalBody, bodyHash, type: event.type, occurredAt: new Date(event.occurredAt) } });
     if (event.type === "transcript.flushed") {
-      if (event.payload.lastSourceSequence !== (watermark._max.sourceSequence ?? 0)) throw new VoiceError(409, "FLUSH_WATERMARK_INVALID");
+      if (event.payload.lastSourceSequence !== event.sourceSequence - 1 || event.payload.lastSourceSequence !== (watermark._max.sourceSequence ?? 0)) throw new VoiceError(409, "FLUSH_WATERMARK_INVALID");
       await tx.voiceSession.update({ where: { id: session.id }, data: { finalWatermark: event.payload.lastSourceSequence } });
     }
-    if (event.type === "agent.failed" && event.payload.code === "FATAL") {
+    if (event.type === "agent.failed" && event.payload.code === "FATAL" && hasAuthority) {
       await tx.voiceSession.update({ where: { id: session.id }, data: { state: "FAILED", endedAt: checkedAt, authorizationVersion: { increment: 1 } } });
       await tx.call.update({ where: { id: event.callId }, data: { status: "FAILED", endedAt: checkedAt, outcome: "ABANDONED" } });
       await revokeAdmissions(tx, { callId: event.callId, reason: "CALL_ENDED" }, checkedAt);
+      await markPostCallAssessmentDirty(tx, event.callId, checkedAt);
     }
     return { eventId: event.eventId, status: "committed" as const };
   });
@@ -165,9 +196,12 @@ export async function finalizeVoiceSession(callId: string, db: PrismaClient = pr
     const session = await lockedSession(tx, callId);
     const now = new Date();
     if (session.state === "ENDED" || session.state === "FAILED") return;
+    const highest = await tx.voiceEvent.findFirst({ where: { sessionId: session.id, agentEpoch: session.currentEpoch }, orderBy: { sourceSequence: "desc" } });
+    if (!highest || highest.type !== "transcript.flushed" || session.finalWatermark !== highest.sourceSequence - 1) throw new VoiceError(409, "EVIDENCE_INCOMPLETE");
     await tx.voiceSession.update({ where: { id: session.id }, data: { state: "ENDED", endedAt: now, authorizationVersion: { increment: 1 } } });
-    await tx.call.update({ where: { id: callId }, data: { status: "COMPLETED", endedAt: now } });
+    await tx.call.update({ where: { id: callId }, data: { status: "COMPLETED", endedAt: now, outcome: "RESOLVED_BY_VA" } });
     await revokeAdmissions(tx, { callId, reason: "CALL_ENDED" }, now);
+    await markPostCallAssessmentDirty(tx, callId, now);
   });
 }
 
@@ -198,7 +232,7 @@ export async function invokeVoiceTool(input: { callId: string; invocationId: str
 
 export async function voiceToolReceipt(callId: string, invocationId: string, token: string, db: PrismaClient = prisma, now = new Date()): Promise<CreateRequestResult> {
   const session = await db.voiceSession.findFirst({ where: { callId }, include: { participants: true, lease: true } }); if (!session) throw new VoiceError(404, "CALL_NOT_FOUND");
-  activeLease(session, token, now, true);
+  if (!session.lease || !tokenEquals(`Bearer ${token}`, leaseToken(session.id, session.lease.agentEpoch)) || hash(token) !== session.lease.tokenHash || now.getTime() > session.lease.expiresAt.getTime() + REPLAY_MS) throw new VoiceError(409, "LEASE_EXPIRED");
   const invocation = await db.toolInvocation.findUnique({ where: { sessionId_invocationId: { sessionId: session.id, invocationId } } });
   if (!invocation || invocation.status !== "COMMITTED" || !invocation.result) throw new VoiceError(404, "TOOL_RECEIPT_NOT_FOUND");
   return invocation.result as unknown as CreateRequestResult;

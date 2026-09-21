@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import type { AddressInfo } from "node:net";
 import { PrismaClient } from "@msva/db";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -439,6 +440,18 @@ describe("abuse resistance", () => {
     expect(await contended).toEqual({ ok: true });
   });
 
+  it("counts every address in one IPv6 /64 as one client", async () => {
+    const auth = await authWithFakeDelivery(async () => undefined);
+    const inSubnet = (n: number) => ({ address: `2001:db8:1:2::${n.toString(16)}` });
+    const otherSubnet = { address: "2001:db8:1:3::1" };
+    for (let index = 1; index <= 30; index += 1) expect(await auth.requestLoginCode(`subnet${index}@example.test`, inSubnet(index))).toEqual({ ok: true });
+    expect(await auth.requestLoginCode("subnet-extra@example.test", inSubnet(0xffff))).toMatchObject({ ok: false, limited: true });
+    expect(await auth.requestLoginCode("subnet-other@example.test", otherSubnet)).toEqual({ ok: true });
+    for (let index = 1; index <= 60; index += 1) expect(await auth.verifyLoginCode(`verify${index % 6}@example.test`, "000000", inSubnet(index))).toBeNull();
+    expect(await auth.verifyLoginCode("verify-extra@example.test", "000000", inSubnet(0xfffe))).toMatchObject({ limited: true });
+    expect(await auth.verifyLoginCode("verify-extra@example.test", "000000", otherSubnet)).toBeNull();
+  });
+
   it("does not let one client's flood lock everyone else out", async () => {
     const auth = await authWithFakeDelivery(async () => undefined);
     for (let index = 0; index < 120; index += 1) await auth.requestLoginCode("victim@example.test", network(70));
@@ -493,6 +506,25 @@ describe("abuse resistance", () => {
     await vi.waitFor(async () => expect(await db.loginCode.count({ where: { deliveryLeaseExpiresAt: { not: null } } })).toBe(0));
   });
 
+  it("frees a superseded code's delivery slot when its send fails", async () => {
+    const user = await db.user.create({ data: { email: "failing@example.test", name: "Failing", role: "AGENT" } });
+    const sends: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
+    const auth = await authWithFakeDelivery(() => new Promise<void>((resolve, reject) => { sends.push({ resolve, reject }); }));
+    await auth.requestLoginCode(user.email, network(80));
+    await vi.waitFor(() => expect(sends).toHaveLength(1));
+    await db.authRateBucket.deleteMany();
+    await auth.requestLoginCode(user.email, network(81));
+    await vi.waitFor(() => expect(sends).toHaveLength(2));
+    const superseded = await db.loginCode.findFirstOrThrow({ where: { userId: user.id }, orderBy: { createdAt: "asc" } });
+    expect(superseded.deliveryState).toBe("FAILED");
+    expect(superseded.deliveryLeaseExpiresAt).not.toBeNull();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    sends[0]!.reject(new Error("SMTP unavailable"));
+    await vi.waitFor(async () => expect((await db.loginCode.findUniqueOrThrow({ where: { id: superseded.id } })).deliveryLeaseExpiresAt).toBeNull());
+    sends[1]!.resolve();
+    await vi.waitFor(async () => expect(await db.loginCode.count({ where: { userId: user.id, deliveryState: "DELIVERED" } })).toBe(1));
+  });
+
   it("echoes a code only in development with echo enabled", async () => {
     const user = await db.user.create({ data: { email: "echo@example.test", name: "Echo", role: "AGENT" } });
     process.env.AUTH_DEV_ECHO = "1";
@@ -510,6 +542,31 @@ describe("abuse resistance", () => {
     } finally {
       delete process.env.AUTH_DEV_ECHO;
       process.env.NODE_ENV = "development";
+    }
+  });
+});
+
+describe("user administration", () => {
+  it("refuses a new user's email longer than 254 characters", async () => {
+    const token = randomBytes(32).toString("hex");
+    const admin = await db.user.create({ data: { email: "admin@example.test", name: "Admin", role: "ADMIN" } });
+    await db.session.create({ data: { userId: admin.id, tokenHash: createHash("sha256").update(token).digest("hex"), expiresAt: new Date(Date.now() + 3_600_000) } });
+    const { default: express } = await import("express");
+    const { adminRouter } = await import("./routes/admin.js");
+    const app = express();
+    app.use(express.json());
+    app.use("/api/admin", adminRouter);
+    const server = app.listen(0, "127.0.0.1");
+    await new Promise((resolve) => server.once("listening", resolve));
+    const { port } = server.address() as AddressInfo;
+    const create = (email: string) => fetch(`http://127.0.0.1:${port}/api/admin/users`, { method: "POST", headers: { "content-type": "application/json", cookie: `msva_session=${token}` }, body: JSON.stringify({ email, name: "New", role: "AGENT" }) });
+    const longest = `${"a".repeat(64)}@${"b".repeat(60)}.${"c".repeat(60)}.${"d".repeat(62)}.test`;
+    expect(longest).toHaveLength(254);
+    try {
+      expect((await create(`a${longest}`)).status).toBe(400);
+      expect((await create(longest)).status).toBe(201);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
     }
   });
 });

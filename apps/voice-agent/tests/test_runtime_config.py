@@ -63,3 +63,14 @@ def enabled_env(tmp_path: Path) -> dict[str, str]:
         "VOICE_STT_MODE": "realtime",
         "VOICE_SPOOL_PATH": str(tmp_path / "spool.db"),
     }
+
+
+def test_default_spool_holds_the_default_calls_at_the_api_limits():
+    # The API's per-call ingestion limits (MAX_SESSION_EVENTS and MAX_SESSION_EVENT_BYTES).
+    api_max_events, api_max_bytes = 5_000, 8 * 1024 * 1024
+    # A Fernet-encrypted lease credential is stored with every event; 256 bytes bounds it.
+    credential_bytes = 256
+    config = RuntimeConfig.from_env({})
+
+    assert config.spool_max_events >= config.call_limit * api_max_events
+    assert config.spool_max_bytes >= config.call_limit * (api_max_bytes + api_max_events * credential_bytes)

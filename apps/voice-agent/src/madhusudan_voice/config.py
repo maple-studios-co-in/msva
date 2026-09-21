@@ -44,6 +44,13 @@ def _internal_livekit_url(value: str) -> str:
 
 
 DEFAULT_SPOOL_PATH = "/var/lib/msva-voice-agent/spool.sqlite3"
+# The spool is this host's backlog of undelivered evidence, shared by all its calls.
+# The API accepts at most 5,000 events and 8 MiB of event bodies per call, so the
+# defaults hold two such calls (the default call limit) through an API outage,
+# with room for each event's encrypted replay credential.
+DEFAULT_SPOOL_MAX_EVENTS = 10_000
+DEFAULT_SPOOL_MAX_BYTES = 52_428_800
+DEFAULT_CALL_LIMIT = 2
 
 
 @dataclass(frozen=True)
@@ -64,8 +71,8 @@ class ReplayConfig:
             internal_api_url=_https_url(_required(env, "VOICE_INTERNAL_API_URL", context), "VOICE_INTERNAL_API_URL"),
             replay_credential_key=_required(env, "VOICE_REPLAY_CREDENTIAL_KEY", context),
             spool_path=Path(env.get("VOICE_SPOOL_PATH", DEFAULT_SPOOL_PATH)),
-            spool_max_events=_positive_int(env, "VOICE_SPOOL_MAX_EVENTS", 10_000),
-            spool_max_bytes=_positive_int(env, "VOICE_SPOOL_MAX_BYTES", 52_428_800),
+            spool_max_events=_positive_int(env, "VOICE_SPOOL_MAX_EVENTS", DEFAULT_SPOOL_MAX_EVENTS),
+            spool_max_bytes=_positive_int(env, "VOICE_SPOOL_MAX_BYTES", DEFAULT_SPOOL_MAX_BYTES),
         )
 
 
@@ -105,9 +112,9 @@ class RuntimeConfig:
             worker_credential=None,
             replay_credential_key=None,
             spool_path=spool_path,
-            spool_max_events=_positive_int(env, "VOICE_SPOOL_MAX_EVENTS", 10_000),
-            spool_max_bytes=_positive_int(env, "VOICE_SPOOL_MAX_BYTES", 52_428_800),
-            call_limit=_positive_int(env, "VOICE_CALL_LIMIT", 2),
+            spool_max_events=_positive_int(env, "VOICE_SPOOL_MAX_EVENTS", DEFAULT_SPOOL_MAX_EVENTS),
+            spool_max_bytes=_positive_int(env, "VOICE_SPOOL_MAX_BYTES", DEFAULT_SPOOL_MAX_BYTES),
+            call_limit=_positive_int(env, "VOICE_CALL_LIMIT", DEFAULT_CALL_LIMIT),
             drain_timeout_seconds=_positive_int(env, "VOICE_DRAIN_TIMEOUT_SECONDS", 120),
             lease_seconds=_positive_int(env, "VOICE_LEASE_SECONDS", 30),
             lease_renew_seconds=_positive_int(env, "VOICE_LEASE_RENEW_SECONDS", 10),

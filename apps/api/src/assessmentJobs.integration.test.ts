@@ -177,6 +177,43 @@ describe("automatic post-call queue", () => {
     expect(await db.assessmentWorkerSlot.findUniqueOrThrow({ where: { slot: 0 } })).toMatchObject({ ownerToken: null, jobId: null });
   });
 
+  it("keeps two slots authoritative when a delayed tick starts with an expired clock", async () => {
+    const ids = await Promise.all([openCall(), openCall(), openCall()]);
+    await Promise.all(ids.map((callId) => recordCallEnd(callId, {})));
+    const delayedTickAt = new Date(Date.now() - 60_000);
+    await db.assessmentJob.updateMany({ where: { callId: { in: ids } }, data: { dueAt: delayedTickAt } });
+
+    let holdRequests = true;
+    let activeRequests = 0;
+    let maxActiveRequests = 0;
+    const releaseRequests: Array<() => void> = [];
+    const fetchMock = vi.fn(() => {
+      if (!holdRequests) return Promise.resolve(new Response(JSON.stringify(providerPayload()), { status: 200 }));
+      activeRequests++;
+      maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
+      return new Promise<Response>((resolve) => releaseRequests.push(() => {
+        activeRequests--;
+        resolve(new Response(JSON.stringify(providerPayload()), { status: 200 }));
+      }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const delayedRunner = runAssessmentTick(delayedTickAt);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const freshRunners = [runAssessmentTick(new Date()), runAssessmentTick(new Date())];
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // The first worker's claim must be leased from wall-clock time, so the
+    // two fresh workers can occupy only the remaining persisted slot.
+    expect(maxActiveRequests).toBe(2);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    holdRequests = false;
+    releaseRequests.splice(0).forEach((release) => release());
+    await Promise.all([delayedRunner, ...freshRunners]);
+  });
+
   it("keeps a changed inactive job skipped when concurrent admission is at capacity", async () => {
     const callId = await openCall();
     await recordCallEnd(callId, {});

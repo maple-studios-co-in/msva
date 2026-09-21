@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { PrismaClient } from "@msva/db";
 import type { WorkerEvent } from "@msva/contracts";
-import { claimVoiceLease, createVoiceSession, finalizeVoiceSession, invokeVoiceTool, prepareBrowserAdmission, recordVoiceDispatch, recordVoiceEvent, renewVoiceLease, voiceContext, workerParticipantIdentity } from "./voiceService.js";
+import { claimVoiceLease, createVoiceSession, endVoiceCall, finalizeVoiceSession, invokeVoiceTool, prepareBrowserAdmission, recordVoiceDispatch, recordVoiceEvent, renewVoiceLease, voiceContext, workerParticipantIdentity } from "./voiceService.js";
 
 const databaseUrl = process.env.MSVA_VOICE_TEST_DATABASE_URL;
 if (!databaseUrl) throw new Error("MSVA_VOICE_TEST_DATABASE_URL is required");
@@ -34,10 +34,24 @@ const callerFinal = (call: Live, seq: number, text = "doodh kharab tha"): Worker
 const flushed = (call: Live, seq: number): WorkerEvent => ({ ...envelope(call, seq), type: "transcript.flushed", payload: { lastSourceSequence: seq - 1 } });
 const complaint = { journey: "CONSUMER_COMPLAINT", callerConfirmation: "NEW", fields: { product: "Oil", purchaseArea: "Indore", issueCategory: "quality", description: "Leaking", productAvailable: true }, queue: { territory: "MP", language: "hi" } };
 const tool = (call: Live, invocationId: string, args: unknown = complaint) => invokeVoiceTool({ callId: call.callId, invocationId, agentEpoch: 1, name: "create_business_request", arguments: args }, call.lease.token, db);
+const failed = (call: Live, seq: number, code: "FATAL" | "TRANSIENT" = "FATAL"): WorkerEvent => ({ ...envelope(call, seq), type: "agent.failed", payload: { code } });
 /** Evidence already stored for the call, so a test can start at the ingestion limits. */
 const storedEvents = (call: Live, count: number, bodyBytes = 10) => db.voiceEvent.createMany({
   data: Array.from({ length: count }, (_, index) => ({ sessionId: call.sessionId, eventId: `stored-${index}`, agentEpoch: 0, sourceSequence: index + 1, canonicalBody: "{}", bodyHash: "stored", bodyBytes, type: "agent.ready", occurredAt: new Date() }))
 });
+async function signedIn(role: "ADMIN" | "SUPERVISOR" | "AGENT" | "VIEWER" = "AGENT") {
+  const user = await db.user.create({ data: { email: `${randomUUID()}@test.invalid`, name: "Person", role } });
+  const browser = await db.session.create({ data: { userId: user.id, tokenHash: randomUUID(), expiresAt: new Date(Date.now() + 3_600_000) } });
+  return { userId: user.id, sessionId: browser.id };
+}
+/** A caller signed in to the console who owns the call and holds its caller admission. */
+async function admittedCaller(call: Live) {
+  const who = await signedIn();
+  await db.voiceSession.update({ where: { id: call.sessionId }, data: { ownerUserId: who.userId, ownerSessionId: who.sessionId } });
+  const admission = await prepareBrowserAdmission({ callId: call.callId, ...who, role: "CALLER", expectedAuthorizationVersion: 1 }, db);
+  return { ...who, admission };
+}
+const crash = (call: Live, msAgo = 1) => db.voiceLease.updateMany({ where: { sessionId: call.sessionId }, data: { expiresAt: new Date(Date.now() - msAgo) } });
 
 describe("worker authority", () => {
   it.each(["CONFIGURATION", "TRANSIENT", "FATAL", "LEASE_LOST"] as const)("fences every authority after a %s failure and keeps the call for staff", async (code) => {
@@ -81,7 +95,7 @@ describe("worker authority", () => {
     expect(await db.mediaControlIntent.findUniqueOrThrow({ where: { id: control.id } })).toMatchObject({ status: "RUNNING", attemptToken: "executor" });
   });
 
-  it("bounds how many events one call can ingest", async () => {
+  it("bounds how many events one call can ingest, leaving room for one checkpoint", async () => {
     const call = await liveCall();
     await storedEvents(call, 4_999);
     const first = ready(call, 1);
@@ -89,6 +103,9 @@ describe("worker authority", () => {
     await expect(recordVoiceEvent(callerFinal(call, 2), call.lease.token, db)).rejects.toMatchObject({ code: "EVENT_CAPACITY" });
     // Receipts for evidence already committed are still answered.
     await expect(recordVoiceEvent(first, call.lease.token, db)).resolves.toMatchObject({ status: "duplicate" });
+    // The stream may still end in a checkpoint, but only one.
+    await expect(recordVoiceEvent(flushed(call, 2), call.lease.token, db)).resolves.toMatchObject({ status: "committed" });
+    await expect(recordVoiceEvent(flushed(call, 3), call.lease.token, db)).rejects.toMatchObject({ code: "EVENT_CAPACITY" });
   });
 
   it("bounds how many bytes of evidence one call can ingest", async () => {
@@ -165,6 +182,75 @@ describe("call completion", () => {
     await recordVoiceEvent(flushed(failed, 3), failed.lease.token, db);
     await finalizeVoiceSession(failed.callId, db);
     expect(await db.call.findUniqueOrThrow({ where: { id: failed.callId } })).toMatchObject({ status: "COMPLETED", outcome: "IN_PROGRESS" });
+  });
+});
+
+describe("ending calls without complete evidence", () => {
+  it("ends a call whose worker crashed before its checkpoint, and completes it when the flush arrives late", async () => {
+    const call = await liveCall();
+    const caller = await admittedCaller(call);
+    await recordVoiceEvent(callerFinal(call, 1), call.lease.token, db);
+    await crash(call);
+    await finalizeVoiceSession(call.callId, db);
+    const ended = await db.call.findUniqueOrThrow({ where: { id: call.callId } });
+    expect(ended).toMatchObject({ status: "COMPLETED", outcome: "IN_PROGRESS" });
+    expect(ended.endedAt).not.toBeNull();
+    expect(await db.voiceSession.findUniqueOrThrow({ where: { id: call.sessionId } })).toMatchObject({ state: "ENDED", transcriptComplete: false });
+    expect(await db.voiceAdmission.findUniqueOrThrow({ where: { id: caller.admission.id } })).toMatchObject({ state: "REVOKING", revokeReason: "CALL_ENDED" });
+    expect(await db.mediaControlIntent.count({ where: { admissionId: caller.admission.id, kind: "REMOVE" } })).toBe(1);
+    await recordVoiceEvent(flushed(call, 2), call.lease.token, db);
+    expect(await db.voiceSession.findUniqueOrThrow({ where: { id: call.sessionId } })).toMatchObject({ state: "ENDED", transcriptComplete: true });
+  });
+
+  it("ends a call after a fatal failure without a checkpoint, and corrects its outcome from late evidence", async () => {
+    const call = await liveCall();
+    await recordVoiceEvent(ready(call, 1), call.lease.token, db);
+    await recordVoiceEvent(failed(call, 2), call.lease.token, db);
+    await finalizeVoiceSession(call.callId, db);
+    expect(await db.call.findUniqueOrThrow({ where: { id: call.callId } })).toMatchObject({ status: "COMPLETED", outcome: "ABANDONED" });
+    expect(await db.voiceSession.findUniqueOrThrow({ where: { id: call.sessionId } })).toMatchObject({ state: "ENDED", transcriptComplete: false });
+    // The caller's speech was still in the worker's spool when the call ended.
+    await recordVoiceEvent(callerFinal(call, 3), call.lease.token, db);
+    expect(await db.call.findUniqueOrThrow({ where: { id: call.callId } })).toMatchObject({ outcome: "ABANDONED" });
+    await recordVoiceEvent(flushed(call, 4), call.lease.token, db);
+    expect(await db.voiceSession.findUniqueOrThrow({ where: { id: call.sessionId } })).toMatchObject({ transcriptComplete: true });
+    expect(await db.call.findUniqueOrThrow({ where: { id: call.callId } })).toMatchObject({ status: "COMPLETED", outcome: "IN_PROGRESS" });
+  });
+
+  it("ends a call whose evidence reached the ingestion limit", async () => {
+    const call = await liveCall();
+    await storedEvents(call, 4_999);
+    await recordVoiceEvent(ready(call, 1), call.lease.token, db);
+    await expect(recordVoiceEvent(callerFinal(call, 2), call.lease.token, db)).rejects.toMatchObject({ code: "EVENT_CAPACITY" });
+    await finalizeVoiceSession(call.callId, db);
+    expect(await db.voiceSession.findUniqueOrThrow({ where: { id: call.sessionId } })).toMatchObject({ state: "ENDED", transcriptComplete: false });
+    expect((await db.call.findUniqueOrThrow({ where: { id: call.callId } })).endedAt).not.toBeNull();
+  });
+
+  it("lets the caller, an assigned operator or a supervisor end a call in recovery, and nobody else", async () => {
+    const call = await liveCall();
+    const caller = await admittedCaller(call);
+    await recordVoiceEvent(failed(call, 1), call.lease.token, db);
+    const bystander = await signedIn("AGENT");
+    const viewer = await signedIn("VIEWER");
+    for (const who of [bystander, viewer]) await expect(endVoiceCall({ callId: call.callId, ...who }, db)).rejects.toMatchObject({ status: 403, code: "END_DENIED" });
+    expect(await db.voiceSession.findUniqueOrThrow({ where: { id: call.sessionId } })).toMatchObject({ state: "RECOVERY_REQUIRED" });
+    await endVoiceCall({ callId: call.callId, userId: caller.userId, sessionId: caller.sessionId }, db);
+    expect(await db.voiceSession.findUniqueOrThrow({ where: { id: call.sessionId } })).toMatchObject({ state: "ENDED" });
+    // Ending an ended call changes nothing.
+    const endedAt = (await db.call.findUniqueOrThrow({ where: { id: call.callId } })).endedAt;
+    await endVoiceCall({ callId: call.callId, userId: caller.userId, sessionId: caller.sessionId }, db);
+    expect((await db.call.findUniqueOrThrow({ where: { id: call.callId } })).endedAt).toEqual(endedAt);
+
+    const operatorCall = await liveCall("operator");
+    const operator = await signedIn("AGENT");
+    await db.handoff.create({ data: { callId: operatorCall.callId, assignedUserId: operator.userId, state: "ASSIGNED" } });
+    await endVoiceCall({ callId: operatorCall.callId, ...operator }, db);
+    expect(await db.voiceSession.findUniqueOrThrow({ where: { id: operatorCall.sessionId } })).toMatchObject({ state: "ENDED" });
+
+    const supervisedCall = await liveCall("supervised");
+    await endVoiceCall({ callId: supervisedCall.callId, ...(await signedIn("SUPERVISOR")) }, db);
+    expect(await db.voiceSession.findUniqueOrThrow({ where: { id: supervisedCall.sessionId } })).toMatchObject({ state: "ENDED" });
   });
 });
 

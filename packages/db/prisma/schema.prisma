@@ -635,6 +635,7 @@ model VoiceSession {
   authorizationVersion  Int                @default(1)
   currentEpoch          Int                @default(0)
   finalWatermark        Int                @default(0)
+  transcriptComplete    Boolean            @default(false)
   version               Int                @default(1)
   startedAt             DateTime           @default(now())
   endedAt               DateTime?

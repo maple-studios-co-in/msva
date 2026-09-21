@@ -93,9 +93,11 @@ describe("voice session persistence", () => {
     expect((await db.voiceSession.findUniqueOrThrow({ where: { id: item.id } })).finalWatermark).toBe(2);
     await recordVoiceEvent({ schemaVersion: 1, eventId: "revision-4", callId: item.callId, agentEpoch: 1, sourceSequence: 4, occurredAt: at, type: "transcript.final", payload: { segmentId: "segment", revision: 2, speaker: "CALLER", participantId: "caller", sequence: 1, text: "revised", language: "hi" } }, lease.token, db);
     expect((await db.voiceSession.findUniqueOrThrow({ where: { id: item.id } })).finalWatermark).toBe(0);
-    await expect(finalizeVoiceSession(item.callId, db)).rejects.toMatchObject({ code: "EVIDENCE_INCOMPLETE" } satisfies Partial<VoiceError>);
-    await recordVoiceEvent({ schemaVersion: 1, eventId: "flush-5", callId: item.callId, agentEpoch: 1, sourceSequence: 5, occurredAt: at, type: "transcript.flushed", payload: { lastSourceSequence: 4 } }, lease.token, db);
+    // The call can end with the checkpoint invalidated; completeness is recorded, and the next checkpoint restores it.
     await finalizeVoiceSession(item.callId, db);
+    expect(await db.voiceSession.findUniqueOrThrow({ where: { id: item.id } })).toMatchObject({ state: "ENDED", transcriptComplete: false });
+    await recordVoiceEvent({ schemaVersion: 1, eventId: "flush-5", callId: item.callId, agentEpoch: 1, sourceSequence: 5, occurredAt: at, type: "transcript.flushed", payload: { lastSourceSequence: 4 } }, lease.token, db);
+    expect(await db.voiceSession.findUniqueOrThrow({ where: { id: item.id } })).toMatchObject({ state: "ENDED", transcriptComplete: true });
     // Caller speech without a recorded request is not evidence of resolution.
     const ended = await db.call.findUniqueOrThrow({ where: { id: item.callId } });
     expect(ended).toMatchObject({ status: "COMPLETED", outcome: "IN_PROGRESS" });

@@ -218,7 +218,12 @@ export async function recordVoiceEvent(event: WorkerEvent, token: string, db: Pr
     // Read from the events themselves: a counter on the session row would be
     // written by every event and make concurrent renewals and tools retry.
     const stored = await tx.voiceEvent.aggregate({ where: { sessionId: session.id }, _count: { _all: true }, _sum: { bodyBytes: true } });
-    if (stored._count._all >= MAX_SESSION_EVENTS || (stored._sum.bodyBytes ?? 0) + bodyBytes > MAX_SESSION_EVENT_BYTES) throw new VoiceError(409, "EVENT_CAPACITY");
+    if (stored._count._all >= MAX_SESSION_EVENTS || (stored._sum.bodyBytes ?? 0) + bodyBytes > MAX_SESSION_EVENT_BYTES) {
+      // One checkpoint may still follow the last accepted event, so a stream
+      // that reaches the limit can still be complete.
+      const previous = isFlush ? await tx.voiceEvent.findUnique({ where: { sessionId_agentEpoch_sourceSequence: { sessionId: session.id, agentEpoch: event.agentEpoch, sourceSequence: event.sourceSequence - 1 } }, select: { type: true } }) : null;
+      if (!previous || previous.type === "transcript.flushed") throw new VoiceError(409, "EVENT_CAPACITY");
+    }
     const caller = session.participants.find((p) => p.role === "CALLER"); const agent = session.participants.find((p) => p.role === "AGENT");
     if (event.type === "transcript.final") {
       const expected = event.payload.speaker === "CALLER" ? caller?.identity : event.payload.speaker === "AGENT" ? agent?.identity : undefined;
@@ -266,6 +271,8 @@ export async function recordVoiceEvent(event: WorkerEvent, token: string, db: Pr
       await tx.voiceSession.update({ where: { id: session.id }, data: { state: "RECOVERY_REQUIRED" } });
       await tx.voiceLease.update({ where: { id: lease.id }, data: { expiresAt: now } });
     }
+    // Evidence that arrives after the call ended keeps its record truthful.
+    if (session.state === "ENDED" || session.state === "FAILED") await recordLateEvidence(tx, session, isFlush, now);
     return { eventId: event.eventId, status: "committed" as const };
   });
 }
@@ -278,19 +285,75 @@ async function evidencedOutcome(tx: Prisma.TransactionClient, callId: string, se
   return "IN_PROGRESS";
 }
 
+/** Whether the evidence stream ends in a checkpoint covering everything before it. */
+async function checkpointed(tx: Prisma.TransactionClient, session: { id: string; currentEpoch: number; finalWatermark: number }): Promise<boolean> {
+  const latest = await tx.voiceEvent.findFirst({ where: { sessionId: session.id, agentEpoch: session.currentEpoch }, orderBy: { sourceSequence: "desc" }, select: { type: true, sourceSequence: true } });
+  return latest?.type === "transcript.flushed" && session.finalWatermark === latest.sourceSequence - 1;
+}
+
+/**
+ * Ends a call whatever its evidence: the AI loses its lease, the call gets its
+ * end time and an evidenced outcome, and all media admission is revoked.
+ * Whether the transcript is complete is recorded alongside; evidence that
+ * arrives later updates it.
+ */
+async function endSession(tx: Prisma.TransactionClient, session: LockedSession, now: Date, status: "COMPLETED" | "FAILED"): Promise<void> {
+  if (session.lease && session.lease.expiresAt > now) await tx.voiceLease.update({ where: { id: session.lease.id }, data: { expiresAt: now } });
+  const transcriptComplete = await checkpointed(tx, session);
+  await tx.voiceSession.update({ where: { id: session.id }, data: { state: status === "COMPLETED" ? "ENDED" : "FAILED", endedAt: now, transcriptComplete, authorizationVersion: { increment: 1 } } });
+  const call = await tx.call.findUniqueOrThrow({ where: { id: session.callId }, select: { startedAt: true, endedAt: true, outcome: true } });
+  if (!call.endedAt) {
+    const outcome = await evidencedOutcome(tx, session.callId, session.id, call.outcome);
+    await tx.call.update({ where: { id: session.callId }, data: { status, endedAt: now, durationMs: now.getTime() - call.startedAt.getTime(), outcome } });
+  }
+  await revokeAdmissions(tx, { callId: session.callId, reason: "CALL_ENDED" }, now);
+  await markPostCallAssessmentDirty(tx, session.callId, now);
+}
+
+/**
+ * Evidence for a call that has ended: completeness follows the latest event,
+ * and once the stream is complete again an outcome that depended on missing
+ * evidence (abandoned or unconfirmed) is derived afresh.
+ */
+async function recordLateEvidence(tx: Prisma.TransactionClient, session: LockedSession, complete: boolean, now: Date): Promise<void> {
+  if (session.transcriptComplete !== complete) await tx.voiceSession.update({ where: { id: session.id }, data: { transcriptComplete: complete } });
+  if (!complete) return;
+  const call = await tx.call.findUniqueOrThrow({ where: { id: session.callId }, select: { outcome: true } });
+  if (call.outcome !== "ABANDONED" && call.outcome !== "IN_PROGRESS") return;
+  const outcome = await evidencedOutcome(tx, session.callId, session.id, "IN_PROGRESS");
+  if (outcome === call.outcome) return;
+  await tx.call.update({ where: { id: session.callId }, data: { outcome } });
+  await markPostCallAssessmentDirty(tx, session.callId, now);
+}
+
+/**
+ * The call's lifecycle end, when the caller leaves or the room closes. It does
+ * not need a complete transcript: completeness is recorded, not required.
+ */
 export async function finalizeVoiceSession(callId: string, db: PrismaClient = prisma): Promise<void> {
   await serializable(db, async (tx) => {
     const session = await lockedSession(tx, callId);
-    const now = new Date();
     if (session.state === "ENDED" || session.state === "FAILED") return;
-    const highest = await tx.voiceEvent.findFirst({ where: { sessionId: session.id, agentEpoch: session.currentEpoch }, orderBy: { sourceSequence: "desc" } });
-    if (!highest || highest.type !== "transcript.flushed" || session.finalWatermark !== highest.sourceSequence - 1) throw new VoiceError(409, "EVIDENCE_INCOMPLETE");
-    const call = await tx.call.findUniqueOrThrow({ where: { id: callId }, select: { startedAt: true, outcome: true } });
-    const outcome = await evidencedOutcome(tx, callId, session.id, call.outcome);
-    await tx.voiceSession.update({ where: { id: session.id }, data: { state: "ENDED", endedAt: now, authorizationVersion: { increment: 1 } } });
-    await tx.call.update({ where: { id: callId }, data: { status: "COMPLETED", endedAt: now, durationMs: now.getTime() - call.startedAt.getTime(), outcome } });
-    await revokeAdmissions(tx, { callId, reason: "CALL_ENDED" }, now);
-    await markPostCallAssessmentDirty(tx, callId, now);
+    await endSession(tx, session, new Date(), "COMPLETED");
+  });
+}
+
+/**
+ * Ends a call for a signed-in user allowed to: its caller, an operator
+ * assigned to it, or an admin or supervisor. This is how a call waiting in
+ * staff recovery is closed. Ending an ended call changes nothing.
+ */
+export async function endVoiceCall(input: { callId: string; userId: string; sessionId: string }, db: PrismaClient = prisma): Promise<void> {
+  await serializable(db, async (tx) => {
+    const session = await lockedSession(tx, input.callId);
+    const now = new Date();
+    const browser = await tx.session.findFirst({ where: { id: input.sessionId, userId: input.userId, expiresAt: { gt: now }, user: { active: true } }, include: { user: true } });
+    const allowed = Boolean(browser) && (browser!.user.role === "ADMIN" || browser!.user.role === "SUPERVISOR"
+      || (session.ownerUserId === input.userId && session.ownerSessionId === input.sessionId)
+      || await tx.handoff.count({ where: { callId: input.callId, assignedUserId: input.userId, state: { in: ["ASSIGNED", "JOINING", "HUMAN_ACTIVE"] } } }) > 0);
+    if (!allowed) throw new VoiceError(403, "END_DENIED");
+    if (session.state === "ENDED" || session.state === "FAILED") return;
+    await endSession(tx, session, now, "COMPLETED");
   });
 }
 

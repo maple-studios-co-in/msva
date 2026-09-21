@@ -3,6 +3,7 @@ import path from "node:path";
 import type { ToolResult } from "@msva/shared";
 import { databaseReady, prisma } from "@msva/db";
 import { ensureCaller, toCallerType } from "../calls.js";
+import { markPostCallAssessmentDirty } from "../assessmentJobs.js";
 
 // ---------------------------------------------------------------------------
 // CRM / helpdesk tools
@@ -124,24 +125,32 @@ export async function createTicket(
         call?.callerId ??
         (await ensureCaller(phone, { name: call?.callerName, type: toCallerType(call?.callerType) }))?.id ??
         null;
-      const ticket = await prisma.ticket.create({
-        data: {
-          callId: call?.id,
-          callerId: caller,
-          phone: phone || "unknown",
-          callerName: call?.callerName ?? undefined,
-          intent,
-          priority: priority.toUpperCase() as "LOW" | "MEDIUM" | "HIGH",
-          summary,
-          details: { source: "voice_agent", args }
+      const ticket = await prisma.$transaction(async (tx) => {
+        const created = await tx.ticket.create({
+          data: {
+            callId: call?.id,
+            callerId: caller,
+            phone: phone || "unknown",
+            callerName: call?.callerName ?? undefined,
+            intent,
+            priority: priority.toUpperCase() as "LOW" | "MEDIUM" | "HIGH",
+            summary,
+            details: { source: "voice_agent", args }
+          }
+        });
+        if (call) {
+          // Ticket evidence and its assessment dirty receipt commit together.
+          await markPostCallAssessmentDirty(tx, call.id, new Date());
         }
+        return created;
       });
       if (call) {
+        // This dashboard outcome is ancillary. It must stay outside the
+        // ticket/job transaction because a failed SQL statement aborts the
+        // transaction even when its JavaScript error is caught.
         try {
           await prisma.call.update({ where: { id: call.id }, data: { outcome: "TICKET_CREATED" } });
         } catch (error) {
-          // The ticket is already saved; a dashboard update must not turn it
-          // into a failed creation or encourage a duplicate ticket.
           console.error("[crm] ticket saved but call outcome update failed", error);
         }
       }

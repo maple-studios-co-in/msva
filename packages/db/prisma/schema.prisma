@@ -179,6 +179,7 @@ model Call {
   handoffs         Handoff[]
   riskAssessments  RiskAssessment[]
   assessments      CallAssessment[]
+  assessmentJobs   AssessmentJob[]
 
   @@index([startedAt])
   @@index([callerId])
@@ -569,4 +570,60 @@ model CallAssessment {
   @@unique([callId, inputHash, requestedModel, rubricVersion])
   @@index([callId, requestedAt])
   @@index([status, leaseExpiresAt])
+}
+
+enum AssessmentJobKind {
+  POST_CALL
+}
+
+enum AssessmentJobState {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  SKIPPED
+}
+
+// Durable, provider-independent post-call assessment work.  The result itself
+// remains keyed in CallAssessment so manual and automatic callers share the
+// same fingerprint cache and attempt fencing.
+model AssessmentJob {
+  id                String             @id @default(cuid())
+  callId            String
+  call              Call               @relation(fields: [callId], references: [id], onDelete: Cascade)
+  kind              AssessmentJobKind
+  state             AssessmentJobState @default(PENDING)
+  generation        Int                @default(1)
+  claimedGeneration Int?
+  dueAt             DateTime
+  leaseToken        String?
+  leaseExpiresAt    DateTime?
+  attempts          Int                @default(0)
+  lastInputHash     String?
+  reason            String?
+  source            String             @default("AUTO_POST_CALL")
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  @@unique([callId, kind])
+  @@index([state, dueAt])
+  @@index([leaseExpiresAt])
+}
+
+// Exactly two rows are created lazily and leased with CAS updates. They are
+// shared by every API process, unlike an in-memory semaphore.
+model AssessmentWorkerSlot {
+  slot           Int      @id
+  ownerToken     String?
+  jobId          String?
+  leaseExpiresAt DateTime?
+  updatedAt      DateTime @updatedAt
+}
+
+// A singleton cursor keeps reconciliation bounded and rotating across calls.
+model AssessmentReconciliationCursor {
+  id          String   @id
+  endedAt     DateTime?
+  callId      String?
+  updatedAt   DateTime @updatedAt
 }

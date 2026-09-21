@@ -1,6 +1,7 @@
-import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import type express from "express";
 import { prisma, type User, type UserRole } from "@msva/db";
+import { createSmtpLoginCodeDelivery, type LoginCodeDelivery } from "./smtp.js";
 
 // ---------------------------------------------------------------------------
 // Console authentication
@@ -18,7 +19,7 @@ import { prisma, type User, type UserRole } from "@msva/db";
 export const SESSION_COOKIE = "msva_session";
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const CODE_TTL_MS = 10 * 60 * 1000;
-const isProduction = process.env.NODE_ENV === "production";
+const isProduction = () => process.env.NODE_ENV === "production";
 
 export type SessionUser = Pick<User, "id" | "email" | "name" | "role">;
 
@@ -33,69 +34,141 @@ declare global {
 }
 
 const sha256 = (value: string): string => createHash("sha256").update(value).digest("hex");
+const hmac = (key: string, value: string): string => createHmac("sha256", key).update(value).digest("hex");
+const codeHash = (id: string, code: string): string | null => {
+  const key = process.env.AUTH_CODE_HASH_KEY;
+  if (!key) return null;
+  return hmac(key, `${id}\0${code}`);
+};
+const rateHash = (value: string): string | null => {
+  const key = process.env.AUTH_RATE_HASH_KEY;
+  if (!key) return null;
+  return hmac(key, value);
+};
 
-function parseCookies(header: string | undefined): Record<string, string> {
+export type AuthNetworkContext = { address: string };
+export type LoginCodeRequestResult = { ok: true; devCode?: string } | { ok: false; unavailable: true } | { ok: false; limited: true; retryAfter: number };
+let deliveryOverride: LoginCodeDelivery | null | undefined;
+/** Test-only injection point; production uses configured SMTP. */
+export const setLoginCodeDeliveryForTest = (delivery: LoginCodeDelivery | null | undefined) => { deliveryOverride = delivery; };
+const loginCodeDelivery = () => deliveryOverride === undefined ? createSmtpLoginCodeDelivery() : deliveryOverride;
+
+export function trustedNetworkFromRequest(request: express.Request): AuthNetworkContext {
+  const socketAddress = request.socket.remoteAddress?.replace(/^::ffff:/, "") ?? "unknown";
+  const trusted = new Set((process.env.TRUSTED_PROXY_ADDRESSES ?? "").split(",").map((value) => value.trim()).filter(Boolean));
+  const forwarded = request.get("x-forwarded-for");
+  if (!trusted.has(socketAddress) || !forwarded || forwarded.length > 512) return { address: socketAddress };
+  const candidate = forwarded.split(",")[0]?.trim().replace(/^::ffff:/, "");
+  return candidate && /^[0-9a-f:.]+$/i.test(candidate) ? { address: candidate } : { address: socketAddress };
+}
+
+const windowStart = (now: Date, ms: number) => new Date(Math.floor(now.getTime() / ms) * ms);
+async function reserveRate(scope: string, key: string, limit: number, windowMs: number, now = new Date()): Promise<number | null> {
+  const keyHash = rateHash(key);
+  if (!keyHash) return null;
+  const start = windowStart(now, windowMs);
+  const bucket = await prisma.authRateBucket.upsert({
+    where: { scope_keyHash_windowStart: { scope, keyHash, windowStart: start } },
+    create: { scope, keyHash, windowStart: start, count: 1, expiresAt: new Date(start.getTime() + windowMs + 86_400_000) },
+    update: { count: { increment: 1 } }
+  });
+  return bucket.count > limit ? Math.max(1, Math.ceil((start.getTime() + windowMs - now.getTime()) / 1000)) : null;
+}
+
+function parseCookies(header: string | undefined): Record<string, string> | null {
   const out: Record<string, string> = {};
   if (!header) return out;
+  if (header.length > 8192) return null;
   for (const part of header.split(";")) {
     const index = part.indexOf("=");
     if (index === -1) continue;
     const key = part.slice(0, index).trim();
     const value = part.slice(index + 1).trim();
-    if (key) out[key] = decodeURIComponent(value);
+    if (!key) continue;
+    if (Object.hasOwn(out, key)) return null;
+    try {
+      out[key] = decodeURIComponent(value);
+    } catch {
+      return null;
+    }
   }
   return out;
 }
 
 // Pluggable delivery. Replace the body with an email/SMS provider call when
 // one is chosen; the console fallback keeps local development working.
-async function deliverLoginCode(email: string, code: string): Promise<void> {
-  console.log(`[auth] login code for ${email}: ${code}`);
-}
-
 export async function requestLoginCode(
-  rawEmail: string
-): Promise<{ ok: true; devCode?: string }> {
+  rawEmail: string,
+  network: AuthNetworkContext = { address: "unknown" }
+): Promise<LoginCodeRequestResult> {
   const email = rawEmail.trim().toLowerCase();
+  const delivery = loginCodeDelivery();
+  if (isProduction() && (!delivery || !process.env.AUTH_CODE_HASH_KEY || !process.env.AUTH_RATE_HASH_KEY)) return { ok: false, unavailable: true };
+  const minute = await reserveRate("request-email-minute", email, 1, 60_000);
+  const hour = await reserveRate("request-email-hour", email, 5, 3_600_000);
+  const ip = await reserveRate("request-ip-hour", network.address, 30, 3_600_000);
+  if (minute || hour || ip) return { ok: false, limited: true, retryAfter: Math.max(minute ?? 0, hour ?? 0, ip ?? 0) };
   const user = await prisma.user.findFirst({ where: { email, active: true } });
   // Always respond OK so the endpoint cannot be used to enumerate users.
   if (!user) return { ok: true };
 
+  if (!delivery || !process.env.AUTH_CODE_HASH_KEY || !process.env.AUTH_RATE_HASH_KEY) return { ok: true };
   const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
-  await prisma.loginCode.create({
-    data: { userId: user.id, codeHash: sha256(code), expiresAt: new Date(Date.now() + CODE_TTL_MS) }
+  const id = randomBytes(24).toString("hex");
+  const expiresAt = new Date(Date.now() + CODE_TTL_MS);
+  const hash = codeHash(id, code);
+  if (!hash) return { ok: false, unavailable: true };
+  await prisma.$transaction(async (tx) => {
+    await tx.loginCode.updateMany({ where: { userId: user.id, usedAt: null, deliveryState: "PENDING" }, data: { deliveryState: "FAILED", deliveryLeaseExpiresAt: null } });
+    await tx.loginCode.create({ data: { id, userId: user.id, codeHash: hash, expiresAt, deliveryLeaseExpiresAt: new Date(Date.now() + 30_000) } });
   });
-  await deliverLoginCode(email, code);
-  const echo = !isProduction || process.env.AUTH_DEV_ECHO === "1";
+  void delivery.send({ recipient: email, code, expiresAt }).then(async () => {
+    await prisma.$transaction(async (tx) => {
+      await tx.loginCode.updateMany({ where: { userId: user.id, id: { not: id }, usedAt: null, deliveryState: "DELIVERED" }, data: { deliveryState: "FAILED" } });
+      await tx.loginCode.updateMany({ where: { id, deliveryState: "PENDING" }, data: { deliveryState: "DELIVERED", deliveredAt: new Date(), deliveryLeaseExpiresAt: null } });
+    });
+  }).catch(async () => { await prisma.loginCode.updateMany({ where: { id, deliveryState: "PENDING" }, data: { deliveryState: "FAILED", deliveryLeaseExpiresAt: null } }); });
+  const echo = process.env.NODE_ENV === "development" && process.env.AUTH_DEV_ECHO === "1";
   return echo ? { ok: true, devCode: code } : { ok: true };
 }
 
 export async function verifyLoginCode(
   rawEmail: string,
-  code: string
+  code: string,
+  network: AuthNetworkContext = { address: "unknown" }
 ): Promise<{ token: string; user: SessionUser } | null> {
   const email = rawEmail.trim().toLowerCase();
+  if (!/^\d{6}$/.test(code)) return null;
+  const emailLimit = await reserveRate("verify-email", email, 10, 600_000);
+  const ipLimit = await reserveRate("verify-ip", network.address, 60, 600_000);
+  if (emailLimit || ipLimit) return null;
   const user = await prisma.user.findFirst({ where: { email, active: true } });
   if (!user) return null;
 
   const candidate = await prisma.loginCode.findFirst({
-    where: { userId: user.id, usedAt: null, expiresAt: { gt: new Date() } },
+    where: { userId: user.id, usedAt: null, deliveryState: "DELIVERED", attempts: { lt: 5 }, expiresAt: { gt: new Date() } },
     orderBy: { createdAt: "desc" }
   });
   if (!candidate) return null;
 
   const expected = Buffer.from(candidate.codeHash, "hex");
-  const given = Buffer.from(sha256(code.trim()), "hex");
-  if (expected.length !== given.length || !timingSafeEqual(expected, given)) return null;
+  const candidateHash = codeHash(candidate.id, code);
+  if (!candidateHash) return null;
+  const given = Buffer.from(candidateHash, "hex");
+  if (expected.length !== given.length || !timingSafeEqual(expected, given)) {
+    await prisma.loginCode.updateMany({ where: { id: candidate.id, usedAt: null, deliveryState: "DELIVERED", attempts: { lt: 5 } }, data: { attempts: { increment: 1 } } });
+    return null;
+  }
 
   const token = randomBytes(32).toString("hex");
-  await prisma.$transaction([
-    prisma.loginCode.update({ where: { id: candidate.id }, data: { usedAt: new Date() } }),
-    prisma.session.create({
-      data: { userId: user.id, tokenHash: sha256(token), expiresAt: new Date(Date.now() + SESSION_TTL_MS) }
-    }),
-    prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } })
-  ]);
+  const consumed = await prisma.$transaction(async (tx) => {
+    const claimed = await tx.loginCode.updateMany({ where: { id: candidate.id, usedAt: null, deliveryState: "DELIVERED", expiresAt: { gt: new Date() } }, data: { usedAt: new Date() } });
+    if (claimed.count !== 1) return false;
+    await tx.session.create({ data: { userId: user.id, tokenHash: sha256(token), expiresAt: new Date(Date.now() + SESSION_TTL_MS) } });
+    await tx.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
+    return true;
+  });
+  if (!consumed) return null;
 
   return { token, user: { id: user.id, email: user.email, name: user.name, role: user.role } };
 }
@@ -105,7 +178,7 @@ export async function revokeSession(token: string): Promise<void> {
 }
 
 export function sessionCookie(token: string, maxAgeMs = SESSION_TTL_MS): string {
-  const secure = isProduction || process.env.AUTH_COOKIE_SECURE === "true";
+  const secure = isProduction() || process.env.AUTH_COOKIE_SECURE === "true";
   return [
     `${SESSION_COOKIE}=${encodeURIComponent(token)}`,
     "Path=/",
@@ -120,8 +193,12 @@ export function sessionCookie(token: string, maxAgeMs = SESSION_TTL_MS): string 
 
 export function tokenFromRequest(request: express.Request): string | null {
   const bearer = request.headers.authorization;
-  if (bearer?.startsWith("Bearer ")) return bearer.slice(7).trim();
-  return parseCookies(request.headers.cookie)[SESSION_COOKIE] ?? null;
+  const cookies = parseCookies(request.headers.cookie);
+  if (!cookies) return null;
+  const cookieToken = cookies[SESSION_COOKIE];
+  if (bearer !== undefined && (!bearer.startsWith("Bearer ") || bearer.length > 512 || cookieToken)) return null;
+  const token = bearer ? bearer.slice(7).trim() : cookieToken;
+  return token && /^[a-f0-9]{64}$/i.test(token) ? token : null;
 }
 
 /** Attaches `request.user` when a valid session is present; never rejects. */

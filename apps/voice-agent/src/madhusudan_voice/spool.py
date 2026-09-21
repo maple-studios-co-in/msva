@@ -307,8 +307,9 @@ class EventSpool:
             try:
                 token = self._cipher.decrypt(row[5]).decode()
             except (InvalidToken, UnicodeDecodeError):
-                # One unreadable credential stops only its own stream.
-                self.fault_event(row[0], "CREDENTIAL_UNREADABLE")
+                # One unreadable credential stops its own stream, all of it, so the spool
+                # still opens with the stream set aside.
+                self.fault_stream(row[1], int(row[2]), "CREDENTIAL_UNREADABLE")
                 logger.warning("voice evidence stream stopped: call=%s epoch=%s reason=CREDENTIAL_UNREADABLE", row[1], row[2])
                 continue
             result.append(SpoolEvent(row[0], row[1], json.loads(row[3]), int(row[4]), ReplayCredential(row[1], int(row[2]), token, row[6]), float(row[7])))
@@ -339,12 +340,26 @@ class EventSpool:
         return 0.0 if row[0] is None else max(0.0, now - float(row[0]))
 
     def clear_faults(self, call_id: str | None = None, *, now: float | None = None) -> int:
-        """Lets stopped streams be delivered again, once their cause is fixed."""
+        """Lets stopped streams be delivered again, once their cause is fixed. A stream holding
+        a credential no configured key can read stays stopped: cleared, it would keep the
+        spool from opening. Put its key back first."""
         now = time.time() if now is None else now
+        query = "SELECT call_id, agent_epoch, encrypted_token FROM event_spool WHERE fault IS NOT NULL"
+        rows = self._connection.execute(query + (" AND call_id=?" if call_id is not None else ""), (call_id,) if call_id is not None else ()).fetchall()
+        readable: dict[tuple[str, int], bool] = {}
+        for stream_call, agent_epoch, token in rows:
+            key = (stream_call, int(agent_epoch))
+            readable[key] = readable.get(key, True) and self._reads(token)
         with self._write() as db:
-            if call_id is None:
-                return db.execute("UPDATE event_spool SET fault=NULL, next_attempt_at=? WHERE fault IS NOT NULL", (now,)).rowcount
-            return db.execute("UPDATE event_spool SET fault=NULL, next_attempt_at=? WHERE fault IS NOT NULL AND call_id=?", (now, call_id)).rowcount
+            return sum(db.execute("UPDATE event_spool SET fault=NULL, next_attempt_at=? WHERE fault IS NOT NULL AND call_id=? AND agent_epoch=?",
+                (now, stream_call, agent_epoch)).rowcount for (stream_call, agent_epoch), ok in readable.items() if ok)
+
+    def _reads(self, token: bytes) -> bool:
+        try:
+            self._cipher.decrypt(token)
+        except InvalidToken:
+            return False
+        return True
 
     def acknowledge(self, event_id: str) -> None:
         with self._write() as db:

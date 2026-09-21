@@ -59,14 +59,17 @@ then ends AI authority, and the stop is logged. An event stamped just ahead of t
 or a conflict, is retried for about 30 s first. Other refusals (an HTML 404 from a misrouted
 `VOICE_INTERNAL_API_URL`, a proxy error) are retried and logged. Once a cause is fixed, retry
 stopped streams with `docker compose ... run --rm voice-replay uv run --frozen python -m
-madhusudan_voice.replay clear-faults [CALL_ID]`. Anything older than the API's replay window is
+madhusudan_voice.replay clear-faults [CALL_ID]`; a stream holding a credential no configured key
+can read stays stopped until its key is back. Anything older than the API's replay window is
 dropped and logged as unrecoverable.
 
 The worker and the companion refuse to start with a replay key that cannot read every stored
 credential of a stream still being delivered, instead of stopping streams. If a key is lost for
 good, `docker compose ... run --rm voice-replay uv run --frozen python -m madhusudan_voice.replay
 quarantine-unreadable` stops the streams it guarded (their events are never delivered and go at
-the end of retention) so the services can start. `VOICE_REPLAY_CREDENTIAL_KEY` may list several keys:
+the end of retention) so the services can start. If every key the spool was written with is lost,
+the spool cannot be opened at all: stop both services and remove it, and its evidence with it.
+`VOICE_REPLAY_CREDENTIAL_KEY` may list several keys:
 the first encrypts and any of them decrypts. To rotate it, change both services together, one
 step at a time:
 

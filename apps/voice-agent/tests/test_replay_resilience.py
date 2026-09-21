@@ -221,3 +221,23 @@ async def test_every_delivery_round_is_reported(tmp_path):
     rounds: list[int] = []
     assert await api_answering({}, []).flush_spool(spool, on_round=lambda: rounds.append(1)) == 3
     assert len(rounds) == 3
+
+
+def test_an_unreadable_credential_stops_its_whole_stream_and_stays_stopped(tmp_path):
+    from cryptography.fernet import Fernet
+
+    path = tmp_path / "spool.sqlite3"
+    spool = spool_at(tmp_path)
+    for sequence in range(1, 4):
+        queue(spool, "call-a", sequence)
+    with spool._write() as db:
+        db.execute("UPDATE event_spool SET encrypted_token=?", (Fernet(Fernet.generate_key()).encrypt(b"token"),))
+    assert spool.ready() == []
+    assert spool._connection.execute("SELECT COUNT(*) FROM event_spool WHERE fault='CREDENTIAL_UNREADABLE'").fetchone() == (3,)
+    spool.close()
+    # The spool still opens with that stream set aside, and clearing faults cannot bring
+    # back a stream no configured key can read.
+    reopened = EventSpool(path, max_events=100, max_bytes=1_000_000, replay_key=KEY)
+    assert reopened.clear_faults() == 0
+    reopened.close()
+    EventSpool(path, max_events=100, max_bytes=1_000_000, replay_key=KEY).close()

@@ -4,6 +4,7 @@ import express from "express";
 import { PrismaClient } from "@msva/db";
 import { createVoiceSession, recordVoiceDispatch, workerParticipantIdentity } from "./voiceService.js";
 import { voiceRouter } from "./voiceRoutes.js";
+import { internalRouter } from "./routes/internal.js";
 
 const databaseUrl = process.env.MSVA_VOICE_TEST_DATABASE_URL;
 if (!databaseUrl) throw new Error("MSVA_VOICE_TEST_DATABASE_URL is required");
@@ -15,6 +16,9 @@ const db = new PrismaClient({ datasourceUrl: databaseUrl });
 const app = express();
 app.use(express.json());
 app.use("/api/internal/voice/v1", voiceRouter);
+// Keep the production mount order: legacy internal authentication must never
+// intercept a scoped worker credential before the voice router sees it.
+app.use("/api/internal", internalRouter);
 const server = app.listen(0);
 const address = server.address();
 if (!address || typeof address === "string") throw new Error("voice test listener did not bind");

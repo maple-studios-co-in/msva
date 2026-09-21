@@ -58,8 +58,9 @@ DEFAULT_CALL_LIMIT = 2
 API_LEASE_SECONDS = 30
 EVIDENCE_TOLERANCE_SECONDS = 5
 # A live call's evidence must keep reaching the API. Once its oldest undelivered
-# event has waited this long (the replay companion down, a proxy refusing it), the
-# call's AI authority ends; the evidence stays in the spool for the companion.
+# event has waited this long while the API is reachable (the replay companion down, a
+# proxy refusing it), the call's AI authority ends; the evidence stays in the spool
+# for the companion. During an API outage the lease bounds the call instead.
 EVIDENCE_STALL_SECONDS = 15
 
 

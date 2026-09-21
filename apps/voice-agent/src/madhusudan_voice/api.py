@@ -31,9 +31,11 @@ EVENT_REFUSAL_CODES = frozenset({
 })
 # Refusals that can settle: an event stamped slightly ahead of the API's clock is
 # accepted once that clock catches up, and a conflict can be a race still resolving.
-# They stop a stream only after this many attempts (about 30 s of backoff).
+# They stop a stream only once they have lasted this many attempts and this long
+# since the event was stored (a live call's evidence is retried every few seconds).
 SETTLING_REFUSALS = frozenset({"EVENT_TIME_INVALID", "CONFLICT"})
 SETTLING_ATTEMPTS = 5
+SETTLING_SECONDS = 30
 # The API refused the tool request before any business effect; the model may correct it.
 REJECTION_CODES = frozenset({"INVALID_REQUEST", "INVALID_TOOL_ARGUMENTS", "CALL_NOT_FOUND", "IDENTITY_REQUIRED", "PARENT_NOT_ACCESSIBLE", "IDEMPOTENCY_CONFLICT", "INVOCATION_CONFLICT"})
 _CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
@@ -216,7 +218,8 @@ class VoiceApiClient:
                     ))
                 except VoiceApiError as error:
                     stop = error.permanent and error.code in EVENT_REFUSAL_CODES
-                    if stop and error.code in SETTLING_REFUSALS and queued.attempts + 1 < SETTLING_ATTEMPTS:
+                    if stop and error.code in SETTLING_REFUSALS and (
+                            queued.attempts + 1 < SETTLING_ATTEMPTS or time.time() - queued.created_at < SETTLING_SECONDS):
                         stop = False
                     if stop:
                         # A refused event will be refused forever, and later events must not

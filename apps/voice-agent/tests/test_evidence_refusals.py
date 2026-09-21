@@ -4,7 +4,7 @@ import httpx
 import pytest
 from cryptography.fernet import Fernet
 
-from madhusudan_voice.api import SETTLING_ATTEMPTS, VoiceApiClient
+from madhusudan_voice.api import SETTLING_ATTEMPTS, SETTLING_SECONDS, VoiceApiClient
 from madhusudan_voice.spool import EventSpool, ReplayCredential, SpoolKeyMismatch
 
 from fake_voice_api import BASE, KEY
@@ -62,6 +62,24 @@ async def test_a_refusal_that_can_settle_stops_the_stream_only_when_it_persists(
             db.execute("UPDATE event_spool SET next_attempt_at=0")
     assert await client.flush_spool(spool) == 0
     assert spool.stream_fault("call-1", 1) == f"HTTP_409:{code}"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_live_calls_settling_refusal_is_given_its_full_time(tmp_path):
+    # A live call's evidence is retried every couple of seconds, so five attempts come
+    # quickly: the stream stops only once the refusal has also lasted SETTLING_SECONDS.
+    spool = spool_at(tmp_path / "spool.sqlite3")
+    spool.enqueue(event_id="ready", call_id="call-1", payload={"eventId": "ready", "sourceSequence": 1, "type": "agent.ready"}, credential=CREDENTIAL)
+    client = client_answering(httpx.Response(409, json={"error": "EVENT_TIME_INVALID"}))
+    with spool._write() as db:
+        db.execute("UPDATE event_spool SET attempts=?, next_attempt_at=0", (SETTLING_ATTEMPTS - 1,))
+    assert await client.flush_spool(spool) == 0
+    assert spool.stream_fault("call-1", 1) is None
+    with spool._write() as db:
+        db.execute("UPDATE event_spool SET next_attempt_at=0, created_at=created_at-?", (SETTLING_SECONDS + 1,))
+    assert await client.flush_spool(spool) == 0
+    assert spool.stream_fault("call-1", 1) == "HTTP_409:EVENT_TIME_INVALID"
     await client.aclose()
 
 

@@ -131,13 +131,30 @@ async def test_a_stopped_evidence_stream_ends_authority():
 async def test_evidence_that_stops_moving_ends_authority():
     # The companion is down, or a proxy refuses the events: the API hears nothing of the call.
     writer = Writer(lease_expiring_in(30))
-    writer.spool.waiting = 16.0
+    writer.spool.waiting = 1.0
     fenced: list[str] = []
-    guard = LeaseGuard(Api(), writer, renew_seconds=0.02, lease_seconds=30, on_lost=fenced.append, stall_seconds=15)
+    guard = LeaseGuard(Api(), writer, renew_seconds=0.02, lease_seconds=30, on_lost=fenced.append, stall_seconds=0.2)
     guard.start()
     await wait_until(lambda: bool(fenced))
     # Recorded: the failure waits behind the rest of the stream and arrives with it.
     assert fenced == ["FATAL"] and writer.failures == ["FATAL"] and not guard.active
+    await guard.stop()
+
+
+@pytest.mark.asyncio
+async def test_evidence_held_up_by_an_api_outage_does_not_end_authority():
+    # While renewals fail the lease bounds the call; once the API is back, delivery gets
+    # the whole allowance to catch up before the call is judged stuck.
+    writer = Writer(lease_expiring_in(30))
+    writer.spool.waiting = 5.0
+    api = Api(*[VoiceApiError("unavailable", status=503)] * 10)
+    guard = LeaseGuard(api, writer, renew_seconds=0.02, retry_seconds=0.02, lease_seconds=30, stall_seconds=0.3)
+    guard.start()
+    await wait_until(lambda: api.calls >= 11)
+    await asyncio.sleep(0.1)
+    writer.spool.waiting = 0.0
+    await asyncio.sleep(0.4)
+    assert guard.active and writer.failures == []
     await guard.stop()
 
 

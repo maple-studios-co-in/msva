@@ -66,6 +66,11 @@ class LeaseGuard:
         # Renewed this long before the deadline at the latest, so a short lease (a
         # re-claim can return one) is renewed before it lapses.
         self._margin = min(2.0, lease_seconds / 10)
+        # Since when renewals have been succeeding, if they are. Evidence waiting counts
+        # against the call only while the API is reachable: during an outage the lease
+        # itself ends authority, and once the API is back delivery gets the full
+        # allowance to catch up.
+        self._reachable_since: float | None = clock()
         self._tasks: list[asyncio.Task[None]] = []
 
     @property
@@ -163,7 +168,8 @@ class LeaseGuard:
                 logger.warning("voice evidence stream stopped (%s); ending AI authority", fault)
                 self.fail_closed("FATAL", record=False)
                 return
-            if waiting > self.stall_seconds:
+            reachable_for = 0.0 if self._reachable_since is None else self._clock() - self._reachable_since
+            if waiting > self.stall_seconds and reachable_for > self.stall_seconds:
                 logger.warning("voice evidence has waited %.0f s for delivery; ending AI authority", waiting)
                 self.fail_closed("FATAL")
                 return
@@ -179,13 +185,18 @@ class LeaseGuard:
                 if error.permanent:
                     self.fail_closed("LEASE_LOST")
                     return
+                self._reachable_since = None
                 delay = min(self.retry_seconds, self.remaining)
                 continue
             except TimeoutError:
+                self._reachable_since = None
                 continue
             except Exception:  # noqa: BLE001 - an unreadable reply is retried; the deadline still fences
+                self._reachable_since = None
                 delay = min(self.retry_seconds, self.remaining)
                 continue
+            if self._reachable_since is None:
+                self._reachable_since = self._clock()
             self.writer.update_lease(renewed)
             self._deadline = renewed.local_deadline(self.lease_seconds)
             delay = max(0.0, min(self.renew_seconds, self.remaining - self._margin))

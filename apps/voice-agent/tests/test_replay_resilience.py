@@ -165,3 +165,19 @@ async def test_a_companion_whose_passes_fail_stops_beating(tmp_path):
     await asyncio.sleep(0.1)
     await drainer.stop()
     assert not heartbeat.exists()
+
+
+def test_live_evidence_is_retried_every_couple_of_seconds_and_history_backs_off(tmp_path):
+    from madhusudan_voice.spool import LIVE_RETRY_SECONDS
+
+    spool = spool_at(tmp_path)
+    queue(spool, "call-live", 1)
+    spool.enqueue(event_id="call-old-1", call_id="call-old", payload={"eventId": "call-old-1", "sourceSequence": 1, "type": "agent.ready"},
+        credential=ReplayCredential("call-old", 1, "token-old", "2020-01-01T00:00:00Z"))
+    now = time.time()
+    for _ in range(6):
+        spool.retry("call-live-1", now=now)
+        spool.retry("call-old-1", now=now)
+    due = dict(spool._connection.execute("SELECT event_id, next_attempt_at FROM event_spool").fetchall())
+    assert due["call-live-1"] == now + LIVE_RETRY_SECONDS
+    assert due["call-old-1"] == now + 2 ** 6

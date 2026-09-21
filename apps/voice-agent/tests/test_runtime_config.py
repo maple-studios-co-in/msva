@@ -98,3 +98,14 @@ def test_the_deploy_template_spells_out_settings_an_enabled_worker_accepts(tmp_p
     env.update({key: value for key, value in settings.items() if key.startswith("VOICE_") and key not in env})
 
     assert RuntimeConfig.from_env(env) == RuntimeConfig.from_env(enabled_env(tmp_path))
+
+
+def test_live_evidence_gets_retried_well_inside_the_stall_allowance():
+    from madhusudan_voice.config import API_LEASE_SECONDS, EVIDENCE_STALL_SECONDS
+    from madhusudan_voice.spool import LIVE_RETRY_SECONDS
+
+    # Once the API is back, a live call's evidence is retried within LIVE_RETRY_SECONDS and
+    # the companion's one-second poll, and the stall is judged on a renewal pass: the
+    # allowance must cover all three, and stay inside the lease.
+    renewal = RuntimeConfig.from_env({}).lease_renew_seconds
+    assert LIVE_RETRY_SECONDS + 1 + renewal < EVIDENCE_STALL_SECONDS < API_LEASE_SECONDS

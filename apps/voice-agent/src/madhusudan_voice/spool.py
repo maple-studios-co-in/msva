@@ -6,6 +6,7 @@ import json
 import logging
 import sqlite3
 import time
+from datetime import datetime
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,18 @@ logger = logging.getLogger(__name__)
 REPLAY_WINDOW_SECONDS = 24 * 60 * 60
 MAX_CALL_SECONDS = 2 * 60 * 60
 RETENTION_SECONDS = REPLAY_WINDOW_SECONDS + MAX_CALL_SECONDS
+# A live call's evidence (its credential not yet expired) is retried at least this
+# often, so delivery resumes within seconds of an API outage ending; only settled
+# history backs off further.
+LIVE_RETRY_SECONDS = 2
+
+
+def _expired(expires_at: str, now: float) -> bool:
+    """Whether a credential's expiry (ISO 8601) has passed; an unreadable one counts as passed."""
+    try:
+        return datetime.fromisoformat(expires_at).timestamp() <= now
+    except (TypeError, ValueError):
+        return True
 
 
 class SpoolCapacityError(RuntimeError):
@@ -60,6 +73,8 @@ class SpoolEvent:
     payload: dict[str, Any]
     attempts: int
     credential: ReplayCredential
+    # When the event was stored (wall-clock seconds).
+    created_at: float = 0.0
 
 
 class EventSpool:
@@ -282,7 +297,7 @@ class EventSpool:
         """The deliverable head of each unfaulted stream. A faulted or pending earlier
         event still blocks everything after it, so no stream ever skips an event."""
         now = time.time() if now is None else now
-        rows = self._connection.execute("""SELECT e.event_id,e.call_id,e.agent_epoch,e.payload,e.attempts,e.encrypted_token,e.expires_at
+        rows = self._connection.execute("""SELECT e.event_id,e.call_id,e.agent_epoch,e.payload,e.attempts,e.encrypted_token,e.expires_at,e.created_at
             FROM (SELECT call_id, agent_epoch, MIN(source_sequence) AS head FROM event_spool GROUP BY call_id, agent_epoch) AS stream
             JOIN event_spool e ON e.call_id=stream.call_id AND e.agent_epoch=stream.agent_epoch AND e.source_sequence=stream.head
             WHERE e.fault IS NULL AND e.next_attempt_at<=?
@@ -296,7 +311,7 @@ class EventSpool:
                 self.fault_event(row[0], "CREDENTIAL_UNREADABLE")
                 logger.warning("voice evidence stream stopped: call=%s epoch=%s reason=CREDENTIAL_UNREADABLE", row[1], row[2])
                 continue
-            result.append(SpoolEvent(row[0], row[1], json.loads(row[3]), int(row[4]), ReplayCredential(row[1], int(row[2]), token, row[6])))
+            result.append(SpoolEvent(row[0], row[1], json.loads(row[3]), int(row[4]), ReplayCredential(row[1], int(row[2]), token, row[6]), float(row[7])))
         return result
 
     def fault_event(self, event_id: str, reason: str) -> None:
@@ -338,10 +353,13 @@ class EventSpool:
     def retry(self, event_id: str, *, now: float | None = None) -> None:
         now = time.time() if now is None else now
         with self._write() as db:
-            row = db.execute("SELECT attempts FROM event_spool WHERE event_id=?", (event_id,)).fetchone()
+            row = db.execute("SELECT attempts, expires_at FROM event_spool WHERE event_id=?", (event_id,)).fetchone()
             if row:
                 attempts = int(row[0]) + 1
-                db.execute("UPDATE event_spool SET attempts=?, next_attempt_at=? WHERE event_id=?", (attempts, now + min(300, 2 ** min(attempts, 8)), event_id))
+                delay = min(300, 2 ** min(attempts, 8))
+                if not _expired(row[1], now):
+                    delay = min(delay, LIVE_RETRY_SECONDS)
+                db.execute("UPDATE event_spool SET attempts=?, next_attempt_at=? WHERE event_id=?", (attempts, now + delay, event_id))
 
     def prune(self, *, now: float | None = None, retention_seconds: float = RETENTION_SECONDS, batch: int = 1000) -> dict[str, int]:
         """Bounds every table. Evidence whose credential the API can no longer accept

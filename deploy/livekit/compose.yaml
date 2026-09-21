@@ -1,0 +1,86 @@
+name: msva-livekit
+
+services:
+  redis:
+    image: redis:7.4.7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000"]
+    volumes:
+      - redis-data:/data
+    networks: [media-private]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  livekit:
+    image: livekit/livekit-server:v1.13.7
+    restart: unless-stopped
+    command: ["--config", "/etc/livekit/livekit.yaml"]
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./livekit.yaml:/etc/livekit/livekit.yaml:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks: [media-private]
+    ports:
+      - "7881:7881/tcp"
+      - "50000-60000:50000-60000/udp"
+    healthcheck:
+      test: ["CMD", "/livekit-server", "--version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  voice-agent:
+    build:
+      context: ../../apps/voice-agent
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    profiles: ["voice"]
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - voice-spool:/var/lib/msva-voice-agent
+    depends_on:
+      redis:
+        condition: service_healthy
+      livekit:
+        condition: service_started
+    networks: [media-private]
+    expose: ["8081"]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"from urllib.request import urlopen; urlopen('http://127.0.0.1:8081/', timeout=3)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  sip:
+    image: livekit/sip:v1.13.0
+    restart: unless-stopped
+    profiles: ["sip"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      LIVEKIT_WS_URL: ${LIVEKIT_INTERNAL_WS_URL}
+    volumes:
+      - ./sip.yaml:/etc/livekit/sip.yaml:ro
+    command: ["--config", "/etc/livekit/sip.yaml"]
+    network_mode: host
+    # SIP is intentionally not in the default profile. Host networking and these
+    # public ranges require a separately approved carrier/firewall runbook.
+
+networks:
+  media-private:
+    internal: true
+
+volumes:
+  redis-data:
+  voice-spool:

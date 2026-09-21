@@ -1,0 +1,15 @@
+# Production-template values. This file does not provision DNS, TLS, TURN, or firewall rules.
+port: 7880
+bind_addresses: ["0.0.0.0"]
+keys:
+  "$LIVEKIT_API_KEY": "$LIVEKIT_API_SECRET"
+redis:
+  address: redis:6379
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 60000
+  use_external_ip: true
+logging:
+  level: info
+  json: true

@@ -1,13 +1,22 @@
 [project]
-name = "msva-voice-agent-contracts"
+name = "msva-voice-agent"
 version = "0.1.0"
-description = "Canonical MSVA contract validation only"
+description = "Fail-closed LiveKit runtime for the Madhusudan voice agent"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+  "httpx>=0.28,<0.29",
   "jsonschema[format]>=4.23,<5",
-  "pytest>=8,<9"
+  "livekit-agents[anthropic,sarvam]>=1.8,<1.9",
+  "pytest>=8,<9",
+  "pytest-asyncio>=0.24,<1"
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-p no:cacheprovider"
+
+[tool.ruff]
+line-length = 100
+
+[tool.uv]
+package = true

@@ -171,8 +171,8 @@ async function reserveRates(limits: RateLimit[], now = new Date()): Promise<numb
       await prisma.$transaction(async (tx) => {
         for (const limit of ordered) {
           // A raw Date parameter is timestamptz; the columns hold UTC, as Prisma writes them.
-          const reserved = await tx.$queryRaw<unknown[]>`INSERT INTO "AuthRateBucket" ("id", "scope", "keyHash", "windowStart", "count", "expiresAt", "updatedAt")
-            VALUES (${randomUUID()}, ${limit.scope}, ${limit.keyHash}, ${limit.start}::timestamptz AT TIME ZONE 'UTC', 1, ${new Date(limit.start.getTime() + limit.windowMs + 86_400_000)}::timestamptz AT TIME ZONE 'UTC', ${now}::timestamptz AT TIME ZONE 'UTC')
+          const reserved = await tx.$queryRaw<unknown[]>`INSERT INTO "AuthRateBucket" ("id", "scope", "keyHash", "windowStart", "count", "expiresAt", "createdAt", "updatedAt")
+            VALUES (${randomUUID()}, ${limit.scope}, ${limit.keyHash}, ${limit.start}::timestamptz AT TIME ZONE 'UTC', 1, ${new Date(limit.start.getTime() + limit.windowMs + 86_400_000)}::timestamptz AT TIME ZONE 'UTC', ${now}::timestamptz AT TIME ZONE 'UTC', ${now}::timestamptz AT TIME ZONE 'UTC')
             ON CONFLICT ("scope", "keyHash", "windowStart") DO UPDATE SET "count" = "AuthRateBucket"."count" + 1, "updatedAt" = EXCLUDED."updatedAt"
             WHERE "AuthRateBucket"."count" < ${limit.limit}
             RETURNING "id"`;

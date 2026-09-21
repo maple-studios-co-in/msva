@@ -404,6 +404,8 @@ describe("shared throttles", () => {
       await vi.waitFor(async () => expect(await db.loginCode.count({ where: { userId: user.id, id: { notIn: [recent.id, old.id] }, deliveryState: "DELIVERED" } })).toBe(1));
       const minute = await db.authRateBucket.findFirstOrThrow({ where: { scope: "request-email-minute" } });
       expect([before, after].map((at) => Math.floor(at / 60_000) * 60_000)).toContain(minute.windowStart.getTime());
+      expect(minute.createdAt.getTime()).toBeGreaterThanOrEqual(before - 1_000);
+      expect(minute.createdAt.getTime()).toBeLessThanOrEqual(after + 1_000);
     });
     expect((await db.authRateBucket.findMany({ where: { scope: "old" } })).map((bucket) => bucket.keyHash)).toEqual(["live"]);
     expect(await db.loginCode.findUnique({ where: { id: recent.id } })).not.toBeNull();

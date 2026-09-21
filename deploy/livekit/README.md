@@ -47,7 +47,8 @@ delivered. The companion needs `VOICE_INTERNAL_API_URL` and `VOICE_REPLAY_CREDEN
 LiveKit or provider secrets, and keeps running when `VOICE_RUNTIME_ENABLED=false`.
 
 Evidence the API refuses for one of its own reasons stops that call's stream; the call's worker
-then ends AI authority, and the stop is logged. Other refusals (an HTML 404 from a misrouted
+then ends AI authority, and the stop is logged. An event stamped just ahead of the API's clock,
+or a conflict, is retried a few times first. Other refusals (an HTML 404 from a misrouted
 `VOICE_INTERNAL_API_URL`, a proxy error) are retried and logged. Once a cause is fixed, retry
 stopped streams with `docker compose ... run --rm voice-replay uv run --frozen python -m
 madhusudan_voice.replay clear-faults [CALL_ID]`. Anything older than the API's replay window is

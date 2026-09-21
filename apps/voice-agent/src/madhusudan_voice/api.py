@@ -28,6 +28,11 @@ EVENT_REFUSAL_CODES = frozenset({
     "SEQUENCE_CONFLICT", "SEQUENCE_OUT_OF_ORDER", "EVENT_CAPACITY", "PARTICIPANT_MISMATCH", "SEGMENT_IDENTITY_CONFLICT",
     "SEGMENT_REVISION_CONFLICT", "SEGMENT_SEQUENCE_CONFLICT", "FLUSH_WATERMARK_INVALID", "CONTROL_ACK_INVALID", "CONFLICT",
 })
+# Refusals that can settle: an event stamped slightly ahead of the API's clock is
+# accepted once that clock catches up, and a conflict can be a race still resolving.
+# They stop a stream only after this many attempts (about 30 s of backoff).
+SETTLING_REFUSALS = frozenset({"EVENT_TIME_INVALID", "CONFLICT"})
+SETTLING_ATTEMPTS = 5
 # The API refused the tool request before any business effect; the model may correct it.
 REJECTION_CODES = frozenset({"INVALID_REQUEST", "INVALID_TOOL_ARGUMENTS", "CALL_NOT_FOUND", "IDENTITY_REQUIRED", "PARENT_NOT_ACCESSIBLE", "IDEMPOTENCY_CONFLICT", "INVOCATION_CONFLICT"})
 _CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
@@ -209,7 +214,10 @@ class VoiceApiClient:
                         queued.credential.expires_at, queued.credential.token,
                     ))
                 except VoiceApiError as error:
-                    if error.permanent and error.code in EVENT_REFUSAL_CODES:
+                    stop = error.permanent and error.code in EVENT_REFUSAL_CODES
+                    if stop and error.code in SETTLING_REFUSALS and queued.attempts + 1 < SETTLING_ATTEMPTS:
+                        stop = False
+                    if stop:
                         # A refused event will be refused forever, and later events must not
                         # jump it: stop this stream and surface a sanitized fault.
                         reason = f"HTTP_{error.status}:{error.code}"
@@ -217,7 +225,7 @@ class VoiceApiClient:
                         logger.warning("voice evidence stream stopped: call=%s epoch=%s reason=%s",
                             queued.credential.call_id, queued.credential.agent_epoch, reason)
                     else:
-                        if error.permanent:
+                        if error.permanent and error.code not in EVENT_REFUSAL_CODES:
                             logger.warning("voice evidence delivery got an unrecognized refusal (HTTP %s); retrying", error.status)
                         # Backing off hides this stream from ready(); other streams still drain.
                         spool.retry(queued.event_id)

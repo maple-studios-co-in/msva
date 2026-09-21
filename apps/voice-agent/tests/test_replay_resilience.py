@@ -30,7 +30,7 @@ def api_answering(status_for: dict[str, int], sent: list[str]) -> VoiceApiClient
         sent.append(event["eventId"])
         status = status_for.get(event["eventId"], 200)
         if status != 200:
-            return httpx.Response(status, json={"error": "EVENT_TIME_INVALID"})
+            return httpx.Response(status, json={"error": "SEQUENCE_OUT_OF_ORDER"})
         return httpx.Response(200, json={"eventId": event["eventId"], "status": "committed"})
     return VoiceApiClient(BASE, client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
 
@@ -47,7 +47,7 @@ async def test_a_refused_event_stops_only_its_own_stream(tmp_path):
     assert await client.flush_spool(spool) == 0
     assert sent == ["call-a-1", "call-b-1", "call-b-2"]
     faults = spool._connection.execute("SELECT event_id, fault FROM event_spool ORDER BY event_id").fetchall()
-    assert faults == [("call-a-1", "HTTP_409:EVENT_TIME_INVALID"), ("call-a-2", "HTTP_409:EVENT_TIME_INVALID")]
+    assert faults == [("call-a-1", "HTTP_409:SEQUENCE_OUT_OF_ORDER"), ("call-a-2", "HTTP_409:SEQUENCE_OUT_OF_ORDER")]
 
 
 @pytest.mark.asyncio

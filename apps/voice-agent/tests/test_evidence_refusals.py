@@ -4,7 +4,7 @@ import httpx
 import pytest
 from cryptography.fernet import Fernet
 
-from madhusudan_voice.api import VoiceApiClient
+from madhusudan_voice.api import SETTLING_ATTEMPTS, VoiceApiClient
 from madhusudan_voice.spool import EventSpool, ReplayCredential, SpoolKeyMismatch
 
 from fake_voice_api import BASE, KEY
@@ -41,9 +41,27 @@ async def test_a_refusal_the_api_does_not_name_is_retried_without_stopping_the_s
 async def test_a_refusal_the_api_names_stops_the_stream(tmp_path):
     spool = spool_at(tmp_path / "spool.sqlite3")
     queue(spool, "ready", 1)
-    client = client_answering(httpx.Response(409, json={"error": "EVENT_TIME_INVALID"}))
+    client = client_answering(httpx.Response(409, json={"error": "SEQUENCE_OUT_OF_ORDER"}))
     assert await client.flush_spool(spool) == 0
-    assert spool.stream_fault("call-1", 1) == "HTTP_409:EVENT_TIME_INVALID"
+    assert spool.stream_fault("call-1", 1) == "HTTP_409:SEQUENCE_OUT_OF_ORDER"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["EVENT_TIME_INVALID", "CONFLICT"])
+async def test_a_refusal_that_can_settle_stops_the_stream_only_when_it_persists(tmp_path, code):
+    # An event stamped just ahead of the API's clock is accepted once that clock catches
+    # up, and a conflict can be a race still resolving.
+    spool = spool_at(tmp_path / "spool.sqlite3")
+    queue(spool, "ready", 1)
+    client = client_answering(httpx.Response(409, json={"error": code}))
+    for _ in range(SETTLING_ATTEMPTS - 1):
+        assert await client.flush_spool(spool) == 0
+        assert spool.stream_fault("call-1", 1) is None
+        with spool._write() as db:  # its backoff has passed
+            db.execute("UPDATE event_spool SET next_attempt_at=0")
+    assert await client.flush_spool(spool) == 0
+    assert spool.stream_fault("call-1", 1) == f"HTTP_409:{code}"
     await client.aclose()
 
 

@@ -3,10 +3,15 @@
     python -m madhusudan_voice.replay                        run the companion
     python -m madhusudan_voice.replay clear-faults [CALL]    retry stopped streams
     python -m madhusudan_voice.replay healthcheck            exit 1 once delivery passes stop
+    python -m madhusudan_voice.replay quarantine-unreadable  stop streams no key can read
 
 A stream stops when the API refuses one of its events for good. Once the cause is
 fixed (the worker was pointed at another API deployment, say), clear-faults lets its
 events be delivered again.
+
+The services refuse to start while a stream still being delivered holds a credential
+no configured key can read. If that key is lost for good, quarantine-unreadable stops
+those streams (their events are never delivered) so the services can start.
 """
 
 from __future__ import annotations
@@ -32,9 +37,9 @@ def heartbeat_path(config: ReplayConfig) -> Path:
     return config.spool_path.with_name("replay.heartbeat")
 
 
-def open_spool(config: ReplayConfig) -> EventSpool:
-    return EventSpool(config.spool_path, max_events=config.spool_max_events,
-        max_bytes=config.spool_max_bytes, replay_key=config.replay_credential_key)
+def open_spool(config: ReplayConfig, *, verify_credentials: bool = True) -> EventSpool:
+    return EventSpool(config.spool_path, max_events=config.spool_max_events, max_bytes=config.spool_max_bytes,
+        replay_key=config.replay_credential_key, verify_credentials=verify_credentials)
 
 
 async def run_replay() -> None:
@@ -60,6 +65,14 @@ def clear_faults(call_id: str | None = None) -> int:
         spool.close()
 
 
+def quarantine_unreadable() -> int:
+    spool = open_spool(ReplayConfig.from_env(dict(os.environ)), verify_credentials=False)
+    try:
+        return spool.quarantine_unreadable()
+    finally:
+        spool.close()
+
+
 def healthcheck(*, now: float | None = None) -> bool:
     """Whether the companion completed a delivery pass recently."""
     path = heartbeat_path(ReplayConfig.from_env(dict(os.environ)))
@@ -78,8 +91,10 @@ def main(argv: list[str]) -> None:
         print(f"cleared {clear_faults(argv[1] if len(argv) == 2 else None)} stopped events")
     elif argv == ["healthcheck"]:
         raise SystemExit(0 if healthcheck() else 1)
+    elif argv == ["quarantine-unreadable"]:
+        print(f"stopped {quarantine_unreadable()} streams whose credentials no configured key can read")
     else:
-        raise SystemExit("usage: python -m madhusudan_voice.replay [clear-faults [CALL_ID] | healthcheck]")
+        raise SystemExit("usage: python -m madhusudan_voice.replay [clear-faults [CALL_ID] | healthcheck | quarantine-unreadable]")
 
 
 if __name__ == "__main__":

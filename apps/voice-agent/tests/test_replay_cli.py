@@ -46,6 +46,20 @@ def test_the_healthcheck_passes_only_while_delivery_passes_complete(replay_env):
     assert exited.value.code == 1
 
 
+def test_quarantine_unreadable_stops_streams_no_key_can_read(replay_env, capsys):
+    from cryptography.fernet import Fernet
+
+    spool = replay.open_spool(replay_env)
+    spool.enqueue(event_id="ready", call_id="call-1", payload={"eventId": "ready", "sourceSequence": 1},
+        credential=ReplayCredential("call-1", 1, "lease-token", "2030-01-01T00:00:00Z"))
+    with spool._write() as db:
+        db.execute("UPDATE event_spool SET encrypted_token=?", (Fernet(Fernet.generate_key()).encrypt(b"lease-token"),))
+    spool.close()
+    replay.main(["quarantine-unreadable"])
+    assert capsys.readouterr().out.strip() == "stopped 1 streams whose credentials no configured key can read"
+    assert replay.open_spool(replay_env).stream_fault("call-1", 1) == "CREDENTIAL_UNREADABLE"
+
+
 def test_an_unknown_command_prints_the_usage(replay_env):
     with pytest.raises(SystemExit, match="usage"):
         replay.main(["drain-now"])

@@ -58,7 +58,10 @@ madhusudan_voice.replay clear-faults [CALL_ID]`. Anything older than the API's r
 dropped and logged as unrecoverable.
 
 The worker and the companion refuse to start with a replay key that cannot read every stored
-credential, instead of stopping streams. `VOICE_REPLAY_CREDENTIAL_KEY` may list several keys:
+credential of a stream still being delivered, instead of stopping streams. If a key is lost for
+good, `docker compose ... run --rm voice-replay uv run --frozen python -m madhusudan_voice.replay
+quarantine-unreadable` stops the streams it guarded (their events are never delivered and go at
+the end of retention) so the services can start. `VOICE_REPLAY_CREDENTIAL_KEY` may list several keys:
 the first encrypts and any of them decrypts. To rotate it, change both services together, one
 step at a time:
 

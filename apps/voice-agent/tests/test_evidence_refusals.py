@@ -119,6 +119,48 @@ def test_a_key_retired_too_early_is_refused_and_its_evidence_kept(tmp_path):
     assert restored.stream_fault("call-1", 1) is None
 
 
+def written_with(spool: EventSpool, key: str) -> None:
+    """Re-encrypts every stored credential with another key, as a process holding only
+    that key would have written them."""
+    token = Fernet(key.encode()).encrypt(b"lease-token")
+    with spool._write() as db:
+        db.execute("UPDATE event_spool SET encrypted_token=?", (token,))
+
+
+def test_a_credential_no_key_can_read_is_refused_even_when_the_key_check_passes(tmp_path):
+    path = tmp_path / "spool.sqlite3"
+    spool = spool_at(path)
+    queue(spool, "ready", 1)
+    written_with(spool, OTHER_KEY)
+    spool.close()
+    with pytest.raises(SpoolKeyMismatch):
+        spool_at(path)
+
+
+def test_a_stopped_stream_does_not_keep_the_spool_from_opening(tmp_path):
+    path = tmp_path / "spool.sqlite3"
+    spool = spool_at(path)
+    queue(spool, "ready", 1)
+    written_with(spool, OTHER_KEY)
+    spool.fault_stream("call-1", 1, "CREDENTIAL_UNREADABLE")
+    spool.close()
+    assert spool_at(path).stream_fault("call-1", 1) == "CREDENTIAL_UNREADABLE"
+
+
+def test_a_lost_keys_streams_can_be_quarantined_so_the_spool_opens(tmp_path):
+    path = tmp_path / "spool.sqlite3"
+    spool = spool_at(path)
+    queue(spool, "ready", 1)
+    written_with(spool, OTHER_KEY)
+    spool.close()
+    quarantine = EventSpool(path, max_events=20_000, max_bytes=50_000_000, replay_key=KEY, verify_credentials=False)
+    assert quarantine.quarantine_unreadable() == 1
+    quarantine.close()
+    reopened = spool_at(path)
+    assert reopened.stream_fault("call-1", 1) == "CREDENTIAL_UNREADABLE"
+    assert reopened.ready(now=10) == []
+
+
 def test_a_stopped_stream_is_delivered_again_once_cleared(tmp_path):
     spool = spool_at(tmp_path / "spool.sqlite3")
     queue(spool, "ready", 1)

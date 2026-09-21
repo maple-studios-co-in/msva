@@ -69,7 +69,7 @@ class EventSpool:
     hours. They are never used for context, lease renewal, or tools.
     """
 
-    def __init__(self, path: Path, *, max_events: int, max_bytes: int, replay_key: str) -> None:
+    def __init__(self, path: Path, *, max_events: int, max_bytes: int, replay_key: str, verify_credentials: bool = True) -> None:
         self.path, self.max_events, self.max_bytes = path, max_events, max_bytes
         # Several comma-separated keys rotate: the first encrypts, any of them decrypts.
         try:
@@ -85,19 +85,22 @@ class EventSpool:
         try:
             with self._write() as db:
                 self._migrate(db)
-            self._verify_keys()
+            self._verify_keys(credentials=verify_credentials)
         except BaseException:
             self._connection.close()
             raise
 
-    def _verify_keys(self) -> None:
-        """Every stored credential and the key-check value must be readable with the
-        configured keys, so a wrong or retired key is refused here instead of stopping
-        streams one at a time. Whatever the first key did not write is re-encrypted under
-        it, so an older key can be retired once no process writes with it any more."""
+    def _verify_keys(self, *, credentials: bool = True) -> None:
+        """The key-check value, and every credential of a stream still being delivered,
+        must be readable with the configured keys, so a wrong or retired key is refused
+        here instead of stopping streams one at a time. Stopped streams are left out:
+        they deliver nothing, and would otherwise keep every process from starting.
+        Whatever the first key did not write is re-encrypted under it, so an older key
+        can be retired once no process writes with it any more."""
         stale: list[tuple[str, bytes, bytes]] = []
         try:
-            for event_id, token in self._connection.execute("SELECT event_id, encrypted_token FROM event_spool").fetchall():
+            rows = self._connection.execute("SELECT event_id, encrypted_token FROM event_spool WHERE fault IS NULL").fetchall() if credentials else []
+            for event_id, token in rows:
                 if not self._first_key_reads(token):
                     stale.append((event_id, token, self._cipher.rotate(token)))
             with self._write() as db:
@@ -112,6 +115,21 @@ class EventSpool:
                     db.execute("UPDATE event_spool SET encrypted_token=? WHERE event_id=? AND encrypted_token=?", (new, event_id, old))
         except InvalidToken as exc:
             raise SpoolKeyMismatch("VOICE_REPLAY_CREDENTIAL_KEY cannot read this spool; include the key it was written with") from exc
+
+    def quarantine_unreadable(self) -> int:
+        """Stops every stream holding a credential no configured key can read (its key is
+        lost), so the services can start. Its events stay until retention ends and are
+        never delivered. Returns how many streams it stopped."""
+        streams: set[tuple[str, int]] = set()
+        for call_id, agent_epoch, token in self._connection.execute("SELECT call_id, agent_epoch, encrypted_token FROM event_spool WHERE fault IS NULL").fetchall():
+            try:
+                self._cipher.decrypt(token)
+            except InvalidToken:
+                streams.add((call_id, int(agent_epoch)))
+        for call_id, agent_epoch in sorted(streams):
+            self.fault_stream(call_id, agent_epoch, "CREDENTIAL_UNREADABLE")
+            logger.warning("voice evidence stream stopped: call=%s epoch=%s reason=CREDENTIAL_UNREADABLE", call_id, agent_epoch)
+        return len(streams)
 
     def _first_key_reads(self, token: bytes) -> bool:
         try:

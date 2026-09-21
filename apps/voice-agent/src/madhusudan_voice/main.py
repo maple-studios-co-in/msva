@@ -123,6 +123,9 @@ def build_server(config: RuntimeConfig) -> AgentServer:
                 )
                 await stopped.wait()
             finally:
+                # AgentServer cancels an entrypoint before its own teardown on administrative
+                # shutdown. Close while our observers/spool are still alive.
+                await session.aclose()
                 await guard.stop()
                 await observer.drain(min(10, config.drain_timeout_seconds))
                 await agent_speech.drain(min(10, config.drain_timeout_seconds))

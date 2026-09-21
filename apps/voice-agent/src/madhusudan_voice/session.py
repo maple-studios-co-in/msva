@@ -235,12 +235,12 @@ class AgentSpeechObserver:
 
 def canonical_language(value: str) -> str:
     normalized = value.lower().replace("_", "-")
+    if normalized in {"hinglish", "hi-en", "en-hi"}:
+        return "hinglish"
     if normalized.startswith("hi"):
         return "hi"
     if normalized.startswith("en"):
         return "en"
-    if normalized in {"hinglish", "hi-en", "en-hi"}:
-        return "hinglish"
     return "unknown"
 
 

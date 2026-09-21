@@ -133,7 +133,10 @@ class VoiceApiClient:
 
     async def flush_spool(self, spool: EventSpool) -> int:
         committed = 0
-        for queued in spool.ready():
+        # Each ready() returns only each stream's head. Requery after every commit
+        # so a contiguous ready/final/flushed stream drains without ever jumping it.
+        while queued_events := spool.ready():
+            queued = queued_events[0]
             try:
                 # Every schema-declared lifecycle event is evidence. The API separately
                 # constrains historical receipt so this never restores call authority.

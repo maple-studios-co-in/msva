@@ -3,8 +3,11 @@ set -eu
 
 : "${LIVEKIT_API_KEY:?LIVEKIT_API_KEY is required}"
 : "${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET is required}"
-case "$LIVEKIT_API_KEY:$LIVEKIT_API_SECRET" in
-  *'\n'*|*'\r'*|*'"'*|*"'"*) echo "LiveKit credentials contain unsafe YAML characters" >&2; exit 64 ;;
+case "$LIVEKIT_API_KEY" in
+  *[!A-Za-z0-9_-]*|'') echo "LIVEKIT_API_KEY must use the deployment-safe token alphabet" >&2; exit 64 ;;
+esac
+case "$LIVEKIT_API_SECRET" in
+  *[!A-Za-z0-9_-]*|'') echo "LIVEKIT_API_SECRET must use the deployment-safe token alphabet" >&2; exit 64 ;;
 esac
 umask 077
 mkdir -p /run/livekit

@@ -39,8 +39,9 @@ docker compose --env-file deploy/livekit/.env -f deploy/livekit/compose.yaml --p
 ```
 
 The configuration renderer creates `/run/livekit/livekit.yaml` at startup from secret-store
-environment values with mode `0600`; the checked-in file contains no literal `$` credential
-placeholders. The worker receives a separate egress network for the MSVA API and providers; in
+environment values with mode `0600`; it accepts only the documented LiveKit token alphabet
+(`A-Z`, `a-z`, `0-9`, `_`, `-`) so it can emit safe YAML scalars without logging credentials.
+The checked-in file contains no literal `$` credential placeholders. The worker receives a separate egress network for the MSVA API and providers; in
 production, host egress policy must restrict it to the MSVA API, Sarvam, and Anthropic over
 approved DNS/TLS destinations. Raw LiveKit signaling/admin `:7880` remains private.
 

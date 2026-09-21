@@ -34,9 +34,10 @@ class EventWriter:
     def last_source_sequence(self) -> int:
         return self._source_sequence
 
-    async def emit_agent_transcript(self, *, text: str, language: str, segment_id: str, sequence: int) -> str:
+    async def emit_agent_transcript(self, *, text: str, language: str, segment_id: str | None = None, sequence: int = 0) -> str:
         if not text.strip() or len(text) > 4000:
             raise ValueError("agent transcript text must be non-empty and at most 4000 characters")
+        segment_id = segment_id or f"agent:{self.lease.agent_epoch}:{self._source_sequence + 1}"
         stable_sequence = self.spool.segment_sequence(call_id=self.lease.call_id, agent_epoch=self.lease.agent_epoch, segment_id=segment_id)
         return await self.emit(
             "transcript.final",

@@ -1,12 +1,13 @@
 import { afterEach, expect, it, vi } from "vitest";
 
-const { findUnique } = vi.hoisted(() => ({ findUnique: vi.fn() }));
-vi.mock("@msva/db", () => ({ prisma: { session: { findUnique, update: vi.fn(async () => undefined) } } }));
+const { findUnique, auditCreate } = vi.hoisted(() => ({ findUnique: vi.fn(), auditCreate: vi.fn(async () => undefined) }));
+vi.mock("@msva/db", () => ({ prisma: { session: { findUnique, update: vi.fn(async () => undefined) }, auditLog: { create: auditCreate } } }));
 
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.useRealTimers();
   findUnique.mockReset();
+  auditCreate.mockClear();
 });
 
 function request(headers: Record<string, string | undefined>) {
@@ -22,6 +23,13 @@ it("rejects malformed, duplicate, and ambiguous session credentials safely", asy
   expect(tokenFromRequest(request({ cookie: "msva_session=%E0%A4%A" }))).toBeNull();
   expect(tokenFromRequest(request({ cookie: "msva_session=a; msva_session=b" }))).toBeNull();
   expect(tokenFromRequest(request({ cookie: "msva_session=a", authorization: "Bearer b" }))).toBeNull();
+});
+
+it("ignores other cookies, even duplicated or malformed ones", async () => {
+  const { tokenFromRequest } = await import("./auth.js");
+  const token = "a".repeat(64);
+  expect(tokenFromRequest(request({ cookie: `tracker=50%; _ga=1; _ga=2; msva_session=${token}` }))).toBe(token);
+  expect(tokenFromRequest(request({ cookie: "tracker=50%; _ga=1" }))).toBeNull();
 });
 
 it("treats a session as expired at its expiry instant", async () => {
@@ -73,4 +81,12 @@ it("trusts IPv6 proxy subnets and ignores invalid proxy configuration", async ()
   expect(trustedNetworkFromRequest(proxied("2001:db8:ffff::2", "2001:db8:1::5"))).toEqual({ address: "2001:db8:1::5" });
   vi.stubEnv("TRUSTED_PROXY_ADDRESSES", "not-an-ip, 10.0.0.0/99");
   expect(trustedNetworkFromRequest(proxied("10.0.0.5", "198.51.100.1"))).toEqual({ address: "10.0.0.5" });
+});
+
+it("audits the trusted-chain client address, not a client-supplied one", async () => {
+  vi.stubEnv("TRUSTED_PROXY_ADDRESSES", "127.0.0.1");
+  const { audit } = await import("./auth.js");
+  const spoofed = { ...proxied("127.0.0.1", "6.6.6.6, 203.0.113.91"), ip: "6.6.6.6" };
+  await audit(spoofed, "auth.login", "user", "user-1");
+  expect(auditCreate).toHaveBeenCalledWith({ data: expect.objectContaining({ ip: "203.0.113.91" }) });
 });

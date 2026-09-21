@@ -149,24 +149,26 @@ async function reserveRates(limits: RateLimit[], now = new Date()): Promise<numb
   });
 }
 
-function parseCookies(header: string | undefined): Record<string, string> | null {
-  const out: Record<string, string> = {};
-  if (!header) return out;
+/**
+ * The session cookie's value: undefined when absent, null when ambiguous (sent
+ * twice) or malformed. Other cookies, including ones a parent domain sets, are
+ * ignored, so they cannot sign anyone out.
+ */
+function sessionCookieValue(header: string | undefined): string | null | undefined {
+  if (!header) return undefined;
   if (header.length > 8192) return null;
+  let found: string | undefined;
   for (const part of header.split(";")) {
     const index = part.indexOf("=");
-    if (index === -1) continue;
-    const key = part.slice(0, index).trim();
-    const value = part.slice(index + 1).trim();
-    if (!key) continue;
-    if (Object.hasOwn(out, key)) return null;
+    if (index === -1 || part.slice(0, index).trim() !== SESSION_COOKIE) continue;
+    if (found !== undefined) return null;
     try {
-      out[key] = decodeURIComponent(value);
+      found = decodeURIComponent(part.slice(index + 1).trim());
     } catch {
       return null;
     }
   }
-  return out;
+  return found;
 }
 
 /**
@@ -300,9 +302,8 @@ export function sessionCookie(token: string, maxAgeMs = SESSION_TTL_MS): string 
 
 export function tokenFromRequest(request: express.Request): string | null {
   const bearer = request.headers.authorization;
-  const cookies = parseCookies(request.headers.cookie);
-  if (!cookies) return null;
-  const cookieToken = cookies[SESSION_COOKIE];
+  const cookieToken = sessionCookieValue(request.headers.cookie);
+  if (cookieToken === null) return null;
   if (bearer !== undefined && (!bearer.startsWith("Bearer ") || bearer.length > 512 || cookieToken)) return null;
   const token = bearer ? bearer.slice(7).trim() : cookieToken;
   return token && /^[a-f0-9]{64}$/i.test(token) ? token : null;
@@ -371,7 +372,9 @@ export async function audit(
         entity,
         entityId,
         meta: meta as object | undefined,
-        ip: request.ip
+        // The trusted-chain client, not Express's request.ip: a client can prefix
+        // its own X-Forwarded-For entries, and trust proxy accepts them.
+        ip: trustedNetworkFromRequest(request).address
       }
     });
   } catch (error) {

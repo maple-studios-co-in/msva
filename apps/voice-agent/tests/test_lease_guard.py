@@ -8,9 +8,18 @@ from madhusudan_voice.session import LeaseGuard
 from fake_voice_api import lease_expiring_in, wait_until
 
 
+class Spool:
+    def __init__(self) -> None:
+        self.fault: str | None = None
+
+    def stream_fault(self, call_id: str, agent_epoch: int) -> str | None:
+        return self.fault
+
+
 class Writer:
     def __init__(self, lease) -> None:
         self.lease = lease
+        self.spool = Spool()
         self.failures: list[str] = []
 
     def record_failure(self, code: str) -> None:
@@ -58,15 +67,59 @@ async def test_a_worker_clock_behind_the_server_cannot_extend_authority():
 
 
 @pytest.mark.asyncio
-async def test_a_permanent_renewal_refusal_fences_at_once():
+@pytest.mark.parametrize("refusal", [
+    VoiceApiError("taken over", status=409, code="SESSION_UNAVAILABLE"),
+    VoiceApiError("ended", status=409, code="LEASE_EXPIRED"),
+    VoiceApiError("voice switched off", status=503, code="VOICE_DISABLED"),
+    VoiceApiError("unknown credential", status=401, code="LEASE_INVALID"),
+])
+async def test_authority_the_api_withdrew_is_fenced_at_once_without_a_failure_event(refusal):
+    # The API ended the call first; a failure stamped after its cutoff would be refused
+    # and would stop the stream before its checkpoint.
     writer = Writer(lease_expiring_in(30))
     fenced: list[str] = []
-    api = Api(VoiceApiError("taken over", status=409, code="SESSION_UNAVAILABLE"))
-    guard = LeaseGuard(api, writer, renew_seconds=0.02, lease_seconds=30, on_lost=fenced.append)
+    guard = LeaseGuard(Api(refusal), writer, renew_seconds=0.02, lease_seconds=30, on_lost=fenced.append)
+    guard.start()
+    await wait_until(lambda: bool(fenced))
+    assert fenced == ["LEASE_LOST"] and writer.failures == []
+    assert guard.remaining > 25, "fenced by the refusal, not by waiting for expiry"
+    await guard.stop()
+
+
+@pytest.mark.asyncio
+async def test_any_other_permanent_renewal_refusal_fences_and_is_recorded():
+    writer = Writer(lease_expiring_in(30))
+    fenced: list[str] = []
+    guard = LeaseGuard(Api(VoiceApiError("bad renewal", status=400, code="INVALID_REQUEST")), writer, renew_seconds=0.02, lease_seconds=30, on_lost=fenced.append)
     guard.start()
     await wait_until(lambda: bool(fenced))
     assert fenced == ["LEASE_LOST"] and writer.failures == ["LEASE_LOST"]
-    assert guard.remaining > 25, "fenced by the refusal, not by waiting for expiry"
+    await guard.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_short_lease_is_renewed_before_it_lapses():
+    # A re-claim can return a lease with less time left than the renewal interval.
+    writer = Writer(lease_expiring_in(2))
+    fenced: list[str] = []
+    api = Api(lease_expiring_in(30))
+    guard = LeaseGuard(api, writer, renew_seconds=10, lease_seconds=30, on_lost=fenced.append)
+    guard.start()
+    await wait_until(lambda: api.calls >= 1)
+    await asyncio.sleep(0.05)
+    assert fenced == [] and guard.active and guard.remaining > 25
+    await guard.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_evidence_stream_ends_authority():
+    writer = Writer(lease_expiring_in(30))
+    writer.spool.fault = "HTTP_409:EVENT_CAPACITY"
+    fenced: list[str] = []
+    guard = LeaseGuard(Api(), writer, renew_seconds=0.02, lease_seconds=30, on_lost=fenced.append)
+    guard.start()
+    await wait_until(lambda: bool(fenced))
+    assert fenced == ["FATAL"] and writer.failures == [] and not guard.active
     await guard.stop()
 
 

@@ -37,15 +37,25 @@ def test_enabled_runtime_uses_bounded_lease_and_spool(tmp_path: Path):
 
     assert config.enabled is True
     assert config.lease_seconds == 30
-    assert config.lease_renew_seconds == 10
+    # Inside the API's 5 s evidence tolerance, so an end the API decides is noticed in time.
+    assert config.lease_renew_seconds == 3
     assert config.spool_max_events == 10_000
 
 
-def test_lease_renewal_cannot_equal_or_exceed_lease(tmp_path: Path):
+@pytest.mark.parametrize("seconds", ["30", "5"])
+def test_lease_renewal_stays_inside_the_lease_and_the_evidence_tolerance(tmp_path: Path, seconds: str):
     env = enabled_env(tmp_path)
-    env["VOICE_LEASE_RENEW_SECONDS"] = "30"
+    env["VOICE_LEASE_RENEW_SECONDS"] = seconds
 
-    with pytest.raises(RuntimeDisabled, match="must be less"):
+    with pytest.raises(RuntimeDisabled, match="must be below"):
+        RuntimeConfig.from_env(env)
+
+
+def test_the_lease_cannot_outlast_the_apis(tmp_path: Path):
+    env = enabled_env(tmp_path)
+    env["VOICE_LEASE_SECONDS"] = "60"
+
+    with pytest.raises(RuntimeDisabled, match="cannot exceed"):
         RuntimeConfig.from_env(env)
 
 

@@ -51,6 +51,11 @@ DEFAULT_SPOOL_PATH = "/var/lib/msva-voice-agent/spool.sqlite3"
 DEFAULT_SPOOL_MAX_EVENTS = 10_000
 DEFAULT_SPOOL_MAX_BYTES = 52_428_800
 DEFAULT_CALL_LIMIT = 2
+# The API's lease lasts 30 s, and it accepts evidence stamped at most 5 s after a
+# lease ends. Renewing well inside that tolerance means a worker learns that the API
+# ended its call before its own evidence would be refused.
+API_LEASE_SECONDS = 30
+EVIDENCE_TOLERANCE_SECONDS = 5
 
 
 @dataclass(frozen=True)
@@ -116,15 +121,17 @@ class RuntimeConfig:
             spool_max_bytes=_positive_int(env, "VOICE_SPOOL_MAX_BYTES", DEFAULT_SPOOL_MAX_BYTES),
             call_limit=_positive_int(env, "VOICE_CALL_LIMIT", DEFAULT_CALL_LIMIT),
             drain_timeout_seconds=_positive_int(env, "VOICE_DRAIN_TIMEOUT_SECONDS", 120),
-            lease_seconds=_positive_int(env, "VOICE_LEASE_SECONDS", 30),
-            lease_renew_seconds=_positive_int(env, "VOICE_LEASE_RENEW_SECONDS", 10),
+            lease_seconds=_positive_int(env, "VOICE_LEASE_SECONDS", API_LEASE_SECONDS),
+            lease_renew_seconds=_positive_int(env, "VOICE_LEASE_RENEW_SECONDS", 3),
             stt_mode=env.get("VOICE_STT_MODE", "disabled"),
             agent_name=env.get("VOICE_AGENT_NAME", "madhusudan-support-v1"),
         )
         if not enabled:
             return base
-        if base.lease_renew_seconds >= base.lease_seconds:
-            raise RuntimeDisabled("VOICE_LEASE_RENEW_SECONDS must be less than VOICE_LEASE_SECONDS")
+        if base.lease_seconds > API_LEASE_SECONDS:
+            raise RuntimeDisabled(f"VOICE_LEASE_SECONDS cannot exceed the API's {API_LEASE_SECONDS} s lease")
+        if base.lease_renew_seconds >= min(base.lease_seconds, EVIDENCE_TOLERANCE_SECONDS):
+            raise RuntimeDisabled(f"VOICE_LEASE_RENEW_SECONDS must be below {EVIDENCE_TOLERANCE_SECONDS} s and the lease")
         if base.stt_mode != "realtime":
             raise RuntimeDisabled("VOICE_STT_MODE=realtime is required for the LiveKit call path")
         if base.agent_name != "madhusudan-support-v1":

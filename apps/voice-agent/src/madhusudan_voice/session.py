@@ -13,7 +13,7 @@ from livekit.agents.llm import ToolError
 from livekit.agents.voice import ConversationItemAddedEvent, RunContext, SpeechCreatedEvent, UserInputTranscribedEvent
 from livekit.plugins import anthropic, sarvam
 
-from .api import AuthorityLost, CallContext, ToolRejected, VoiceApiClient, VoiceApiError
+from .api import AUTHORITY_CODES, AuthorityLost, CallContext, ToolRejected, VoiceApiClient, VoiceApiError
 from .config import RuntimeConfig
 from .events import EventWriter
 from .spool import ToolIntentConflict
@@ -60,6 +60,9 @@ class LeaseGuard:
         self.lost = False
         self.failure: FailureCode | None = None
         self._deadline = writer.lease.local_deadline(lease_seconds)
+        # Renewed this long before the deadline at the latest, so a short lease (a
+        # re-claim can return one) is renewed before it lapses.
+        self._margin = min(2.0, lease_seconds / 10)
         self._tasks: list[asyncio.Task[None]] = []
 
     @property
@@ -82,8 +85,10 @@ class LeaseGuard:
         if not self.active or self.remaining <= 0:
             raise LeaseLost("lease renewal failed; business tools are disabled")
 
-    def fail_closed(self, code: FailureCode = "LEASE_LOST") -> None:
-        """Ends authority now. Idempotent, never raises and never awaits."""
+    def fail_closed(self, code: FailureCode = "LEASE_LOST", *, record: bool = True) -> None:
+        """Ends authority now. Idempotent, never raises and never awaits. `record=False`
+        skips the failure event when it could not be accepted anyway: the API already
+        withdrew authority, or the stream no longer delivers."""
         if self.lost:
             return
         self.active = False
@@ -96,10 +101,11 @@ class LeaseGuard:
         for task in self._tasks:
             if task is not current:
                 task.cancel()
-        try:
-            self.writer.record_failure(code)
-        except Exception as error:  # noqa: BLE001 - the fence below must still run
-            logger.warning("voice failure evidence was not recorded: %s", type(error).__name__)
+        if record:
+            try:
+                self.writer.record_failure(code)
+            except Exception as error:  # noqa: BLE001 - the fence below must still run
+                logger.warning("voice failure evidence was not recorded: %s", type(error).__name__)
         if self.on_lost is not None:
             try:
                 self.on_lost(code)
@@ -129,30 +135,49 @@ class LeaseGuard:
             # A renewal may have moved the deadline; look again when this one passes.
             await asyncio.sleep(remaining)
 
+    def _stream_fault(self) -> str | None:
+        lease = self.writer.lease
+        try:
+            return self.writer.spool.stream_fault(lease.call_id, lease.agent_epoch)
+        except Exception as error:  # noqa: BLE001 - an unreadable spool also fails the next append
+            logger.warning("voice evidence stream state was not read: %s", type(error).__name__)
+            return None
+
     async def _renew(self) -> None:
-        wait = self.renew_seconds
+        delay = max(0.0, min(self.renew_seconds, self.remaining - self._margin))
         while not self.lost:
-            await asyncio.sleep(min(wait, self.remaining))
+            await asyncio.sleep(delay)
             if self.lost or self.remaining <= 0:
+                return
+            # Evidence the API refused for good leaves every later event undeliverable,
+            # so the call cannot go on as if it were being recorded.
+            fault = self._stream_fault()
+            if fault is not None:
+                logger.warning("voice evidence stream stopped (%s); ending AI authority", fault)
+                self.fail_closed("FATAL", record=False)
                 return
             try:
                 async with asyncio.timeout(self.remaining):
                     renewed = await self.client.renew(self.writer.lease)
             except VoiceApiError as error:
+                if error.status == 401 or error.code in AUTHORITY_CODES:
+                    # The API already withdrew authority (ended, expired, taken over or
+                    # disabled) and would refuse a failure stamped after its cutoff.
+                    self.fail_closed("LEASE_LOST", record=False)
+                    return
                 if error.permanent:
-                    # The API withdrew authority: expired, ended or taken over by staff.
                     self.fail_closed("LEASE_LOST")
                     return
-                wait = self.retry_seconds
+                delay = min(self.retry_seconds, self.remaining)
                 continue
             except TimeoutError:
                 continue
             except Exception:  # noqa: BLE001 - an unreadable reply is retried; the deadline still fences
-                wait = self.retry_seconds
+                delay = min(self.retry_seconds, self.remaining)
                 continue
             self.writer.update_lease(renewed)
             self._deadline = renewed.local_deadline(self.lease_seconds)
-            wait = self.renew_seconds
+            delay = max(0.0, min(self.renew_seconds, self.remaining - self._margin))
 
 
 class MadhusudanAgent(Agent):

@@ -253,9 +253,10 @@ describe("ending calls without complete evidence", () => {
     await finalizeVoiceSession(call.callId, db);
     expect(await db.call.findUniqueOrThrow({ where: { id: call.callId } })).toMatchObject({ status: "COMPLETED", outcome: "ABANDONED" });
     expect(await db.voiceSession.findUniqueOrThrow({ where: { id: call.sessionId } })).toMatchObject({ state: "ENDED", transcriptComplete: false });
-    // The caller's speech was still in the worker's spool when the call ended.
+    // The caller's speech was still in the worker's spool when the call ended:
+    // it is no longer abandoned, even before the stream is complete.
     await recordVoiceEvent(callerFinal(call, 3), call.lease.token, db);
-    expect(await db.call.findUniqueOrThrow({ where: { id: call.callId } })).toMatchObject({ outcome: "ABANDONED" });
+    expect(await db.call.findUniqueOrThrow({ where: { id: call.callId } })).toMatchObject({ outcome: "IN_PROGRESS" });
     await recordVoiceEvent(flushed(call, 4), call.lease.token, db);
     expect(await db.voiceSession.findUniqueOrThrow({ where: { id: call.sessionId } })).toMatchObject({ transcriptComplete: true });
     expect(await db.call.findUniqueOrThrow({ where: { id: call.callId } })).toMatchObject({ status: "COMPLETED", outcome: "IN_PROGRESS" });

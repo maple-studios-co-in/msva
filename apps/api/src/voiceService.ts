@@ -307,7 +307,7 @@ export async function recordVoiceEvent(event: WorkerEvent, token: string, db: Pr
       await tx.voiceLease.update({ where: { id: lease.id }, data: { expiresAt: now } });
     }
     // Evidence that arrives after the call ended keeps its record truthful.
-    if (session.state === "ENDED" || session.state === "FAILED") await recordLateEvidence(tx, session, isFlush, now);
+    if (session.state === "ENDED" || session.state === "FAILED") await recordLateEvidence(tx, session, event, now);
     return { eventId: event.eventId, status: "committed" as const };
   });
 }
@@ -346,15 +346,18 @@ async function endSession(tx: Prisma.TransactionClient, session: LockedSession, 
 }
 
 /**
- * Evidence for a call that has ended: completeness follows the latest event,
- * and once the stream is complete again an outcome that depended on missing
- * evidence (abandoned or unconfirmed) is derived afresh.
+ * Evidence for a call that has ended: completeness follows the latest event.
+ * An outcome that depended on missing evidence is derived afresh once the
+ * stream is complete again; late caller speech lifts "abandoned" at once, as
+ * no later evidence can make it true again.
  */
-async function recordLateEvidence(tx: Prisma.TransactionClient, session: LockedSession, complete: boolean, now: Date): Promise<void> {
+async function recordLateEvidence(tx: Prisma.TransactionClient, session: LockedSession, event: WorkerEvent, now: Date): Promise<void> {
+  const complete = event.type === "transcript.flushed";
   if (session.transcriptComplete !== complete) await tx.voiceSession.update({ where: { id: session.id }, data: { transcriptComplete: complete } });
-  if (!complete) return;
+  const callerSpoke = event.type === "transcript.final" && event.payload.speaker === "CALLER";
+  if (!complete && !callerSpoke) return;
   const call = await tx.call.findUniqueOrThrow({ where: { id: session.callId }, select: { outcome: true } });
-  if (call.outcome !== "ABANDONED" && call.outcome !== "IN_PROGRESS") return;
+  if (call.outcome !== "ABANDONED" && (!complete || call.outcome !== "IN_PROGRESS")) return;
   const outcome = await evidencedOutcome(tx, session.callId, session.id, "IN_PROGRESS");
   if (outcome === call.outcome) return;
   await tx.call.updateMany({ where: { id: session.callId, outcome: call.outcome }, data: { outcome } });

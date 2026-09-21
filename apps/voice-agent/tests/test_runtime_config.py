@@ -84,3 +84,13 @@ def test_default_spool_holds_the_default_calls_at_the_api_limits():
 
     assert config.spool_max_events >= config.call_limit * api_max_events
     assert config.spool_max_bytes >= config.call_limit * (api_max_bytes + api_max_events * credential_bytes)
+
+
+def test_the_deploy_template_spells_out_settings_an_enabled_worker_accepts(tmp_path: Path):
+    template = Path(__file__).resolve().parents[3] / "deploy" / "livekit" / "env.example"
+    settings = dict(line.split("=", 1) for line in template.read_text(encoding="utf-8").splitlines() if line and not line.startswith("#"))
+    env = enabled_env(tmp_path)
+    # The template's bounded pilot settings; the switches, secrets and paths stay the test's.
+    env.update({key: value for key, value in settings.items() if key.startswith("VOICE_") and key not in env})
+
+    assert RuntimeConfig.from_env(env) == RuntimeConfig.from_env(enabled_env(tmp_path))

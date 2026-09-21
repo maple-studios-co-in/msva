@@ -11,7 +11,7 @@ import { getActiveModel, getLlmEnabled, handleChat, initialState, setLlmEnabled 
 import { DEMO_FAILSAFE_AUDIO_PATH, demoFailsafeAvailable, loadDemoFailsafe } from "./demoFailsafe.js";
 import { databaseReady } from "@msva/db";
 import { authenticate, requireRole } from "./auth.js";
-import { browserOrigins, corsOrigin, requireBrowserOrigin } from "./browserOrigin.js";
+import { corsOrigin, parseBrowserOrigins, requireBrowserOrigin } from "./browserOrigin.js";
 import { adminRouter } from "./routes/admin.js";
 import { internalRouter } from "./routes/internal.js";
 import { internalAgentRouter } from "./routes/internalAgent.js";
@@ -184,7 +184,9 @@ app.use((error: unknown, _request: express.Request, response: express.Response, 
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  if (browserOrigins().size === 0) {
+  const { origins, ignored } = parseBrowserOrigins(process.env.BROWSER_ORIGINS);
+  for (const entry of ignored) console.warn(`[api] BROWSER_ORIGINS entry ${JSON.stringify(entry)} is not an origin (scheme://host[:port]) and is ignored`);
+  if (origins.size === 0) {
     console.warn("[api] BROWSER_ORIGINS is empty: browser sign-in and the demo's paid routes will refuse every request");
   }
   const server = createApp().listen(port, () => {

@@ -3,26 +3,44 @@ import type express from "express";
 // ---------------------------------------------------------------------------
 // Browser origins
 //
-// BROWSER_ORIGINS lists, comma-separated, the exact origins the console and demo
-// pages are served from (for example https://msva.example.com). There is no
-// wildcard, reflection or prefix match. Browser POSTs that sign in or spend
-// provider credits must come from one of them, and credentialed CORS answers
-// only them. With the list empty, every such request is refused.
+// BROWSER_ORIGINS lists, comma-separated, the origins the console and demo pages
+// are served from (for example https://msva.example.com). Each entry is read as
+// its canonical origin (lowercase host, punycode, no default port), and requests
+// must carry exactly one of those: there is no wildcard, reflection or prefix
+// match. Browser POSTs that sign in or spend provider credits must come from one
+// of them, and credentialed CORS answers only them. With the list empty, every
+// such request is refused. The telephony service reads the same list the same way
+// (apps/telephony/src/consoleSession.ts).
 // ---------------------------------------------------------------------------
 
-export function browserOrigins(): ReadonlySet<string> {
+/** The canonical origins listed, and the entries that are not bare http(s) origins. */
+export function parseBrowserOrigins(value: string | undefined): { origins: Set<string>; ignored: string[] } {
   const origins = new Set<string>();
-  for (const entry of (process.env.BROWSER_ORIGINS ?? "").split(",")) {
-    const value = entry.trim().replace(/\/$/, "");
-    if (!value || value.includes("*")) continue;
-    try {
-      // Only a bare origin counts: a scheme, host and port, and nothing after them.
-      if (new URL(value).origin === value) origins.add(value);
-    } catch {
-      // Not a URL; ignored like any other entry that is not a bare origin.
-    }
+  const ignored: string[] = [];
+  for (const entry of (value ?? "").split(",")) {
+    const text = entry.trim();
+    if (!text) continue;
+    const origin = canonicalOrigin(text);
+    if (origin) origins.add(origin);
+    else ignored.push(text);
   }
-  return origins;
+  return { origins, ignored };
+}
+
+function canonicalOrigin(text: string): string | null {
+  if (text.includes("*")) return null;
+  try {
+    const url = new URL(text);
+    const bare = (url.protocol === "https:" || url.protocol === "http:") && !url.username && !url.password
+      && url.pathname === "/" && !url.search && !url.hash;
+    return bare ? url.origin : null;
+  } catch {
+    return null;
+  }
+}
+
+export function browserOrigins(): ReadonlySet<string> {
+  return parseBrowserOrigins(process.env.BROWSER_ORIGINS).origins;
 }
 
 /** Refuses a request whose Origin header is not exactly one of the browser origins. */

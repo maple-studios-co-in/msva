@@ -168,7 +168,8 @@ pm2 reload all
   session with the API at `AGENT_BASE_URL` before opening a browser call.
 - **"Origin not allowed" (403) on sign-in or the demo** → the page's origin is not
   in `BROWSER_ORIGINS` in `apps/api/.env` (and `apps/telephony/.env` for calls).
-  List it exactly, scheme and host, with no path or trailing slash.
+  List it as `scheme://host[:port]`, with no path; both services log any entry
+  they ignore when they start.
 - **502 / nothing loads** → `pm2 status`; `curl localhost:4100/health`.
 - **Agent always uses fallback even with AGENT_LLM=on** → Ollama too slow /
   timing out; raise `OLLAMA_TIMEOUT_MS` or use a smaller model.

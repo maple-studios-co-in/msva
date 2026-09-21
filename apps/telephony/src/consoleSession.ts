@@ -17,21 +17,37 @@ const CALLING_ROLES = new Set(["AGENT", "SUPERVISOR", "ADMIN"]);
 export type BrowserCallDecision = "open" | 401 | 403 | 503;
 
 /**
- * BROWSER_ORIGINS, parsed as the API parses it (apps/api/src/browserOrigin.ts): exact
- * bare origins only, no wildcard or prefix match.
+ * BROWSER_ORIGINS, read exactly as the API reads it (apps/api/src/browserOrigin.ts, and
+ * a test holds the two together): canonical bare http(s) origins, no wildcard or prefix
+ * match, and the entries that are not origins.
  */
-export function browserOrigins(): ReadonlySet<string> {
+export function parseBrowserOrigins(value: string | undefined): { origins: Set<string>; ignored: string[] } {
   const origins = new Set<string>();
-  for (const entry of (process.env.BROWSER_ORIGINS ?? "").split(",")) {
-    const value = entry.trim().replace(/\/$/, "");
-    if (!value || value.includes("*")) continue;
-    try {
-      if (new URL(value).origin === value) origins.add(value);
-    } catch {
-      // Not a URL; ignored like any other entry that is not a bare origin.
-    }
+  const ignored: string[] = [];
+  for (const entry of (value ?? "").split(",")) {
+    const text = entry.trim();
+    if (!text) continue;
+    const origin = canonicalOrigin(text);
+    if (origin) origins.add(origin);
+    else ignored.push(text);
   }
-  return origins;
+  return { origins, ignored };
+}
+
+function canonicalOrigin(text: string): string | null {
+  if (text.includes("*")) return null;
+  try {
+    const url = new URL(text);
+    const bare = (url.protocol === "https:" || url.protocol === "http:") && !url.username && !url.password
+      && url.pathname === "/" && !url.search && !url.hash;
+    return bare ? url.origin : null;
+  } catch {
+    return null;
+  }
+}
+
+export function browserOrigins(): ReadonlySet<string> {
+  return parseBrowserOrigins(process.env.BROWSER_ORIGINS).origins;
 }
 
 export async function browserCallDecision(headers: IncomingHttpHeaders): Promise<BrowserCallDecision> {

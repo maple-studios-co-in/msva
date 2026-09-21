@@ -10,7 +10,7 @@ import {
   type BrowserCallPipeline,
   type BrowserClientMessage
 } from "./browserPipeline.js";
-import { browserCallDecision } from "./consoleSession.js";
+import { browserCallDecision, parseBrowserOrigins } from "./consoleSession.js";
 
 const port = Number(process.env.TELEPHONY_PORT ?? 4200);
 const publicHost = process.env.PUBLIC_WS_HOST ?? `127.0.0.1:${port}`;
@@ -187,6 +187,9 @@ wss.on("connection", (ws, request) => {
 });
 
 server.listen(port, () => {
+  const { origins, ignored } = parseBrowserOrigins(process.env.BROWSER_ORIGINS);
+  for (const entry of ignored) console.warn(`[telephony] BROWSER_ORIGINS entry ${JSON.stringify(entry)} is not an origin (scheme://host[:port]) and is ignored`);
+  if (origins.size === 0) console.warn("[telephony] BROWSER_ORIGINS is empty: every browser call will be refused");
   console.log(`MSVA telephony service listening on http://localhost:${port}`);
   console.log(`  Exotel webhook: POST /exotel/incoming`);
   console.log(`  Media stream:   ${publicWsUrl}`);

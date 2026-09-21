@@ -14,6 +14,7 @@ import { adminRouter } from "./routes/admin.js";
 import { internalRouter } from "./routes/internal.js";
 import { internalAgentRouter } from "./routes/internalAgent.js";
 import { createLiveCallsHandler } from "./liveCalls.js";
+import { startAssessmentWorker } from "./assessmentWorker.js";
 
 const port = Number(process.env.PORT ?? 4100);
 const csvPath = process.env.CSV_PATH ?? "../../data/reports.csv";
@@ -204,7 +205,13 @@ app.use((error: unknown, _request: express.Request, response: express.Response, 
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  createApp().listen(port, () => {
+  const server = createApp().listen(port, () => {
     console.log(`MSVA API running on http://localhost:${port}`);
   });
+  const assessmentWorker = startAssessmentWorker();
+  for (const signal of ["SIGTERM", "SIGINT"] as const) {
+    process.once(signal, () => {
+      void assessmentWorker.stop().finally(() => server.close());
+    });
+  }
 }

@@ -5,7 +5,8 @@ import type {
   CallAssessmentDto,
   CallAssessmentEligibility,
   CallAssessmentResponse,
-  CallAssessmentResult
+  CallAssessmentResult,
+  AutomaticAssessmentJobDto
 } from "@msva/shared";
 
 export const JEV_MODEL = "jev-1.13.0";
@@ -18,7 +19,7 @@ const PROVIDER_TIMEOUT_MS = 12_000;
 const MAX_PROVIDER_RESPONSE_CHARS = 100_000;
 const JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
 
-type SnapshotCall = {
+export type SnapshotCall = {
   id: string;
   status: string;
   endedAt: Date | null;
@@ -49,7 +50,7 @@ type JevConfig = {
   allowedOrigins: Set<string>;
 };
 
-type ProviderResult = { model: string; result: CallAssessmentResult; promptTokens: number | null; completionTokens: number | null };
+export type ProviderResult = { model: string; result: CallAssessmentResult; promptTokens: number | null; completionTokens: number | null };
 
 type AssessmentRecord = {
   id: string;
@@ -152,11 +153,18 @@ export function toCallAssessmentDto(record: AssessmentRecord, now = new Date()):
   };
 }
 
-async function callSnapshot(callId: string): Promise<SnapshotCall | null> {
-  return prisma.$transaction(async (tx) => tx.call.findUnique({
+export async function readAssessmentSnapshot(
+  tx: Pick<Prisma.TransactionClient, "call"> | typeof prisma,
+  callId: string
+): Promise<SnapshotCall | null> {
+  return tx.call.findUnique({
     where: { id: callId },
     select: { id: true, status: true, endedAt: true, language: true, callerName: true, caller: { select: { name: true } }, fromNumber: true, utterances: { select: { id: true, seq: true, speaker: true, text: true } }, tickets: { select: { id: true } } }
-  }), { isolationLevel: "RepeatableRead" });
+  });
+}
+
+async function callSnapshot(callId: string): Promise<SnapshotCall | null> {
+  return prisma.$transaction((tx) => readAssessmentSnapshot(tx, callId), { isolationLevel: "RepeatableRead" });
 }
 
 export async function getCallAssessment(callId: string): Promise<{ found: boolean; response?: CallAssessmentResponse }> {
@@ -172,6 +180,15 @@ export async function getCallAssessment(callId: string): Promise<{ found: boolea
     ? await prisma.callAssessment.findFirst({ where: currentWhere, orderBy: { requestedAt: "desc" } })
       ?? await prisma.callAssessment.findFirst({ where: { callId }, orderBy: { requestedAt: "desc" } })
     : await prisma.callAssessment.findFirst({ where: { callId }, orderBy: { requestedAt: "desc" } });
+  const automatic = await prisma.assessmentJob.findUnique({ where: { callId_kind: { callId, kind: "POST_CALL" } } });
+  const automaticJob: AutomaticAssessmentJobDto | null = automatic ? {
+    state: automatic.state,
+    dueAt: automatic.dueAt.toISOString(),
+    attempts: automatic.attempts,
+    reason: automatic.reason,
+    leaseExpiresAt: automatic.leaseExpiresAt?.toISOString() ?? null,
+    stalled: automatic.state === "RUNNING" && Boolean(automatic.leaseExpiresAt && automatic.leaseExpiresAt <= new Date())
+  } : null;
   return {
     found: true,
     response: {
@@ -181,7 +198,8 @@ export async function getCallAssessment(callId: string): Promise<{ found: boolea
       current: Boolean(
         latest && snapshot.eligibility.eligible && snapshot.inputHash === latest.inputHash
         && latest.requestedModel === JEV_MODEL && latest.rubricVersion === JEV_RUBRIC_VERSION
-      )
+      ),
+      automaticJob
     }
   };
 }
@@ -357,7 +375,12 @@ export async function invokeJev(
 
 type Claim = { record: AssessmentRecord; invoke: boolean };
 
-async function claimAssessment(call: SnapshotCall, snapshot: AssessmentSnapshot, requestedById: string): Promise<Claim> {
+async function claimAssessment(
+  call: SnapshotCall,
+  snapshot: AssessmentSnapshot,
+  requestedById: string | null,
+  trigger: "MANUAL" | "AUTO_POST_CALL"
+): Promise<Claim> {
   const now = new Date();
   const leaseExpiresAt = new Date(now.getTime() + LEASE_MS);
   const attemptToken = randomUUID();
@@ -370,7 +393,7 @@ async function claimAssessment(call: SnapshotCall, snapshot: AssessmentSnapshot,
   try {
     const record = await prisma.$transaction(async (tx) => {
       const created = await tx.callAssessment.create({ data });
-      await tx.auditLog.create({ data: { userId: requestedById, action: "call_assessment.requested", entity: "CallAssessment", entityId: created.id, meta: { callId: call.id } } });
+      await tx.auditLog.create({ data: { userId: requestedById, action: "call_assessment.requested", entity: "CallAssessment", entityId: created.id, meta: { callId: call.id, trigger } } });
       return created;
     });
     return { record, invoke: true };
@@ -387,7 +410,7 @@ async function claimAssessment(call: SnapshotCall, snapshot: AssessmentSnapshot,
       });
       if (updated.count !== 1) return null;
       const record = await tx.callAssessment.findUniqueOrThrow({ where: { id: existing.id } });
-      await tx.auditLog.create({ data: { userId: requestedById, action: "call_assessment.requested", entity: "CallAssessment", entityId: record.id, meta: { callId: call.id, retry: true } } });
+      await tx.auditLog.create({ data: { userId: requestedById, action: "call_assessment.requested", entity: "CallAssessment", entityId: record.id, meta: { callId: call.id, retry: true, trigger } } });
       return record;
     });
     if (!claimed) return { record: await prisma.callAssessment.findUniqueOrThrow({ where: { id: existing.id } }), invoke: false };
@@ -407,15 +430,53 @@ async function finishAttempt(record: AssessmentRecord, result: ProviderResult | 
   });
 }
 
-export async function requestCallAssessment(callId: string, requestedById: string): Promise<{ found: boolean; unavailable: boolean; pending: boolean; response?: CallAssessmentResponse }> {
+export type AssessmentInvocationOptions = {
+  trigger: "MANUAL" | "AUTO_POST_CALL";
+  expectedInputHash?: string;
+  // Internal automatic-worker fence, never derived from HTTP input.
+  beforeInvoke?: () => Promise<boolean>;
+};
+
+export type AssessmentRequestResult = {
+  found: boolean;
+  unavailable: boolean;
+  pending: boolean;
+  stale?: boolean;
+  invoked?: boolean;
+  response?: CallAssessmentResponse;
+};
+
+export async function requestCallAssessment(
+  callId: string,
+  requestedById: string | null,
+  options: AssessmentInvocationOptions = { trigger: "MANUAL" }
+): Promise<AssessmentRequestResult> {
+  if (options.trigger === "MANUAL" && !requestedById) throw new Error("Manual assessment requires a user");
   const call = await callSnapshot(callId);
   if (!call) return { found: false, unavailable: false, pending: false };
   const config = readJevConfig();
   if (!capabilityFor(config).available) return { found: true, unavailable: true, pending: false };
   const snapshot = buildAssessmentSnapshot(call);
   if (!snapshot.eligibility.eligible) return { found: true, unavailable: false, pending: false, response: { capability: capabilityFor(config), eligibility: snapshot.eligibility, assessment: null, current: false } };
-  const claim = await claimAssessment(call, snapshot, requestedById);
-  if (!claim.invoke) return { found: true, unavailable: false, pending: claim.record.status === "RUNNING", response: { capability: capabilityFor(config), eligibility: snapshot.eligibility, assessment: toCallAssessmentDto(claim.record), current: claim.record.inputHash === snapshot.inputHash } };
+  if (options.expectedInputHash && options.expectedInputHash !== snapshot.inputHash) {
+    return { found: true, unavailable: false, pending: false, stale: true, response: { capability: capabilityFor(config), eligibility: snapshot.eligibility, assessment: null, current: false } };
+  }
+  const claim = await claimAssessment(call, snapshot, requestedById, options.trigger);
+  if (!claim.invoke) return { found: true, unavailable: false, pending: claim.record.status === "RUNNING", invoked: false, response: { capability: capabilityFor(config), eligibility: snapshot.eligibility, assessment: toCallAssessmentDto(claim.record), current: claim.record.inputHash === snapshot.inputHash } };
+  // Claiming creates an await boundary. Re-read before launch so a late final
+  // turn/ticket cannot send a snapshot that is already known to be stale.
+  if (options.expectedInputHash) {
+    const latestCall = await callSnapshot(callId);
+    const latestSnapshot = latestCall ? buildAssessmentSnapshot(latestCall) : null;
+    if (!latestSnapshot?.eligibility.eligible || latestSnapshot.inputHash !== options.expectedInputHash) {
+      await finishAttempt(claim.record, null, "INPUT_CHANGED");
+      return { found: Boolean(latestCall), unavailable: false, pending: false, stale: true, response: latestSnapshot ? { capability: capabilityFor(config), eligibility: latestSnapshot.eligibility, assessment: null, current: false } : undefined };
+    }
+  }
+  if (options.beforeInvoke && !await options.beforeInvoke()) {
+    await finishAttempt(claim.record, null, "INPUT_CHANGED");
+    return { found: true, unavailable: false, pending: false, stale: true, response: { capability: capabilityFor(config), eligibility: snapshot.eligibility, assessment: null, current: false } };
+  }
   try {
     const result = await invokeJev(snapshot.input, config);
     await finishAttempt(claim.record, result, null);
@@ -431,6 +492,7 @@ export async function requestCallAssessment(callId: string, requestedById: strin
     found: true,
     unavailable: false,
     pending: false,
+    invoked: true,
     response: {
       capability: capabilityFor(config),
       eligibility: latestSnapshot.eligibility,

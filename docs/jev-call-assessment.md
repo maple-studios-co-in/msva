@@ -18,6 +18,14 @@ origins; it is not inferred from request headers. A real key is not included in
 this repository. Offline fixtures only verify the integration plumbing, so
 provider quality, latency, and real-world classifications remain unvalidated.
 
+Automatic post-call assessment is separately disabled by default. To enable
+it after the manual capability above is configured, set
+`JEV_AUTO_POST_CALL_ENABLED=true` and `JEV_AUTO_START_AT` to an ISO timestamp.
+Only calls completed on or after that time are queued. The durable queue waits
+briefly for final transcript/ticket writes, has two shared execution slots and
+at most three automatic provider attempts per unchanged input. It never delays
+call logging, bulk-enqueues history at boot, or changes manual POST behavior.
+
 The browser never receives the API key. The service uses the fixed TypeSafe AI
 endpoint and pinned `jev-1.13.0` model. Saved utterances are ordered by sequence,
 redacted for known names, phone numbers, and email-shaped strings, and rejected

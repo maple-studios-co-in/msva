@@ -102,9 +102,12 @@ class LeaseGuard:
         self._margin = min(2.0, lease_seconds / 10)
         # A stall is how long the oldest undelivered event has waited, less the part of that
         # wait the API was unreachable: during an outage the lease itself ends authority, and
-        # a stream that falls behind cannot hide it by delivering a little at a time.
+        # a stream that falls behind cannot hide it by delivering a little at a time. The
+        # wait is counted on this guard's clock, from when it started.
         self._outages = OutageLog(clock())
         self._renewal_ok = True
+        self._waited = 0.0
+        self._waited_at = clock()
         self._tasks: list[asyncio.Task[None]] = []
 
     @property
@@ -177,16 +180,16 @@ class LeaseGuard:
             # A renewal may have moved the deadline; look again when this one passes.
             await asyncio.sleep(remaining)
 
-    def _evidence_state(self) -> tuple[str | None, float]:
+    def _evidence_state(self) -> tuple[str | None, float | None]:
         """Why the call's evidence stream stopped, if it did, and how long its oldest
-        undelivered event has waited."""
+        undelivered event has waited (None when the spool could not be read)."""
         lease = self.writer.lease
         try:
             spool = self.writer.spool
             return spool.stream_fault(lease.call_id, lease.agent_epoch), spool.waiting_seconds(lease.call_id, lease.agent_epoch)
         except Exception as error:  # noqa: BLE001 - an unreadable spool also fails the next append
             logger.warning("voice evidence stream state was not read: %s", type(error).__name__)
-            return None, 0.0
+            return None, None
 
     async def _renew(self) -> None:
         delay = max(0.0, min(self.renew_seconds, self.remaining - self._margin))
@@ -204,10 +207,16 @@ class LeaseGuard:
                 return
             now = self._clock()
             self._outages.record(now, reachable=self._renewal_ok)
-            if waiting - self._outages.unreachable_within(waiting, now) > self.stall_seconds:
-                logger.warning("voice evidence has waited %.0f s for delivery; ending AI authority", waiting)
-                self.fail_closed("FATAL")
-                return
+            if waiting is not None:
+                # The spool's wait is wall-clock time. A clock step, or a head older than this
+                # guard (a re-claimed call), would move it further than the time that passed
+                # here, so it grows no faster than that; delivery still lowers it at once.
+                self._waited = min(waiting, self._waited + now - self._waited_at)
+                self._waited_at = now
+                if self._waited - self._outages.unreachable_within(self._waited, now) > self.stall_seconds:
+                    logger.warning("voice evidence has waited %.0f s for delivery; ending AI authority", self._waited)
+                    self.fail_closed("FATAL")
+                    return
             try:
                 async with asyncio.timeout(self.remaining):
                     renewed = await self.client.renew(self.writer.lease)

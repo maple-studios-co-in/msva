@@ -219,6 +219,58 @@ async def test_evidence_falling_behind_ends_authority_while_some_of_it_still_arr
     await guard.stop()
 
 
+@pytest.mark.asyncio
+async def test_a_spool_read_failing_now_and_then_does_not_hide_stuck_evidence():
+    writer = Writer(lease_expiring_in(30))
+    started, reads = time.monotonic(), 0
+
+    def waiting() -> float:
+        nonlocal reads
+        reads += 1
+        if reads % 3 == 0:
+            raise OSError("database is locked")
+        return time.monotonic() - started
+
+    writer.spool.waiting = waiting
+    fenced: list[str] = []
+    guard = LeaseGuard(Api(), writer, renew_seconds=0.02, lease_seconds=30, on_lost=fenced.append, stall_seconds=0.2)
+    guard.start()
+    await wait_until(lambda: bool(fenced))
+    assert fenced == ["FATAL"] and reads >= 3 and time.monotonic() - started < 0.5
+    await guard.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_forward_clock_step_does_not_end_authority():
+    # Events are delivered as they come; for a moment after the wall clock steps 20 s
+    # forward, the event stored just before the step looks 20 s old.
+    writer = Writer(lease_expiring_in(30))
+    stepped = time.monotonic() + 0.1
+    writer.spool.waiting = lambda: 0.05 + (20.0 if stepped <= time.monotonic() < stepped + 0.1 else 0.0)
+    api = Api()
+    guard = LeaseGuard(api, writer, renew_seconds=0.02, lease_seconds=30, stall_seconds=0.2)
+    guard.start()
+    await asyncio.sleep(0.4)
+    assert api.calls >= 5 and guard.active and writer.failures == []
+    await guard.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_head_older_than_the_guard_gets_the_whole_allowance():
+    # A call re-claimed on its own lease inherits the first job's undelivered events.
+    writer = Writer(lease_expiring_in(30))
+    started = time.monotonic()
+    writer.spool.waiting = lambda: 20.0 + time.monotonic() - started
+    fenced: list[str] = []
+    guard = LeaseGuard(Api(), writer, renew_seconds=0.02, lease_seconds=30, on_lost=fenced.append, stall_seconds=0.2)
+    guard.start()
+    await asyncio.sleep(0.1)
+    assert not fenced
+    await wait_until(lambda: bool(fenced))
+    assert fenced == ["FATAL"] and time.monotonic() - started >= 0.2
+    await guard.stop()
+
+
 def test_the_outage_log_excuses_a_whole_outage_after_a_long_call():
     # Passes every second: renewals succeed for 700 s, then fail for 25 s.
     log = OutageLog(0.0)

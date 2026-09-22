@@ -33,7 +33,7 @@ it("mounts the strict internal agent route before the legacy internal router", a
     initialState: vi.fn(),
     setLlmEnabled: vi.fn()
   }));
-  const { createApp } = await import("./server.js");
+  const { createApp } = await import("./app.js");
   const testServer = await serve(createApp());
   try {
     const body = { callId: "call-123456", message: "hello", transport: "EXOTEL", sessionId: "call-123456" };
@@ -62,7 +62,7 @@ it("has no public agent stream route", async () => {
     initialState: vi.fn(),
     setLlmEnabled: vi.fn()
   }));
-  const { createApp } = await import("./server.js");
+  const { createApp } = await import("./app.js");
   const testServer = await serve(createApp());
   try {
     const response = await fetch(`${testServer.url}/api/voice-agent/chat/stream`, {
@@ -88,7 +88,7 @@ it("refuses the demo's provider routes without a console sign-in", async () => {
     setLlmEnabled
   }));
   vi.doMock("./sarvamPreview.js", () => ({ BULBUL_V3_VOICES: {}, previewVoice }));
-  const { createApp } = await import("./server.js");
+  const { createApp } = await import("./app.js");
   const testServer = await serve(createApp());
   const post = (path: string, body: object) => fetch(`${testServer.url}${path}`, {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body)
@@ -108,7 +108,7 @@ it("refuses the demo's provider routes without a console sign-in", async () => {
 it("fails closed through the mounted login route when production SMTP is unavailable", async () => {
   vi.stubEnv("NODE_ENV", "production");
   vi.stubEnv("BROWSER_ORIGINS", CONSOLE);
-  const { createApp } = await import("./server.js");
+  const { createApp } = await import("./app.js");
   const testServer = await serve(createApp());
   try {
     const response = await fetch(`${testServer.url}/api/admin/auth/request-code`, {
@@ -126,7 +126,7 @@ it("fails closed through the mounted login route when production SMTP is unavail
 it("refuses sign-in email addresses longer than 254 characters", async () => {
   vi.stubEnv("NODE_ENV", "production");
   vi.stubEnv("BROWSER_ORIGINS", CONSOLE);
-  const { createApp } = await import("./server.js");
+  const { createApp } = await import("./app.js");
   const testServer = await serve(createApp());
   const post = (path: string, body: object) => fetch(`${testServer.url}/api/admin/auth/${path}`, {
     method: "POST", headers: { "content-type": "application/json", origin: CONSOLE }, body: JSON.stringify(body)
@@ -147,7 +147,7 @@ it("refuses sign-in email addresses longer than 254 characters", async () => {
 it("takes sign-in only from the configured browser origins", async () => {
   vi.stubEnv("NODE_ENV", "production");
   vi.stubEnv("BROWSER_ORIGINS", `${CONSOLE}, https://*.example.test, https://other.example.test/path`);
-  const { createApp } = await import("./server.js");
+  const { createApp } = await import("./app.js");
   const testServer = await serve(createApp());
   const post = (path: string, headers: Record<string, string>) => fetch(`${testServer.url}/api/admin/auth/${path}`, {
     method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify({ email: "known@example.test", code: "123456" })
@@ -168,7 +168,7 @@ it("takes sign-in only from the configured browser origins", async () => {
 
 it("answers credentialed CORS for the configured browser origins only", async () => {
   vi.stubEnv("BROWSER_ORIGINS", CONSOLE);
-  const { createApp } = await import("./server.js");
+  const { createApp } = await import("./app.js");
   const testServer = await serve(createApp());
   const preflight = (origin: string) => fetch(`${testServer.url}/api/admin/me`, {
     method: "OPTIONS", headers: { origin, "access-control-request-method": "POST" }

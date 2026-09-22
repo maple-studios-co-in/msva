@@ -53,7 +53,7 @@ async function sessionCookie(role: "VIEWER" | "AGENT" | "SUPERVISOR" | "ADMIN", 
 }
 
 async function demoApp() {
-  const { createApp } = await import("./server.js");
+  const { createApp } = await import("./app.js");
   const server = http.createServer(createApp());
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as import("node:net").AddressInfo;

@@ -214,7 +214,8 @@ class LeaseGuard:
                 self._waited = min(waiting, self._waited + now - self._waited_at)
                 self._waited_at = now
                 if self._waited - self._outages.unreachable_within(self._waited, now) > self.stall_seconds:
-                    logger.warning("voice evidence has waited %.0f s for delivery; ending AI authority", self._waited)
+                    logger.warning("voice evidence has waited %.0f s for delivery (%.0f s on this worker's clock); ending AI authority",
+                                   waiting, self._waited)
                     self.fail_closed("FATAL")
                     return
             try:

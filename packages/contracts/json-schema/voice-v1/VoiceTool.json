@@ -1,0 +1,30 @@
+{
+  "$id": "https://msva.example.invalid/contracts/voice-v1/VoiceTool",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "agentEpoch": {
+      "exclusiveMinimum": 0,
+      "maximum": 2147483647,
+      "type": "integer"
+    },
+    "arguments": {},
+    "invocationId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
+      "type": "string"
+    },
+    "name": {
+      "const": "create_business_request",
+      "type": "string"
+    }
+  },
+  "required": [
+    "invocationId",
+    "agentEpoch",
+    "name",
+    "arguments"
+  ],
+  "type": "object"
+}

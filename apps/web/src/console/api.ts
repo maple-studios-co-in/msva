@@ -107,7 +107,7 @@ export type Turn = {
   toolCalls: unknown;
 };
 
-export type Utterance = { id: string; seq: number; speaker: "CALLER" | "AGENT"; text: string; atMs: number | null };
+export type Utterance = { id: string; seq: number; speaker: "CALLER" | "AGENT" | "HUMAN"; text: string; atMs: number | null };
 
 export type CallDetail = Omit<CallRow, "_count" | "tickets"> & {
   language: string | null;

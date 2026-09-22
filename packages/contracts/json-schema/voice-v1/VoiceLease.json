@@ -1,0 +1,35 @@
+{
+  "$id": "https://msva.example.invalid/contracts/voice-v1/VoiceLease",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "agentEpoch": {
+      "exclusiveMinimum": 0,
+      "maximum": 2147483647,
+      "type": "integer"
+    },
+    "callId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
+      "type": "string"
+    },
+    "expiresAt": {
+      "format": "date-time",
+      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+      "type": "string"
+    },
+    "token": {
+      "maxLength": 256,
+      "minLength": 32,
+      "type": "string"
+    }
+  },
+  "required": [
+    "callId",
+    "agentEpoch",
+    "expiresAt",
+    "token"
+  ],
+  "type": "object"
+}

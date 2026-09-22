@@ -106,7 +106,7 @@ async function recoverRace(
 }
 
 export async function createBusinessRequest(
-  db: PrismaClient,
+  db: PrismaClient | Prisma.TransactionClient,
   untrustedInput: unknown,
   trustedConfig: TrustedDemoRequestConfig = {}
 ): Promise<CreateRequestResult> {
@@ -119,9 +119,13 @@ export async function createBusinessRequest(
   const payloadCanonical = stableJson(input);
   const payloadHash = createHash("sha256").update(payloadCanonical).digest("hex");
 
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  const runTransaction: <T>(work: (tx: Prisma.TransactionClient) => Promise<T>) => Promise<T> = "$transaction" in db
+    ? (work) => (db as PrismaClient).$transaction(work)
+    : async (work) => work(db as Prisma.TransactionClient);
+  const attempts = "$transaction" in db ? 3 : 1;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      return await db.$transaction(async (tx) => {
+      return await runTransaction(async (tx) => {
         const call = await tx.call.findUnique({
           where: { id: input.callId },
           select: {
@@ -266,6 +270,7 @@ export async function createBusinessRequest(
       });
     } catch (error) {
       if (!isRequestIdUniqueViolation(error)) throw error;
+      if (!("$transaction" in db)) throw error;
       const replay = await recoverRace(db, input, payloadCanonical);
       if (replay) {
         await trustedConfig.onUniqueRequestIdRaceRecoveredForTest?.();

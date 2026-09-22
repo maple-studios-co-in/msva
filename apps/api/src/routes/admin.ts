@@ -2,6 +2,7 @@ import express from "express";
 import { z } from "zod";
 import { prisma, type Prisma, type TicketStatus } from "@msva/db";
 import { getCallAssessment, isAllowedJevOrigin, requestCallAssessment } from "../callAssessment.js";
+import { revokeAdmissions } from "../voiceService.js";
 import {
   audit,
   authenticate,
@@ -462,12 +463,23 @@ adminRouter.patch("/users/:id", requireRole("ADMIN"), async (request, response, 
       response.status(400).json({ error: "You cannot remove your own admin access" });
       return;
     }
-    const user = await prisma.user.update({
-      where: { id: String(request.params.id) },
-      data: parsed.data,
-      select: { id: true, email: true, name: true, role: true, active: true }
+    const user = await prisma.$transaction(async (tx) => {
+      const previous = await tx.user.findUnique({ where: { id: String(request.params.id) }, select: { role: true } });
+      const updated = await tx.user.update({
+        where: { id: String(request.params.id) },
+        data: parsed.data,
+        select: { id: true, email: true, name: true, role: true, active: true }
+      });
+      // Browser voice admissions carry the access the user had when admitted.
+      if (parsed.data.active === false) {
+        await revokeAdmissions(tx, { userId: updated.id, reason: "USER_DISABLED" });
+        await tx.session.deleteMany({ where: { userId: updated.id } });
+      } else if (previous && parsed.data.role && parsed.data.role !== previous.role) {
+        // Only staff media depends on the role; a caller admission does not.
+        await revokeAdmissions(tx, { userId: updated.id, reason: "ROLE_CHANGED", roles: ["OPERATOR_LISTENER", "OPERATOR_SPEAKER"] });
+      }
+      return updated;
     });
-    if (parsed.data.active === false) await prisma.session.deleteMany({ where: { userId: user.id } });
     await audit(request, "user.update", "user", user.id, parsed.data);
     response.json(user);
   } catch (error) {

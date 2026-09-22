@@ -493,8 +493,8 @@ function CallDrawer({ id, user, onClose, onAuthError }: { id: string; user: Sess
             {c.utterances.length === 0 ? <p className="co-hint">{active ? "Waiting for the first transcript update…" : "No transcript was stored for this call."}</p> : (
               <div className="co-transcript">
                 {c.utterances.map((u) => (
-                  <div key={u.id} className={`co-bubble ${u.speaker === "AGENT" ? "agent" : "caller"}`}>
-                    <small>{u.speaker === "AGENT" ? "Agent" : "Caller"}{u.atMs !== null ? ` · ${fmtDuration(u.atMs)}` : ""}</small>
+                  <div key={u.id} className={`co-bubble ${u.speaker === "CALLER" ? "caller" : "agent"}`}>
+                    <small>{u.speaker === "AGENT" ? "Agent" : u.speaker === "HUMAN" ? "Staff" : "Caller"}{u.atMs !== null ? ` · ${fmtDuration(u.atMs)}` : ""}</small>
                     {u.text}
                   </div>
                 ))}

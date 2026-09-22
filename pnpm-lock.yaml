@@ -20,6 +20,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@msva/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@msva/db':
         specifier: workspace:*
         version: link:../../packages/db
@@ -38,6 +41,9 @@ importers:
       express:
         specifier: ^5.1.0
         version: 5.2.1
+      nodemailer:
+        specifier: 10.0.10
+        version: 10.0.10
       zod:
         specifier: ^3.25.28
         version: 3.25.76
@@ -1780,6 +1786,10 @@ packages:
 
   node-releases@2.0.44:
     resolution: {integrity: sha512-5WUyunoPMsvvEhS8AxHtRzP+oA8UCkJ7YRxatWKjngndhDGLiqEVAQKWjFAiAiuL8zMRGzGSJxFnLetoa43qGQ==}
+
+  nodemailer@10.0.10:
+    resolution: {integrity: sha512-He9XskOFms62SyAKkLu8CcGcYHAo+BSHSsORI8s4PJH8qZgZY4L4lDfvyN0twvmbpyG+eGrxpyBlskj9d9rJ8A==}
+    engines: {node: '>=20.0.0'}
 
   nypm@0.6.9:
     resolution: {integrity: sha512-zxlE2yvSWZWmHcNdT3+5zV2lrCogeE9YOklHrR3dFjqutq5wO7GFDYLFDRXLsYnJzwvy/im9fYoxePvS0VTW0w==}
@@ -3799,6 +3809,8 @@ snapshots:
   node-fetch-native@1.6.7: {}
 
   node-releases@2.0.44: {}
+
+  nodemailer@10.0.10: {}
 
   nypm@0.6.9:
     dependencies:

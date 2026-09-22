@@ -1,0 +1,52 @@
+{
+  "$id": "https://msva.example.invalid/contracts/voice-v1/CreateRequestResult",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "actionState": {
+      "enum": [
+        "RECORDED",
+        "PENDING_STAFF"
+      ],
+      "type": "string"
+    },
+    "callId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "type": "string"
+    },
+    "caseId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "type": "string"
+    },
+    "evidenceState": {
+      "const": "NOT_REQUESTED",
+      "type": "string"
+    },
+    "requestId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "type": "string"
+    },
+    "ticketNumber": {
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991,
+      "type": "integer"
+    },
+    "truthState": {
+      "const": "RECORDED",
+      "type": "string"
+    }
+  },
+  "required": [
+    "requestId",
+    "callId",
+    "caseId",
+    "ticketNumber",
+    "truthState",
+    "actionState",
+    "evidenceState"
+  ],
+  "type": "object"
+}

@@ -1,0 +1,16 @@
+{
+  "$id": "https://msva.example.invalid/contracts/voice-v1/VoiceLeaseRenew",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "agentEpoch": {
+      "exclusiveMinimum": 0,
+      "maximum": 2147483647,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "agentEpoch"
+  ],
+  "type": "object"
+}

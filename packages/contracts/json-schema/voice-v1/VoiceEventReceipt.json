@@ -1,0 +1,25 @@
+{
+  "$id": "https://msva.example.invalid/contracts/voice-v1/VoiceEventReceipt",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "eventId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "committed",
+        "duplicate"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [
+    "eventId",
+    "status"
+  ],
+  "type": "object"
+}

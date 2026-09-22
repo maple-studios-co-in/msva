@@ -2,6 +2,7 @@ import express from "express";
 import { z } from "zod";
 import { prisma, type Prisma, type TicketStatus } from "@msva/db";
 import { getCallAssessment, isAllowedJevOrigin, requestCallAssessment } from "../callAssessment.js";
+import { revokeAdmissions } from "../voiceService.js";
 import {
   audit,
   authenticate,
@@ -10,8 +11,10 @@ import {
   revokeSession,
   sessionCookie,
   tokenFromRequest,
+  trustedNetworkFromRequest,
   verifyLoginCode
 } from "../auth.js";
+import { requireBrowserOrigin } from "../browserOrigin.js";
 
 // ---------------------------------------------------------------------------
 // Admin console API — everything the console UI reads and writes.
@@ -52,25 +55,32 @@ const dateOrUndefined = (value: unknown): Date | undefined => {
 // Auth
 // ---------------------------------------------------------------------------
 
-const emailSchema = z.object({ email: z.string().email() });
+const emailSchema = z.object({ email: z.string().max(254).email() });
 
-adminRouter.post("/auth/request-code", async (request, response, next) => {
+adminRouter.post("/auth/request-code", requireBrowserOrigin, async (request, response, next) => {
   const parsed = emailSchema.safeParse(request.body);
   if (!parsed.success) return void bad(response, parsed.error);
   try {
-    response.json(await requestLoginCode(parsed.data.email));
+    const result = await requestLoginCode(parsed.data.email, trustedNetworkFromRequest(request));
+    if (!result.ok && "unavailable" in result) return void response.status(503).json({ error: "Sign-in is temporarily unavailable" });
+    if (!result.ok && "limited" in result) return void response.status(429).set("Retry-After", String(result.retryAfter)).json({ error: "Please wait before requesting another code" });
+    response.status(202).json(result);
   } catch (error) {
     next(error);
   }
 });
 
-const verifySchema = z.object({ email: z.string().email(), code: z.string().min(4).max(12) });
+const verifySchema = z.object({ email: z.string().max(254).email(), code: z.string().regex(/^\d{6}$/) });
 
-adminRouter.post("/auth/verify", async (request, response, next) => {
+adminRouter.post("/auth/verify", requireBrowserOrigin, async (request, response, next) => {
   const parsed = verifySchema.safeParse(request.body);
   if (!parsed.success) return void bad(response, parsed.error);
   try {
-    const result = await verifyLoginCode(parsed.data.email, parsed.data.code);
+    const result = await verifyLoginCode(parsed.data.email, parsed.data.code, trustedNetworkFromRequest(request));
+    if (result && "limited" in result) {
+      response.status(429).set("Retry-After", String(result.retryAfter)).json({ error: "Please wait before trying another code" });
+      return;
+    }
     if (!result) {
       response.status(401).json({ error: "That code is wrong or has expired. Request a new one." });
       return;
@@ -84,7 +94,7 @@ adminRouter.post("/auth/verify", async (request, response, next) => {
   }
 });
 
-adminRouter.post("/auth/logout", async (request, response, next) => {
+adminRouter.post("/auth/logout", requireBrowserOrigin, async (request, response, next) => {
   try {
     const token = tokenFromRequest(request);
     if (token) await revokeSession(token);
@@ -424,7 +434,7 @@ adminRouter.get("/users", requireRole("ADMIN"), async (_request, response, next)
 });
 
 const userCreateSchema = z.object({
-  email: z.string().email(),
+  email: z.string().max(254).email(),
   name: z.string().min(1).max(120),
   role: z.enum(["ADMIN", "SUPERVISOR", "AGENT", "VIEWER"])
 });
@@ -462,12 +472,23 @@ adminRouter.patch("/users/:id", requireRole("ADMIN"), async (request, response, 
       response.status(400).json({ error: "You cannot remove your own admin access" });
       return;
     }
-    const user = await prisma.user.update({
-      where: { id: String(request.params.id) },
-      data: parsed.data,
-      select: { id: true, email: true, name: true, role: true, active: true }
+    const user = await prisma.$transaction(async (tx) => {
+      const previous = await tx.user.findUnique({ where: { id: String(request.params.id) }, select: { role: true } });
+      const updated = await tx.user.update({
+        where: { id: String(request.params.id) },
+        data: parsed.data,
+        select: { id: true, email: true, name: true, role: true, active: true }
+      });
+      // Browser voice admissions carry the access the user had when admitted.
+      if (parsed.data.active === false) {
+        await revokeAdmissions(tx, { userId: updated.id, reason: "USER_DISABLED" });
+        await tx.session.deleteMany({ where: { userId: updated.id } });
+      } else if (previous && parsed.data.role && parsed.data.role !== previous.role) {
+        // Only staff media depends on the role; a caller admission does not.
+        await revokeAdmissions(tx, { userId: updated.id, reason: "ROLE_CHANGED", roles: ["OPERATOR_LISTENER", "OPERATOR_SPEAKER"] });
+      }
+      return updated;
     });
-    if (parsed.data.active === false) await prisma.session.deleteMany({ where: { userId: user.id } });
     await audit(request, "user.update", "user", user.id, parsed.data);
     response.json(user);
   } catch (error) {

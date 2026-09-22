@@ -50,6 +50,9 @@ caller profile and an agent voice, and press **Call**.
 - The browser captures the mic, downsamples to **16 kHz mono 16-bit PCM** in an
   `AudioWorklet`, and streams raw frames over a WebSocket to
   `ws://localhost:4200/browser`.
+- The socket opens only for a browser signed in to the console (`/console.html`):
+  the telephony service asks the API at `AGENT_BASE_URL` whether the session
+  cookie sent with the upgrade is valid.
 - The telephony service runs Sarvam ASR, detects end-of-utterance with the
   energy VAD, calls the agent over SSE, and streams Sarvam TTS audio back as
   PCM, which the browser plays gaplessly.

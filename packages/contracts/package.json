@@ -16,8 +16,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm --dir ../.. exec vitest run packages/contracts/src",
-    "export": "tsx src/export-demo-contracts.ts --write",
-    "check": "tsx src/export-demo-contracts.ts --check"
+    "export": "tsx src/export-demo-contracts.ts --write && tsx src/export-voice-contracts.ts --write",
+    "check": "tsx src/export-demo-contracts.ts --check && tsx src/export-voice-contracts.ts --check"
   },
   "dependencies": {
     "zod": "4.6.5"

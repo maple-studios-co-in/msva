@@ -3,19 +3,19 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { DemoCall } from "@msva/shared";
 import type { WebSocket } from "ws";
 const profile: DemoCall = { id: "browser-live", callerName: "Browser caller", phone: "", callerType: "unknown", intent: "unknown", language: "hinglish", urgency: "low", transcriptSeed: "", expectedOutcome: "resolved_by_va" };
-beforeEach(() => { vi.resetModules(); vi.stubEnv("SARVAM_API_KEY", "test-provider-key"); vi.stubEnv("PROMPT_AUDIO_DIR", "/tmp/msva-empty-test-prompt-cache"); });
+beforeEach(() => { vi.resetModules(); vi.stubEnv("SARVAM_API_KEY", "test-provider-key"); vi.stubEnv("PROMPT_AUDIO_DIR", "/tmp/msva-empty-test-prompt-cache"); vi.stubEnv("INTERNAL_API_TOKEN", "test-internal-token"); });
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 it("sends the actual browser profile and greeting on the first recognized caller turn", async () => {
   const agentRequests: any[] = [];
   vi.stubGlobal("fetch", vi.fn(async (url, init) => {
     const path = new URL(url).pathname;
-    if (path.includes("/api/internal/")) return Response.json({ ok: true });
-    if (path === "/text-to-speech/stream") return new Response(new Uint8Array([1, 0]));
-    if (path === "/speech-to-text") return Response.json({ transcript: "Hello, madad chahiye" });
-    if (path === "/api/voice-agent/chat/stream") {
+    if (path === "/api/internal/agent/chat/stream") {
       const body = JSON.parse(init.body); agentRequests.push(body);
       return new Response('data: {"type":"token","text":"Kaise madad kar sakti hoon?"}\n\n');
     }
+    if (path.includes("/api/internal/")) return Response.json({ ok: true });
+    if (path === "/text-to-speech/stream") return new Response(new Uint8Array([1, 0]));
+    if (path === "/speech-to-text") return Response.json({ transcript: "Hello, madad chahiye" });
     throw new Error(`Unexpected provider endpoint: ${path}`);
   }));
   const messages: any[] = [];
@@ -42,13 +42,13 @@ for (const kind of ["browser", "exotel"] as const) it(`${kind}: saves the receiv
   vi.spyOn(console, "log").mockImplementation(() => {});
   vi.stubGlobal("fetch", vi.fn(async (url, init) => {
     const path = new URL(url).pathname;
-    if (path.includes("/api/internal/")) { logs.push({ path, body: JSON.parse(init.body) }); return Response.json({ ok: true }); }
-    if (path === "/text-to-speech/stream") return new Response(new Uint8Array([1, 0]));
-    if (path === "/speech-to-text") return Response.json({ transcript: "Meri baat record kijiye" });
-    if (path === "/api/voice-agent/chat/stream") {
+    if (path === "/api/internal/agent/chat/stream") {
       agentStarted = true;
       return new Promise<Response>(resolve => { release = () => resolve(new Response('data: {"type":"token","text":"Reply"}\n\n')); });
     }
+    if (path.includes("/api/internal/")) { logs.push({ path, body: JSON.parse(init.body) }); return Response.json({ ok: true }); }
+    if (path === "/text-to-speech/stream") return new Response(new Uint8Array([1, 0]));
+    if (path === "/speech-to-text") return Response.json({ transcript: "Meri baat record kijiye" });
     throw new Error(`Unexpected provider endpoint: ${path}`);
   }));
   const ws = { OPEN: 1, readyState: 1, send() {} } as unknown as WebSocket;

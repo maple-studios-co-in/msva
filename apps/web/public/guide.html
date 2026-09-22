@@ -526,10 +526,10 @@ pnpm dev:all      # api(4100) + web(5173) + telephony(4200)</code></pre>
         <tr><td><code>POST /api/analytics/reload</code></td><td>Re-read the CSV.</td></tr>
         <tr><td><code>GET /api/demo-calls</code></td><td>Demo caller personas.</td></tr>
         <tr><td><code>GET /api/demo-calls/:id/state</code></td><td>Initial conversation state.</td></tr>
-        <tr><td><code>POST /api/voice-agent/chat</code></td><td>One turn → full reply (REST).</td></tr>
-        <tr><td><code>POST /api/voice-agent/chat/stream</code></td><td>One turn → token stream (SSE).</td></tr>
+        <tr><td><code>POST /api/voice-agent/chat</code></td><td>One turn → full reply (REST). Needs an agent's console sign-in.</td></tr>
         <tr><td><code>GET /api/voice-agent/voices</code></td><td>Sarvam voice catalog.</td></tr>
-        <tr><td><code>POST /api/voice-agent/tts-preview</code></td><td>Synthesize a phrase → audio.</td></tr>
+        <tr><td><code>POST /api/voice-agent/tts-preview</code></td><td>Synthesize a phrase → audio. Needs an agent's console sign-in.</td></tr>
+        <tr><td><code>POST /api/voice-agent/llm-mode</code></td><td>Switch the model on or off for every call. Needs a supervisor's sign-in.</td></tr>
         <tr><td><code>GET /api/voice-agent/demo-failsafe</code></td><td>Failsafe metadata.</td></tr>
         <tr><td><code>GET /api/voice-agent/demo-failsafe/audio</code></td><td>Failsafe audio stream.</td></tr>
       </table>
@@ -539,7 +539,7 @@ pnpm dev:all      # api(4100) + web(5173) + telephony(4200)</code></pre>
         <tr><td><code>GET /health</code></td><td>Liveness + public WS URL.</td></tr>
         <tr><td><code>POST /exotel/incoming</code></td><td>Exotel inbound webhook → ExoML.</td></tr>
         <tr><td><code>WSS /voice</code></td><td>Phone media stream (Exotel/Twilio).</td></tr>
-        <tr><td><code>WSS /browser</code></td><td>In-browser Live Call audio.</td></tr>
+        <tr><td><code>WSS /browser</code></td><td>In-browser Live Call audio. Needs an agent's console sign-in.</td></tr>
       </table>
     </section>
 

@@ -33,6 +33,8 @@ jobs:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/msva_jev_test?schema=public
       JEV_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/msva_jev_test?schema=public
       MSVA_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/msva_jev_test?application_name=msva-foundation-integration
+      MSVA_VOICE_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/msva_voice_test?schema=public
+      MSVA_AUTH_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/msva_auth_test?schema=public
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -55,8 +57,20 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --yes postgresql-client
       - name: Apply migrations
         run: pnpm --filter @msva/db migrate
+      - name: Prepare isolated voice database
+        run: createdb -h localhost -U postgres msva_voice_test && DATABASE_URL=postgresql://postgres:postgres@localhost:5432/msva_voice_test?schema=public pnpm --filter @msva/db migrate
+        env:
+          PGPASSWORD: postgres
+      - name: Prepare isolated auth database
+        run: createdb -h localhost -U postgres msva_auth_test && DATABASE_URL="$MSVA_AUTH_TEST_DATABASE_URL" pnpm --filter @msva/db migrate
+        env:
+          PGPASSWORD: postgres
       - name: Verify migration status
         run: pnpm --filter @msva/db exec prisma migrate status
+      - name: Check schema matches migrations
+        run: createdb -h localhost -U postgres msva_shadow && pnpm --filter @msva/db exec prisma migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma --shadow-database-url "postgresql://postgres:postgres@localhost:5432/msva_shadow?schema=public" --exit-code
+        env:
+          PGPASSWORD: postgres
       - name: Build shared and contract package declarations
         run: pnpm --filter @msva/shared build && pnpm --filter @msva/contracts build
       - name: Build database package declarations
@@ -74,5 +88,9 @@ jobs:
         run: pnpm test:jev-db
       - name: Test PostgreSQL integration gate
         run: pnpm test:db
+      - name: Test voice PostgreSQL integration gate
+        run: pnpm test:voice-db
+      - name: Test auth PostgreSQL integration gate
+        run: DATABASE_URL="$MSVA_AUTH_TEST_DATABASE_URL" pnpm test:auth-db
       - name: Build
         run: pnpm -r build

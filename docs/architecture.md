@@ -53,7 +53,7 @@ apps/telephony  pipeline
    |
    |   final transcript
    v
-apps/api  POST /api/voice-agent/chat/stream  (Server-Sent Events)
+apps/api  POST /api/internal/agent/chat/stream  (Server-Sent Events, x-internal-token)
    +--> streamChat() async generator
    |    +--> Streaming Ollama (NDJSON deltas)
    |    +--> Deterministic fallback when model is unavailable

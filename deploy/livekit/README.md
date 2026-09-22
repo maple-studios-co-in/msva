@@ -21,9 +21,11 @@ realtime STT adapter leaves the worker off; it never falls back to the legacy ch
   locked `livekit-plugins-sarvam==1.8.2` imports `sarvam.STTRealtime` and `sarvam.TTS`; enabling
   requires explicit `VOICE_STT_MODE=realtime` and a separate Sarvam entitlement probe.
 - The worker has a two-call cap, one idle-process default is deliberately left to LiveKit only
-  after host measurement, a 120-second drain, 30-second lease, and 10-second renewal interval.
+  after host measurement, a 120-second drain, 30-second lease, and 3-second renewal interval.
+  Renewal must stay under the API's 5-second evidence tolerance; the worker refuses a longer one.
 - SQLite WAL on the `voice-spool` volume persists final event/tool evidence before delivery.
-  It is bounded to 10,000 events / 50 MiB; capacity is an admission failure, not a data drop.
+  It is bounded to 10,100 events / 50 MiB, enough for two calls at the API's per-call limits;
+  capacity is an admission failure, not a data drop.
 
 ## Local preparation only
 
@@ -105,7 +107,7 @@ by this operations slice.
 `voice-agent` exposes the Agents framework health endpoint on its private `8081`; it returns
 healthy only after the worker has connected to LiveKit. Readiness for a release also requires
 the API health, a sanitized provider capability probe, and spool headroom. A `SIGTERM` causes
-the server to drain existing jobs for up to 120 seconds (Compose allows 130 seconds before
+the server to drain existing jobs for up to 120 seconds (Compose allows 150 seconds before
 killing the container); the worker stops new admission through
 LiveKit and loses speech/tool authority immediately when lease renewal fails.
 

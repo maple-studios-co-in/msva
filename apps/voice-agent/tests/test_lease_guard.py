@@ -5,7 +5,7 @@ from collections.abc import Callable
 import pytest
 
 from madhusudan_voice.api import VoiceApiError
-from madhusudan_voice.session import LeaseGuard
+from madhusudan_voice.session import LeaseGuard, OutageLog
 
 from fake_voice_api import lease_expiring_in, wait_until
 
@@ -183,13 +183,17 @@ async def test_an_earlier_outage_does_not_excuse_evidence_stuck_later():
 async def test_intermittent_renewal_failures_do_not_hide_stuck_evidence():
     # One renewal in five failing excuses only the time the API was down.
     writer = Writer(lease_expiring_in(30))
-    writer.spool.waiting = 1.0
+    started = time.monotonic()
+    writer.spool.waiting = lambda: time.monotonic() - started
     fenced: list[str] = []
     responses = [VoiceApiError("unavailable", status=503) if turn % 5 == 4 else lease_expiring_in(30) for turn in range(500)]
-    guard = LeaseGuard(Api(*responses), writer, renew_seconds=0.02, retry_seconds=0.02, lease_seconds=30, on_lost=fenced.append, stall_seconds=0.2)
+    api = Api(*responses)
+    guard = LeaseGuard(api, writer, renew_seconds=0.02, retry_seconds=0.02, lease_seconds=30, on_lost=fenced.append, stall_seconds=0.2)
     guard.start()
     await wait_until(lambda: bool(fenced))
+    # About a fifth of the wait is excused, so the fence comes at about 0.25 s, after failures.
     assert fenced == ["FATAL"] and writer.failures == ["FATAL"]
+    assert api.calls >= 5 and time.monotonic() - started < 0.5
     await guard.stop()
 
 
@@ -213,6 +217,19 @@ async def test_evidence_falling_behind_ends_authority_while_some_of_it_still_arr
     await wait_until(lambda: bool(fenced))
     assert fenced == ["FATAL"]
     await guard.stop()
+
+
+def test_the_outage_log_excuses_a_whole_outage_after_a_long_call():
+    # Passes every second: renewals succeed for 700 s, then fail for 25 s.
+    log = OutageLog(0.0)
+    for second in range(1, 727):
+        log.record(float(second), reachable=not 700 < second <= 725)
+    # An event stored as the outage began has waited 26 s, 1 s of it while the API was up.
+    assert log.unreachable == 25.0 and log.unreachable_within(26.0, 726.0) == 25.0
+    for second in range(727, 740):
+        log.record(float(second), reachable=True)
+    # A wait that began after the outage has none of it.
+    assert log.unreachable_within(10.0, 739.0) == 0.0
 
 
 @pytest.mark.asyncio

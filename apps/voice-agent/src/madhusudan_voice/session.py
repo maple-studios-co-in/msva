@@ -30,6 +30,39 @@ class LeaseLost(RuntimeError):
     """A worker that cannot renew loses speech and tool authority immediately."""
 
 
+class OutageLog:
+    """When the API was unreachable, as a lease guard's renewal passes saw it.
+
+    Each pass records whether the renewal made at the pass before succeeded; if it failed,
+    the time between the two passes counts as unreachable. Samples reach back ten minutes,
+    far longer than any wait a live call gets to before its authority ends."""
+
+    HORIZON_SECONDS = 600.0
+
+    def __init__(self, now: float) -> None:
+        self.unreachable = 0.0
+        self._at = now
+        self._samples: deque[tuple[float, float]] = deque([(now, 0.0)])
+
+    def record(self, now: float, *, reachable: bool) -> None:
+        if not reachable:
+            self.unreachable += now - self._at
+        self._at = now
+        self._samples.append((now, self.unreachable))
+        # Keep the last sample at or before the horizon, so a lookup reaching it is exact.
+        while len(self._samples) > 2 and self._samples[1][0] <= now - self.HORIZON_SECONDS:
+            self._samples.popleft()
+
+    def unreachable_within(self, seconds: float, now: float) -> float:
+        """How much of the last `seconds` the API was unreachable."""
+        since, earlier = now - seconds, self._samples[0][1]
+        for at, total in self._samples:
+            if at > since:
+                break
+            earlier = total
+        return self.unreachable - earlier
+
+
 class LeaseGuard:
     """Holds speech and tool authority only while the lease is certainly valid.
 
@@ -67,14 +100,11 @@ class LeaseGuard:
         # Renewed this long before the deadline at the latest, so a short lease (a
         # re-claim can return one) is renewed before it lapses.
         self._margin = min(2.0, lease_seconds / 10)
-        # The API's unreachable time so far (while the last renewal had failed), sampled on
-        # every renewal pass. A stall is the oldest undelivered event's wait minus the part
-        # of it the API was unreachable: during an outage the lease itself ends authority,
-        # and a stream that falls behind cannot hide it by delivering a little at a time.
-        self._unreachable = 0.0
-        self._samples: deque[tuple[float, float]] = deque([(clock(), 0.0)])
+        # A stall is how long the oldest undelivered event has waited, less the part of that
+        # wait the API was unreachable: during an outage the lease itself ends authority, and
+        # a stream that falls behind cannot hide it by delivering a little at a time.
+        self._outages = OutageLog(clock())
         self._renewal_ok = True
-        self._checked_at = clock()
         self._tasks: list[asyncio.Task[None]] = []
 
     @property
@@ -158,15 +188,6 @@ class LeaseGuard:
             logger.warning("voice evidence stream state was not read: %s", type(error).__name__)
             return None, 0.0
 
-    def _unreachable_within(self, seconds: float, now: float) -> float:
-        """How much of the last `seconds` the API was unreachable."""
-        since, earlier = now - seconds, self._samples[0][1]
-        for at, total in self._samples:
-            if at > since:
-                break
-            earlier = total
-        return self._unreachable - earlier
-
     async def _renew(self) -> None:
         delay = max(0.0, min(self.renew_seconds, self.remaining - self._margin))
         while not self.lost:
@@ -182,14 +203,8 @@ class LeaseGuard:
                 self.fail_closed("FATAL", record=False)
                 return
             now = self._clock()
-            if not self._renewal_ok:
-                self._unreachable += now - self._checked_at
-            self._checked_at = now
-            self._samples.append((now, self._unreachable))
-            # A wait longer than ten minutes ended authority long before; older samples are not needed.
-            while len(self._samples) > 2 and self._samples[1][0] <= now - 600:
-                self._samples.popleft()
-            if waiting - self._unreachable_within(waiting, now) > self.stall_seconds:
+            self._outages.record(now, reachable=self._renewal_ok)
+            if waiting - self._outages.unreachable_within(waiting, now) > self.stall_seconds:
                 logger.warning("voice evidence has waited %.0f s for delivery; ending AI authority", waiting)
                 self.fail_closed("FATAL")
                 return

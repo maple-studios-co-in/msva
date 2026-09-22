@@ -1,0 +1,38 @@
+{
+  "$id": "https://msva.example.invalid/contracts/voice-v1/VoiceLeaseClaim",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "callId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
+      "type": "string"
+    },
+    "dispatchId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
+      "type": "string"
+    },
+    "participantId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
+      "type": "string"
+    },
+    "roomName": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "callId",
+    "roomName",
+    "dispatchId",
+    "participantId"
+  ],
+  "type": "object"
+}

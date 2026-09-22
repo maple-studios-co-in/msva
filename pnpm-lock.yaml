@@ -20,6 +20,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@msva/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@msva/db':
         specifier: workspace:*
         version: link:../../packages/db

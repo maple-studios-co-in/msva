@@ -11,6 +11,7 @@
     "start": "node dist/server.js"
   },
   "dependencies": {
+    "@msva/contracts": "workspace:*",
     "@msva/db": "workspace:*",
     "@msva/shared": "workspace:*",
     "cors": "^2.8.5",

@@ -16,7 +16,7 @@
     "lint": "pnpm -r lint",
     "check:dev-environment": "node scripts/check-dev-environment.mjs",
     "test:dev-environment": "node --test scripts/check-dev-environment.test.mjs",
-    "verify": "pnpm check:dev-environment && pnpm test:dev-environment && pnpm --filter @msva/shared build && pnpm --filter @msva/contracts build && pnpm --filter @msva/db build && pnpm contracts:check && pnpm test:voice-contracts && pnpm typecheck && pnpm test && pnpm test:jev-db && pnpm test:db && DATABASE_URL=\"$MSVA_AUTH_TEST_DATABASE_URL\" pnpm test:auth-db && pnpm build",
+    "verify": "pnpm check:dev-environment && pnpm test:dev-environment && pnpm --filter @msva/shared build && pnpm --filter @msva/contracts build && pnpm --filter @msva/db build && pnpm contracts:check && pnpm test:voice-contracts && pnpm typecheck && pnpm test && pnpm test:jev-db && pnpm test:db && pnpm test:voice-db && DATABASE_URL=\"$MSVA_AUTH_TEST_DATABASE_URL\" pnpm test:auth-db && pnpm build",
     "start": "pnpm --filter @msva/api start",
     "db:generate": "pnpm --filter @msva/db generate",
     "db:migrate": "pnpm --filter @msva/db migrate",
@@ -31,6 +31,7 @@
     "test:contracts": "pnpm --filter @msva/contracts test",
     "test:voice-contracts": "cd apps/voice-agent && PYTHONDONTWRITEBYTECODE=1 uv run --frozen --python 3.12 pytest",
     "test:db": "node -e \"if (!process.env.MSVA_TEST_DATABASE_URL) { throw new Error('MSVA_TEST_DATABASE_URL is required for pnpm test:db'); }\" && vitest run --config vitest.integration.config.ts",
+    "test:voice-db": "node -e \"const testUrl=process.env.MSVA_VOICE_TEST_DATABASE_URL; if (!testUrl || !new URL(testUrl).pathname.endsWith('/msva_voice_test')) throw new Error('MSVA_VOICE_TEST_DATABASE_URL must point at the disposable msva_voice_test database');\" && vitest run --config vitest.voice.config.ts",
     "test:auth-db": "node -e \"const url=process.env.MSVA_AUTH_TEST_DATABASE_URL; if (!url || !process.env.DATABASE_URL || url !== process.env.DATABASE_URL || !new URL(url).pathname.endsWith('/msva_auth_test')) throw new Error('DATABASE_URL and MSVA_AUTH_TEST_DATABASE_URL must match disposable msva_auth_test');\" && vitest run --config vitest.auth.config.ts"
   },
   "devDependencies": {

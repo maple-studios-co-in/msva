@@ -3,6 +3,7 @@ import { BlockList, isIPv4, isIPv6 } from "node:net";
 import type express from "express";
 import { prisma, type User, type UserRole } from "@msva/db";
 import { createSmtpLoginCodeDelivery, type LoginCodeDelivery } from "./smtp.js";
+import { revokeAdmissions } from "./voiceService.js";
 
 // ---------------------------------------------------------------------------
 // Console authentication
@@ -365,7 +366,14 @@ export async function verifyLoginCode(
 }
 
 export async function revokeSession(token: string): Promise<void> {
-  await prisma.session.deleteMany({ where: { tokenHash: sha256(token) } });
+  await prisma.$transaction(async (tx) => {
+    const session = await tx.session.findUnique({ where: { tokenHash: sha256(token) }, select: { id: true } });
+    if (!session) return;
+    // Browser voice media admitted under this login ends with it.
+    await revokeAdmissions(tx, { sessionId: session.id, reason: "LOGOUT" });
+    // A concurrent logout may have deleted it already.
+    await tx.session.deleteMany({ where: { id: session.id } });
+  });
 }
 
 export function sessionCookie(token: string, maxAgeMs = SESSION_TTL_MS): string {

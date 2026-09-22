@@ -209,6 +209,7 @@ model Call {
   riskAssessments  RiskAssessment[]
   assessments      CallAssessment[]
   assessmentJobs   AssessmentJob[]
+  voiceSessions    VoiceSession[]
 
   @@index([startedAt])
   @@index([callerId])
@@ -239,6 +240,7 @@ model Turn {
 enum Speaker {
   CALLER
   AGENT
+  HUMAN
 }
 
 model Utterance {
@@ -599,6 +601,212 @@ model CallAssessment {
   @@unique([callId, inputHash, requestedModel, rubricVersion])
   @@index([callId, requestedAt])
   @@index([status, leaseExpiresAt])
+}
+
+// ---------------------------------------------------------------------------
+// Durable LiveKit worker authority. These records are deliberately separate
+// from legacy CallProvider: transport describes the room, provider describes
+// how the application call began.
+// ---------------------------------------------------------------------------
+
+enum VoiceTransport {
+  LIVEKIT
+}
+enum VoiceSessionState {
+  STARTING
+  ACTIVE
+  RECOVERY_REQUIRED
+  ENDED
+  FAILED
+}
+enum VoiceOwnershipMode {
+  AI
+  HUMAN
+}
+enum VoiceAdmissionState {
+  ISSUED
+  CONNECTING
+  ACTIVE
+  REVOKING
+  REVOKED
+  EXPIRED
+}
+enum AdmissionMediaRole {
+  CALLER
+  OPERATOR_LISTENER
+  OPERATOR_SPEAKER
+}
+enum MediaControlKind {
+  GRANT
+  REMOVE
+}
+enum MediaControlStatus {
+  PENDING
+  RUNNING
+  CONFIRMED
+  FAILED
+}
+
+model VoiceSession {
+  id                    String             @id @default(cuid())
+  callId                String
+  call                  Call               @relation(fields: [callId], references: [id], onDelete: Restrict)
+  roomName              String
+  transport             VoiceTransport     @default(LIVEKIT)
+  ownerUserId           String?
+  ownerSessionId        String?
+  createRequestId       String             @unique
+  createRequestHash     String
+  dispatchIntentId      String             @unique
+  providerDispatchId    String?
+  state                 VoiceSessionState  @default(STARTING)
+  ownershipMode         VoiceOwnershipMode @default(AI)
+  authorizationVersion  Int                @default(1)
+  currentEpoch          Int                @default(0)
+  finalWatermark        Int                @default(0)
+  transcriptComplete    Boolean            @default(false)
+  recoveryAt            DateTime?
+  version               Int                @default(1)
+  startedAt             DateTime           @default(now())
+  endedAt               DateTime?
+  expiresAt             DateTime?
+  language              String             @default("hi")
+  prompt                String             @default("")
+  participants          VoiceParticipant[]
+  lease                 VoiceLease?
+  usage                 VoiceSessionUsage?
+  events                VoiceEvent[]
+  segments              TranscriptSegment[]
+  admissions            VoiceAdmission[]
+  toolInvocations       ToolInvocation[]
+  @@unique([callId, roomName])
+  @@unique([callId])
+  @@index([state, expiresAt])
+}
+
+model VoiceParticipant {
+  id          String       @id @default(cuid())
+  sessionId   String
+  session     VoiceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  identity    String
+  role        Speaker
+  confirmedAt DateTime?
+  createdAt   DateTime     @default(now())
+  @@unique([sessionId, identity])
+}
+
+model VoiceLease {
+  id          String       @id @default(cuid())
+  sessionId   String       @unique
+  session     VoiceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  agentEpoch  Int
+  tokenHash   String
+  expiresAt   DateTime
+  createdAt   DateTime     @default(now())
+  renewedAt   DateTime     @default(now())
+  @@unique([sessionId, agentEpoch])
+  @@index([expiresAt])
+}
+
+/// What one call has ingested, written only by evidence ingestion.
+model VoiceSessionUsage {
+  sessionId String       @id
+  session   VoiceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  events    Int          @default(0)
+  bytes     Int          @default(0)
+}
+model VoiceEvent {
+  id              String       @id @default(cuid())
+  sessionId       String
+  session         VoiceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  eventId         String
+  agentEpoch      Int
+  sourceSequence  Int
+  canonicalBody   String
+  bodyHash        String
+  type            String
+  occurredAt      DateTime
+  createdAt       DateTime     @default(now())
+  @@unique([sessionId, eventId])
+  @@unique([sessionId, agentEpoch, sourceSequence])
+}
+
+model TranscriptSegment {
+  id          String       @id @default(cuid())
+  sessionId   String
+  session     VoiceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  segmentId   String
+  revision    Int
+  speaker     Speaker
+  participantId String
+  sequence    Int
+  text        String
+  startMs     Int?
+  endMs       Int?
+  language    String
+  isCurrent   Boolean      @default(true)
+  createdAt   DateTime     @default(now())
+  @@unique([sessionId, segmentId, revision])
+  @@index([sessionId, sequence, isCurrent])
+}
+
+model VoiceAdmission {
+  id                     String              @id @default(cuid())
+  callId                 String
+  voiceSessionId         String
+  voiceSession           VoiceSession        @relation(fields: [voiceSessionId], references: [id], onDelete: Cascade)
+  sessionId              String
+  userId                 String
+  participantIdentity    String              @unique
+  participantSid         String?
+  role                   AdmissionMediaRole
+  authorizationVersion   Int
+  state                  VoiceAdmissionState @default(ISSUED)
+  issuedAt               DateTime            @default(now())
+  firstJoinExpiresAt     DateTime
+  absoluteExpiresAt      DateTime
+  revokedAt              DateTime?
+  revokeReason           String?
+  connectionEpoch        Int                 @default(0)
+  connectionOwner        String?
+  connectionLeaseExpiresAt DateTime?
+  lastAuthorizedAt       DateTime?
+  mediaControlIntents    MediaControlIntent[]
+  @@index([callId, state])
+  @@index([sessionId, state])
+}
+
+model MediaControlIntent {
+  id                   String             @id @default(cuid())
+  admissionId          String
+  admission            VoiceAdmission     @relation(fields: [admissionId], references: [id], onDelete: Cascade)
+  authorizationVersion Int
+  kind                 MediaControlKind
+  status               MediaControlStatus @default(PENDING)
+  attemptToken         String?
+  leaseExpiresAt       DateTime?
+  errorCode            String?
+  attempts             Int                @default(0)
+  nextAttemptAt        DateTime           @default(now())
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+  @@index([status, nextAttemptAt])
+  @@index([admissionId, authorizationVersion, kind])
+}
+
+model ToolInvocation {
+  id               String       @id @default(cuid())
+  sessionId        String
+  session          VoiceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  invocationId     String
+  agentEpoch       Int
+  name             String
+  canonicalPayload String
+  payloadHash      String
+  status           String       @default("PENDING")
+  result           Json?
+  createdAt        DateTime     @default(now())
+  @@unique([sessionId, invocationId])
 }
 
 enum AssessmentJobKind {

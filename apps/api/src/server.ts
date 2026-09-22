@@ -16,7 +16,10 @@ import { adminRouter } from "./routes/admin.js";
 import { internalRouter } from "./routes/internal.js";
 import { internalAgentRouter } from "./routes/internalAgent.js";
 import { createLiveCallsHandler } from "./liveCalls.js";
+import { voiceRouter } from "./voiceRoutes.js";
+import { apiErrorHandler } from "./httpErrors.js";
 import { startAssessmentWorker } from "./assessmentWorker.js";
+import { startVoiceSweeper } from "./voiceSweeper.js";
 
 const port = Number(process.env.PORT ?? 4100);
 const csvPath = process.env.CSV_PATH ?? "../../data/reports.csv";
@@ -47,6 +50,7 @@ app.get("/health", async (_request, response) => {
 // This service-authenticated provider route must precede the legacy internal
 // router, whose development fallback is intentionally not valid for SSE.
 app.use("/api/internal/agent", internalAgentRouter);
+app.use("/api/internal/voice/v1", voiceRouter);
 app.use("/api/internal", internalRouter);
 app.use("/api/admin", adminRouter);
 app.get("/api/live-calls", createLiveCallsHandler());
@@ -175,10 +179,7 @@ app.get("/api/voice-agent/demo-failsafe/audio", (_request, response) => {
   });
 });
 
-app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
-  console.error(error);
-  response.status(500).json({ error: "Internal server error" });
-});
+app.use(apiErrorHandler);
 
   return app;
 }
@@ -193,9 +194,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     console.log(`MSVA API running on http://localhost:${port}`);
   });
   const assessmentWorker = startAssessmentWorker();
+  const voiceSweeper = startVoiceSweeper();
   for (const signal of ["SIGTERM", "SIGINT"] as const) {
     process.once(signal, () => {
-      void assessmentWorker.stop().finally(() => server.close());
+      void Promise.all([assessmentWorker.stop(), voiceSweeper.stop()]).finally(() => server.close());
     });
   }
 }

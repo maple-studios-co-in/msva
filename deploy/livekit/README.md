@@ -22,7 +22,7 @@ realtime STT adapter leaves the worker off; it never falls back to the legacy ch
   requires explicit `VOICE_STT_MODE=realtime` and a separate Sarvam entitlement probe.
 - The worker has a two-call cap, one idle-process default is deliberately left to LiveKit only
   after host measurement, a 120-second drain, 30-second lease, and 3-second renewal interval.
-  Renewal must stay under the API's 5-second evidence tolerance; the worker refuses a longer one.
+  Renewal must stay under the API's 5-second evidence tolerance; the worker refuses 5 seconds or more.
 - SQLite WAL on the `voice-spool` volume persists final event/tool evidence before delivery.
   It is bounded to 10,100 events / 50 MiB, enough for two calls at the API's per-call limits;
   capacity is an admission failure, not a data drop.

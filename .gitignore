@@ -35,3 +35,8 @@ pnpm-debug.log*
 # The transcribe script writes outputs to the same folder; .gitignore those too.
 **/test-fixtures/calls/
 **/test-fixtures/transcripts/
+
+# Python worker artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/

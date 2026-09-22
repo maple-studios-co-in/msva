@@ -1,0 +1,11 @@
+# Disabled by default. Values are injected only when the `sip` profile is approved.
+api_key: "$LIVEKIT_API_KEY"
+api_secret: "$LIVEKIT_API_SECRET"
+ws_url: "$LIVEKIT_INTERNAL_WS_URL"
+redis:
+  address: redis:6379
+health_port: 8082
+sip_port: 5060
+rtp_port: 10000-20000
+use_external_ip: true
+log_level: info

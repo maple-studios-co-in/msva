@@ -1,0 +1,183 @@
+"""The real AgentServer call entrypoint, driven with fake HTTP, session and job context."""
+
+from datetime import UTC, datetime, timedelta
+
+import pytest
+from cryptography.fernet import Fernet
+
+from madhusudan_voice.spool import SpoolKeyMismatch
+
+from fake_voice_api import BASE, KEY, FakeCtx, FakeSession, FakeVoiceApi, enabled_env, install_runtime
+
+
+def committed_types(api: FakeVoiceApi) -> list[str]:
+    return [f"{event['type']}:{event['payload'].get('code', '')}".rstrip(":") for event in api.calls["call-1"].committed]
+
+
+async def assert_released(runtime) -> None:
+    assert all(spool.closed for spool in runtime.spools)
+    assert all(client.closed for client in runtime.clients)
+    assert runtime.runtimes == {}
+    await runtime.stop_companion()
+
+
+@pytest.mark.asyncio
+async def test_a_refused_claim_releases_everything_it_opened(tmp_path, monkeypatch):
+    api = FakeVoiceApi()
+    api.add_call(dispatch_id="another-dispatch")
+    runtime = install_runtime(monkeypatch, tmp_path, api)
+    with pytest.raises(Exception):
+        await runtime.entry(FakeCtx())
+    await assert_released(runtime)
+    assert runtime.sessions == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_session_start_is_reported_as_fatal(tmp_path, monkeypatch):
+    api = FakeVoiceApi()
+    api.add_call()
+    runtime = install_runtime(monkeypatch, tmp_path, api, session_factory=lambda: FakeSession(start_error=RuntimeError("provider refused")))
+    with pytest.raises(RuntimeError, match="provider refused"):
+        await runtime.entry(FakeCtx())
+    assert committed_types(api) == ["agent.ready", "agent.failed:FATAL", "transcript.flushed"]
+    await assert_released(runtime)
+
+
+@pytest.mark.asyncio
+async def test_a_lapsed_claim_never_starts_a_speaking_session(tmp_path, monkeypatch):
+    api = FakeVoiceApi()
+    api.add_call()
+    api.report_offset = timedelta(seconds=-40)  # worker clock 40 s ahead of the server
+    runtime = install_runtime(monkeypatch, tmp_path, api)
+    ctx = FakeCtx()
+    await runtime.entry(ctx)
+    assert runtime.sessions == []
+    assert ctx.shutdown_reasons == ["voice authority ended: LEASE_LOST"]
+    assert committed_types(api) == ["agent.ready", "agent.failed:LEASE_LOST", "transcript.flushed"]
+    await assert_released(runtime)
+
+
+@pytest.mark.asyncio
+async def test_a_fence_ends_the_job_and_records_its_cause_at_that_moment(tmp_path, monkeypatch):
+    api = FakeVoiceApi()
+    api.add_call()
+    runtime = install_runtime(monkeypatch, tmp_path, api)
+    ctx = FakeCtx()
+    await runtime.entry(ctx)
+    session = runtime.sessions[0]
+    assert session.running
+    call_runtime = runtime.runtimes["job-1"]
+    fenced_at = datetime.now(UTC)
+    call_runtime.guard.fail_closed("TRANSIENT")
+    assert session.shutdowns == [False], "the session is closed without waiting for it"
+    assert "voice authority ended: TRANSIENT" in ctx.shutdown_reasons
+    await runtime.finalize(ctx)
+    assert committed_types(api) == ["agent.ready", "agent.failed:TRANSIENT", "transcript.flushed"]
+    failure = api.calls["call-1"].committed[1]
+    occurred = datetime.fromisoformat(failure["occurredAt"].replace("Z", "+00:00"))
+    assert occurred - fenced_at < timedelta(seconds=1), "failure evidence is stamped at the fence, not at shutdown"
+    await assert_released(runtime)
+
+
+@pytest.mark.asyncio
+async def test_a_caller_hangup_ends_the_job_and_checkpoints_evidence(tmp_path, monkeypatch):
+    api = FakeVoiceApi()
+    api.add_call()
+    runtime = install_runtime(monkeypatch, tmp_path, api)
+    ctx = FakeCtx()
+    await runtime.entry(ctx)
+    runtime.sessions[0].shutdown(drain=True)  # what close_on_disconnect does when the caller leaves
+    assert ctx.shutdown_reasons == ["voice session closed"]
+    await runtime.finalize(ctx)
+    assert committed_types(api) == ["agent.ready", "transcript.flushed"]
+    await assert_released(runtime)
+
+
+@pytest.mark.asyncio
+async def test_a_spool_that_cannot_open_releases_the_api_client(tmp_path, monkeypatch):
+    import madhusudan_voice.main as main
+
+    api = FakeVoiceApi()
+    api.add_call()
+    runtime = install_runtime(monkeypatch, tmp_path, api)
+
+    class UnreadableSpool:
+        def __init__(self, *args, **kwargs):
+            raise SpoolKeyMismatch("replay key cannot read this spool")
+
+    monkeypatch.setattr(main, "EventSpool", UnreadableSpool)
+    with pytest.raises(SpoolKeyMismatch):
+        await runtime.entry(FakeCtx())
+    assert runtime.clients and all(client.closed for client in runtime.clients)
+    await runtime.stop_companion()
+
+
+def test_the_worker_starts_only_with_a_replay_key_that_reads_its_spool(tmp_path, monkeypatch):
+    import madhusudan_voice.main as main
+
+    for name, value in enabled_env(tmp_path).items():
+        monkeypatch.setenv(name, value)
+    started: list = []
+    monkeypatch.setattr(main.cli, "run_app", started.append)
+    main.run()
+    assert len(started) == 1
+    monkeypatch.setenv("VOICE_REPLAY_CREDENTIAL_KEY", Fernet.generate_key().decode())
+    with pytest.raises(SpoolKeyMismatch):
+        main.run()
+    assert len(started) == 1, "a worker that could not record calls must not start"
+
+
+@pytest.mark.asyncio
+async def test_a_finished_call_releases_only_the_tool_intents_it_recorded(tmp_path):
+    from madhusudan_voice.api import Lease, VoiceApiClient
+    from madhusudan_voice.events import EventWriter
+    from madhusudan_voice.main import CallRuntime
+    from madhusudan_voice.spool import EventSpool
+
+    def open_spool():
+        return EventSpool(tmp_path / "spool.sqlite3", max_events=100, max_bytes=1_000_000, replay_key=KEY)
+
+    spool = open_spool()
+    intent = {"call_id": "call-1", "agent_epoch": 1, "name": "create_business_request", "arguments": {"journey": "SALES_LEAD"}}
+    ours, _ = spool.tool_intent(logical_id="toolu_A", **intent)
+    # Another job holding the same call and epoch (a re-claim returns the same lease).
+    theirs, _ = spool.tool_intent(logical_id="toolu_B", **intent)
+    client = VoiceApiClient(BASE, worker_credential="worker-token")
+    writer = EventWriter(spool, client, Lease("call-1", 1, "2030-01-01T00:00:00Z", "lease-token"))
+    writer.tool_intents.add(ours)
+    await CallRuntime(client, spool, writer=writer).finalize(1)
+    reopened = open_spool()
+    assert reopened._connection.execute("SELECT invocation_id FROM tool_intent").fetchall() == [(theirs,)]
+    reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_the_worker_refuses_calls_while_the_companion_is_not_delivering(tmp_path):
+    import json as json_module
+    from types import SimpleNamespace
+
+    import madhusudan_voice.main as main
+    from madhusudan_voice.config import RuntimeConfig
+
+    config = RuntimeConfig.from_env(enabled_env(tmp_path))
+    request_call = main.build_server(config)._request_fnc
+
+    class Request:
+        agent_name = config.agent_name
+        room = SimpleNamespace(name="room-1")
+        job = SimpleNamespace(metadata=json_module.dumps({"callId": "call-1"}))
+        outcome: str | None = None
+
+        async def reject(self) -> None:
+            self.outcome = "rejected"
+
+        async def accept(self, **_kwargs) -> None:
+            self.outcome = "accepted"
+
+    refused = Request()
+    await request_call(refused)
+    assert refused.outcome == "rejected", "no heartbeat: the companion is not delivering"
+    config.spool_path.with_name("replay.heartbeat").touch()
+    accepted = Request()
+    await request_call(accepted)
+    assert accepted.outcome == "accepted"

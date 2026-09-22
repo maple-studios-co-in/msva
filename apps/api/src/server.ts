@@ -1,207 +1,25 @@
 import "./env.js"; // must be first — loads .env before any env-reading module
-import cors from "cors";
-import express from "express";
-import path from "node:path";
-import { z } from "zod";
-import { createSampleAnalytics } from "./sampleAnalytics.js";
-import { demoCalls, findDemoCall } from "./demoCalls.js";
-import { BULBUL_V3_VOICES, previewVoice } from "./sarvamPreview.js";
-import { getActiveModel, getLlmEnabled, handleChat, initialState, setLlmEnabled, streamChat } from "./voiceAgent.js";
-import { DEMO_FAILSAFE_AUDIO_PATH, demoFailsafeAvailable, loadDemoFailsafe } from "./demoFailsafe.js";
-import { databaseReady } from "@msva/db";
-import { adminRouter } from "./routes/admin.js";
-import { internalRouter } from "./routes/internal.js";
-import { createLiveCallsHandler } from "./liveCalls.js";
-import { voiceRouter } from "./voiceRoutes.js";
-import { apiErrorHandler } from "./httpErrors.js";
+import { createApp } from "./app.js";
 import { startAssessmentWorker } from "./assessmentWorker.js";
+import { parseBrowserOrigins } from "./browserOrigin.js";
 import { startVoiceSweeper } from "./voiceSweeper.js";
 
-const app = express();
+// The API's entry point starts the service whenever it is loaded. pm2's fork mode loads
+// it from its own container script, so it must not check how it was started; tests
+// build the app from ./app.js instead.
 const port = Number(process.env.PORT ?? 4100);
-const csvPath = process.env.CSV_PATH ?? "../../data/reports.csv";
 
-// The console sends its session cookie, so CORS must name the origin rather
-// than use "*". Same-origin deployments (Caddy) never hit this path.
-app.use(cors({ origin: process.env.CORS_ORIGIN?.split(",").map((o) => o.trim()) ?? true, credentials: true }));
-app.use(express.json({ limit: "1mb" }));
-app.set("trust proxy", true);
-
-const sampleAnalytics = createSampleAnalytics(path.resolve(process.cwd(), csvPath));
-
-app.get("/health", async (_request, response) => {
-  response.json({
-    ok: true,
-    service: "msva-api",
-    model: getActiveModel(),
-    records: sampleAnalytics.recordCount,
-    sampleAnalytics: sampleAnalytics.status,
-    database: await databaseReady()
-  });
-});
-
-app.use("/api/internal/voice/v1", voiceRouter);
-app.use("/api/internal", internalRouter);
-app.use("/api/admin", adminRouter);
-app.get("/api/live-calls", createLiveCallsHandler());
-
-app.use("/api/analytics", sampleAnalytics.router);
-
-app.get("/api/demo-calls", (_request, response) => {
-  response.json(demoCalls);
-});
-
-app.get("/api/demo-calls/:id/state", (request, response) => {
-  response.json(initialState(findDemoCall(request.params.id)));
-});
-
-const chatSchema = z.object({
-  callId: z.string(),
-  message: z.string().min(1),
-  state: z.any().optional(),
-  sessionId: z.string().optional()
-});
-
-app.post("/api/voice-agent/chat", async (request, response) => {
-  const parsed = chatSchema.safeParse(request.body);
-  if (!parsed.success) {
-    response.status(400).json({ error: "Invalid request", details: parsed.error.flatten() });
-    return;
-  }
-
-  const result = await handleChat(parsed.data.callId, parsed.data.message, parsed.data.state, parsed.data.sessionId);
-  response.json(result);
-});
-
-// Server-Sent Events stream of ChatStreamEvent. The browser demo can switch
-// to this endpoint to get token-by-token replies; the telephony service
-// consumes the underlying `streamChat` generator directly (no HTTP hop).
-app.post("/api/voice-agent/chat/stream", async (request, response) => {
-  const parsed = chatSchema.safeParse(request.body);
-  if (!parsed.success) {
-    response.status(400).json({ error: "Invalid request", details: parsed.error.flatten() });
-    return;
-  }
-
-  response.setHeader("Content-Type", "text/event-stream");
-  response.setHeader("Cache-Control", "no-cache, no-transform");
-  response.setHeader("Connection", "keep-alive");
-  response.flushHeaders?.();
-
-  try {
-    for await (const event of streamChat(parsed.data.callId, parsed.data.message, parsed.data.state, parsed.data.sessionId)) {
-      response.write(`data: ${JSON.stringify(event)}\n\n`);
-    }
-  } catch (error) {
-    response.write(
-      `data: ${JSON.stringify({ type: "error", message: error instanceof Error ? error.message : "stream error" })}\n\n`
-    );
-  } finally {
-    response.end();
-  }
-});
-
-// ---------------------------------------------------------------------------
-// Voice playground — dashboard preview of Sarvam TTS voices.
-// GET  /api/voice-agent/voices         → list of voices, grouped by gender
-// POST /api/voice-agent/tts-preview    → { voice, text, language? } → audio
-//
-// The browser never sees the Sarvam key; the api fetches the audio and
-// returns it as a base64 WAV the UI can drop straight into an <audio> tag.
-// ---------------------------------------------------------------------------
-
-app.get("/api/voice-agent/voices", (_request, response) => {
-  response.json({
-    model: process.env.SARVAM_TTS_MODEL ?? "bulbul:v3",
-    keyConfigured: Boolean(process.env.SARVAM_API_KEY),
-    voices: BULBUL_V3_VOICES
-  });
-});
-
-const previewSchema = z.object({
-  voice: z.string().min(1),
-  text: z.string().min(1).max(2500),
-  language: z.string().optional()
-});
-
-app.post("/api/voice-agent/tts-preview", async (request, response) => {
-  const parsed = previewSchema.safeParse(request.body);
-  if (!parsed.success) {
-    response.status(400).json({ error: "Invalid request", details: parsed.error.flatten() });
-    return;
-  }
-  const result = await previewVoice(parsed.data);
-  if (!result.ok) {
-    response.status(result.error.status).json({ error: result.error });
-    return;
-  }
-  response.json(result.data);
-});
-
-// ---------------------------------------------------------------------------
-// AI brain mode — flip between the real LLM and instant deterministic replies
-// at runtime, so a presenter can switch from the app without SSH. In-memory:
-// resets to the AGENT_LLM env default on restart.
-// ---------------------------------------------------------------------------
-
-app.get("/api/voice-agent/llm-mode", (_request, response) => {
-  response.json({ enabled: getLlmEnabled(), model: getActiveModel() });
-});
-
-const llmModeSchema = z.object({ enabled: z.boolean() });
-
-app.post("/api/voice-agent/llm-mode", (request, response) => {
-  const parsed = llmModeSchema.safeParse(request.body);
-  if (!parsed.success) {
-    response.status(400).json({ error: "Invalid request", details: parsed.error.flatten() });
-    return;
-  }
-  setLlmEnabled(parsed.data.enabled);
-  response.json({ enabled: getLlmEnabled(), model: getActiveModel() });
-});
-
-// ---------------------------------------------------------------------------
-// Demo failsafe — a pre-recorded agent clip served first-party so a presenter
-// can fall back to it if the live pipeline misbehaves mid-demo.
-// ---------------------------------------------------------------------------
-
-app.get("/api/voice-agent/demo-failsafe", (_request, response) => {
-  const config = loadDemoFailsafe();
-  if (!config || !demoFailsafeAvailable()) {
-    response.json({ available: false });
-    return;
-  }
-  response.json({
-    available: true,
-    callerName: config.callerName,
-    voice: config.voice,
-    transcript: config.transcript,
-    outcome: config.outcome,
-    collected: config.collected,
-    syntheticMetrics: config.syntheticMetrics,
-    audioUrl: "/api/voice-agent/demo-failsafe/audio"
-  });
-});
-
-app.get("/api/voice-agent/demo-failsafe/audio", (_request, response) => {
-  if (!demoFailsafeAvailable()) {
-    response.status(404).json({ error: "No failsafe clip configured" });
-    return;
-  }
-  response.sendFile(DEMO_FAILSAFE_AUDIO_PATH, {
-    headers: { "Content-Type": "audio/mpeg", "Cache-Control": "no-cache" }
-  });
-});
-
-app.use(apiErrorHandler);
-
-const server = app.listen(port, () => {
+const { origins, ignored } = parseBrowserOrigins(process.env.BROWSER_ORIGINS);
+for (const entry of ignored) console.warn(`[api] BROWSER_ORIGINS entry ${JSON.stringify(entry)} is not an origin (scheme://host[:port]) and is ignored`);
+if (origins.size === 0) {
+  console.warn("[api] BROWSER_ORIGINS is empty: browser sign-in and the demo's paid routes will refuse every request");
+}
+export const server = createApp().listen(port, () => {
   console.log(`MSVA API running on http://localhost:${port}`);
 });
-
 const assessmentWorker = startAssessmentWorker();
 const voiceSweeper = startVoiceSweeper();
-for (const signal of ["SIGINT", "SIGTERM"] as const) {
+for (const signal of ["SIGTERM", "SIGINT"] as const) {
   process.once(signal, () => {
     void Promise.all([assessmentWorker.stop(), voiceSweeper.stop()]).finally(() => server.close());
   });

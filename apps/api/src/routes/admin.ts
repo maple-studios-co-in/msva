@@ -11,8 +11,10 @@ import {
   revokeSession,
   sessionCookie,
   tokenFromRequest,
+  trustedNetworkFromRequest,
   verifyLoginCode
 } from "../auth.js";
+import { requireBrowserOrigin } from "../browserOrigin.js";
 
 // ---------------------------------------------------------------------------
 // Admin console API — everything the console UI reads and writes.
@@ -53,25 +55,32 @@ const dateOrUndefined = (value: unknown): Date | undefined => {
 // Auth
 // ---------------------------------------------------------------------------
 
-const emailSchema = z.object({ email: z.string().email() });
+const emailSchema = z.object({ email: z.string().max(254).email() });
 
-adminRouter.post("/auth/request-code", async (request, response, next) => {
+adminRouter.post("/auth/request-code", requireBrowserOrigin, async (request, response, next) => {
   const parsed = emailSchema.safeParse(request.body);
   if (!parsed.success) return void bad(response, parsed.error);
   try {
-    response.json(await requestLoginCode(parsed.data.email));
+    const result = await requestLoginCode(parsed.data.email, trustedNetworkFromRequest(request));
+    if (!result.ok && "unavailable" in result) return void response.status(503).json({ error: "Sign-in is temporarily unavailable" });
+    if (!result.ok && "limited" in result) return void response.status(429).set("Retry-After", String(result.retryAfter)).json({ error: "Please wait before requesting another code" });
+    response.status(202).json(result);
   } catch (error) {
     next(error);
   }
 });
 
-const verifySchema = z.object({ email: z.string().email(), code: z.string().min(4).max(12) });
+const verifySchema = z.object({ email: z.string().max(254).email(), code: z.string().regex(/^\d{6}$/) });
 
-adminRouter.post("/auth/verify", async (request, response, next) => {
+adminRouter.post("/auth/verify", requireBrowserOrigin, async (request, response, next) => {
   const parsed = verifySchema.safeParse(request.body);
   if (!parsed.success) return void bad(response, parsed.error);
   try {
-    const result = await verifyLoginCode(parsed.data.email, parsed.data.code);
+    const result = await verifyLoginCode(parsed.data.email, parsed.data.code, trustedNetworkFromRequest(request));
+    if (result && "limited" in result) {
+      response.status(429).set("Retry-After", String(result.retryAfter)).json({ error: "Please wait before trying another code" });
+      return;
+    }
     if (!result) {
       response.status(401).json({ error: "That code is wrong or has expired. Request a new one." });
       return;
@@ -85,7 +94,7 @@ adminRouter.post("/auth/verify", async (request, response, next) => {
   }
 });
 
-adminRouter.post("/auth/logout", async (request, response, next) => {
+adminRouter.post("/auth/logout", requireBrowserOrigin, async (request, response, next) => {
   try {
     const token = tokenFromRequest(request);
     if (token) await revokeSession(token);
@@ -425,7 +434,7 @@ adminRouter.get("/users", requireRole("ADMIN"), async (_request, response, next)
 });
 
 const userCreateSchema = z.object({
-  email: z.string().email(),
+  email: z.string().max(254).email(),
   name: z.string().min(1).max(120),
   role: z.enum(["ADMIN", "SUPERVISOR", "AGENT", "VIEWER"])
 });

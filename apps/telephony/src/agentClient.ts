@@ -3,7 +3,8 @@ import type { ChatStreamEvent, ConversationState } from "@msva/shared";
 // ---------------------------------------------------------------------------
 // Agent client
 //
-// Thin SSE consumer for the API's `/api/voice-agent/chat/stream` endpoint.
+// Thin SSE consumer for the API's service-only `/api/internal/agent/chat/stream`
+// endpoint, authenticated with INTERNAL_API_TOKEN.
 // Yielding `ChatStreamEvent`s lets the telephony pipeline pipe tokens
 // straight into the TTS adapter without buffering the full reply.
 // ---------------------------------------------------------------------------
@@ -14,12 +15,24 @@ export async function* streamAgent(
   callId: string,
   message: string,
   state?: ConversationState,
-  sessionId?: string
+  sessionId?: string,
+  transport: "EXOTEL" | "BROWSER" = "EXOTEL",
+  browserConnectionId?: string
 ): AsyncGenerator<ChatStreamEvent, void, void> {
-  const response = await fetch(`${AGENT_BASE_URL}/api/voice-agent/chat/stream`, {
+  const token = process.env.INTERNAL_API_TOKEN;
+  if (!token) {
+    yield { type: "error", message: "Telephony service authentication is unavailable" };
+    return;
+  }
+
+  const response = await fetch(`${AGENT_BASE_URL}/api/internal/agent/chat/stream`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-    body: JSON.stringify({ callId, message, state, sessionId })
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+      "x-internal-token": token
+    },
+    body: JSON.stringify({ callId, message, state, sessionId, transport, browserConnectionId })
   });
 
   if (!response.ok || !response.body) {

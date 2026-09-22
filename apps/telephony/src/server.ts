@@ -10,6 +10,7 @@ import {
   type BrowserCallPipeline,
   type BrowserClientMessage
 } from "./browserPipeline.js";
+import { browserCallDecision, parseBrowserOrigins } from "./consoleSession.js";
 
 const port = Number(process.env.TELEPHONY_PORT ?? 4200);
 const publicHost = process.env.PUBLIC_WS_HOST ?? `127.0.0.1:${port}`;
@@ -40,28 +41,75 @@ app.post("/exotel/incoming", (request, response) => {
   );
 });
 
-const server = http.createServer(app);
+export const server = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 
+const REFUSALS = { 401: "Unauthorized", 403: "Forbidden", 503: "Service Unavailable" } as const;
+
+/**
+ * The request target's path and query, or null when it does not parse. It is read
+ * against a fixed base, never the client's Host header, and never throws: this runs
+ * for every upgrade, before any check, where an exception would stop the service.
+ */
+function requestTarget(url: string | undefined): URL | null {
+  if (url === undefined) return null;
+  try {
+    return new URL(url, "http://telephony");
+  } catch {
+    return null;
+  }
+}
+
+type Transport = "carrier" | "browser";
+
+// The route each upgrade was admitted for. The connection is dispatched on this same
+// decision, never on the path parsed again, so what was checked is what runs.
+const routes = new WeakMap<http.IncomingMessage, { target: URL; transport: Transport }>();
+
 server.on("upgrade", (request, socket, head) => {
-  const { url } = request;
-  if (!url || !(url.startsWith("/voice") || url.startsWith("/browser"))) {
+  const target = requestTarget(request.url);
+  // Exactly /voice is the carrier's media stream and exactly /browser a browser call,
+  // compared on the parsed path; no prefix, alias or dot segment opens anything.
+  const transport: Transport | null = target?.pathname === "/voice" ? "carrier" : target?.pathname === "/browser" ? "browser" : null;
+  if (!target || !transport) {
     socket.destroy();
     return;
   }
-  wss.handleUpgrade(request, socket, head, (ws) => {
+  const open = () => wss.handleUpgrade(request, socket, head, (ws) => {
+    routes.set(request, { target, transport });
     wss.emit("connection", ws, request);
+  });
+  // The carrier's media stream cannot carry a console session; a browser call must,
+  // so it opens only once the API accepts the caller's sign-in.
+  if (transport === "carrier") {
+    open();
+    return;
+  }
+  const onError = () => socket.destroy();
+  socket.on("error", onError);
+  void browserCallDecision(request.headers).then((decision) => {
+    socket.removeListener("error", onError);
+    if (decision === "open") {
+      open();
+      return;
+    }
+    socket.end(`HTTP/1.1 ${decision} ${REFUSALS[decision]}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
   });
 });
 
 wss.on("connection", (ws, request) => {
-  const url = new URL(request.url ?? "/voice", `http://${request.headers.host}`);
+  const route = routes.get(request);
+  if (!route) {
+    ws.terminate();
+    return;
+  }
+  const url = route.target;
 
   // -------------------------------------------------------------------------
   // Browser call transport (/browser). The web app's "Live Call" screen
   // connects here, streaming 16 kHz PCM both ways.
   // -------------------------------------------------------------------------
-  if (url.pathname.startsWith("/browser")) {
+  if (route.transport === "browser") {
     const callId = url.searchParams.get("call") ?? "call-dist-ghee-delay";
     const fromNumber = url.searchParams.get("from") ?? "+910000000000";
     const profile: DemoCall = {
@@ -147,6 +195,9 @@ wss.on("connection", (ws, request) => {
 });
 
 server.listen(port, () => {
+  const { origins, ignored } = parseBrowserOrigins(process.env.BROWSER_ORIGINS);
+  for (const entry of ignored) console.warn(`[telephony] BROWSER_ORIGINS entry ${JSON.stringify(entry)} is not an origin (scheme://host[:port]) and is ignored`);
+  if (origins.size === 0) console.warn("[telephony] BROWSER_ORIGINS is empty: every browser call will be refused");
   console.log(`MSVA telephony service listening on http://localhost:${port}`);
   console.log(`  Exotel webhook: POST /exotel/incoming`);
   console.log(`  Media stream:   ${publicWsUrl}`);

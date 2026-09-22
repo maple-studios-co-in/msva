@@ -124,7 +124,7 @@ export class CallClient {
       this.send({ type: "start", callId: options.callId, voice: options.voice, language: options.language });
     };
     this.ws.onmessage = (event) => this.onWsMessage(event);
-    this.ws.onerror = () => this.events.onError?.("Connection error — is the telephony service running on port 4200?");
+    this.ws.onerror = () => this.events.onError?.("Could not connect. Sign in to the console (/console.html), and check that the telephony service is running on port 4200.");
     this.ws.onclose = () => {
       if (!this.closed) this.events.onError?.("Call connection closed.");
       this.cleanup();

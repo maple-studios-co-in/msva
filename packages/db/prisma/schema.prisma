@@ -36,6 +36,7 @@ model User {
   lastLoginAt      DateTime?
   sessions         Session[]
   loginCodes       LoginCode[]
+  authRateBuckets  AuthRateBucket[]
   tickets          Ticket[]          @relation("TicketAssignee")
   notes            TicketNote[]
   audits           AuditLog[]
@@ -45,16 +46,44 @@ model User {
   requestedAssessments CallAssessment[] @relation("CallAssessmentRequester")
 }
 
+enum LoginCodeDeliveryState {
+  PENDING
+  DELIVERED
+  FAILED
+}
+
 model LoginCode {
-  id        String    @id @default(cuid())
+  id                   String                 @id
   userId    String
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   codeHash  String
   expiresAt DateTime
   usedAt    DateTime?
+  deliveryState        LoginCodeDeliveryState @default(PENDING)
+  attempts             Int                    @default(0)
+  deliveryLeaseExpiresAt DateTime?
+  deliveredAt          DateTime?
   createdAt DateTime  @default(now())
 
   @@index([userId, createdAt])
+  @@index([userId, deliveryState, expiresAt])
+  @@index([deliveryLeaseExpiresAt])
+}
+
+model AuthRateBucket {
+  id          String   @id @default(cuid())
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scope       String
+  keyHash     String
+  windowStart DateTime
+  count       Int      @default(0)
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([scope, keyHash, windowStart])
+  @@index([expiresAt])
 }
 
 model Session {

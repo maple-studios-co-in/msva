@@ -162,6 +162,14 @@ pm2 reload all
 - **WebSocket fails** → confirm Caddy is proxying `/browser` and
   `apps/web/.env` has `VITE_TELEPHONY_WS_URL=wss://msva.maplestudios.co.in`
   (rebuild web if you changed it).
+- **"Sign in to the console" on the call, text demo or voice playground** →
+  they use paid speech and model services, so they need an agent's console
+  session: sign in at `/console.html` first. The telephony service checks the
+  session with the API at `AGENT_BASE_URL` before opening a browser call.
+- **"Origin not allowed" (403) on sign-in or the demo** → the page's origin is not
+  in `BROWSER_ORIGINS` in `apps/api/.env` (and `apps/telephony/.env` for calls).
+  List it as `scheme://host[:port]`, with no path; both services log any entry
+  they ignore when they start.
 - **502 / nothing loads** → `pm2 status`; `curl localhost:4100/health`.
 - **Agent always uses fallback even with AGENT_LLM=on** → Ollama too slow /
   timing out; raise `OLLAMA_TIMEOUT_MS` or use a smaller model.
@@ -187,8 +195,10 @@ sudo -u postgres psql -c 'GRANT ALL ON SCHEMA public TO msva;' msva
 
 Then in the env files (see `deploy/*.env.example`):
 
-- `apps/api/.env`: `DATABASE_URL`, `INTERNAL_API_TOKEN`, `NODE_ENV=production`
-- `apps/telephony/.env`: `INTERNAL_API_TOKEN` (same value), `AGENT_BASE_URL=http://127.0.0.1:4100`
+- `apps/api/.env`: `DATABASE_URL`, `INTERNAL_API_TOKEN`, `NODE_ENV=production`,
+  `BROWSER_ORIGINS` (the exact origin the console is served from)
+- `apps/telephony/.env`: `INTERNAL_API_TOKEN` (same value), `AGENT_BASE_URL=http://127.0.0.1:4100`,
+  `BROWSER_ORIGINS` (same value)
 - `packages/db/.env`: `DATABASE_URL` (used by the Prisma CLI only)
 
 Every deploy:

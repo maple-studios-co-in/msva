@@ -52,6 +52,46 @@ it("mounts the strict internal agent route before the legacy internal router", a
   }
 });
 
+it("sends voice worker calls to the voice service, ahead of the legacy internal router", async () => {
+  // With its token set, the legacy router would refuse every voice call with 401.
+  vi.stubEnv("INTERNAL_API_TOKEN", "service-token");
+  const { createApp } = await import("./app.js");
+  const testServer = await serve(createApp());
+  const claim = () => fetch(`${testServer.url}/api/internal/voice/v1/leases/claim`, {
+    method: "POST", headers: { "content-type": "application/json", authorization: "Bearer worker-token" }, body: "{}"
+  });
+  try {
+    const disabled = await claim();
+    expect(disabled.status).toBe(503);
+    expect(await disabled.json()).toEqual({ error: "VOICE_DISABLED" });
+    vi.stubEnv("VOICE_ENABLED", "true");
+    vi.stubEnv("VOICE_WORKER_API_TOKEN", "worker-token");
+    vi.stubEnv("VOICE_LEASE_SIGNING_KEY", "signing-key");
+    const invalid = await claim();
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toEqual({ error: "INVALID_REQUEST" });
+  } finally {
+    await testServer.close();
+  }
+});
+
+it("answers malformed JSON with 400 without logging it", async () => {
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  const { createApp } = await import("./app.js");
+  const testServer = await serve(createApp());
+  try {
+    const response = await fetch(`${testServer.url}/api/voice-agent/chat`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: '{"message": "not closed'
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "INVALID_JSON" });
+    expect(errors).not.toHaveBeenCalled();
+  } finally {
+    errors.mockRestore();
+    await testServer.close();
+  }
+});
+
 it("has no public agent stream route", async () => {
   const streamChat = vi.fn(async function* () { yield { type: "final", state: {}, source: "fallback" }; });
   vi.doMock("./voiceAgent.js", () => ({

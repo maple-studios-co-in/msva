@@ -227,7 +227,7 @@ async def test_a_spool_read_failing_now_and_then_does_not_hide_stuck_evidence():
     def waiting() -> float:
         nonlocal reads
         reads += 1
-        if reads % 3 == 0:
+        if reads % 3:
             raise OSError("database is locked")
         return time.monotonic() - started
 
@@ -236,7 +236,9 @@ async def test_a_spool_read_failing_now_and_then_does_not_hide_stuck_evidence():
     guard = LeaseGuard(Api(), writer, renew_seconds=0.02, lease_seconds=30, on_lost=fenced.append, stall_seconds=0.2)
     guard.start()
     await wait_until(lambda: bool(fenced))
-    assert fenced == ["FATAL"] and reads >= 3 and time.monotonic() - started < 0.5
+    # Two reads in three fail. The wait keeps counting through them, so the fence comes at
+    # about 0.25 s; dropping the time around failed reads would put it near 0.6 s.
+    assert fenced == ["FATAL"] and reads >= 3 and time.monotonic() - started < 0.45
     await guard.stop()
 
 

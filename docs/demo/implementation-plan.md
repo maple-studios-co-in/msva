@@ -84,7 +84,7 @@ and TTS, the approved LLM provider.
 | `packages/db/prisma/schema.prisma` | Additive durable entities and fields for requests, callback state, evidence, queues, handoff, and risk. |
 | `packages/db/prisma/migrations/<generated>_demo_journeys/migration.sql` | Additive migration preserving existing calls and tickets. |
 | `apps/api/src/demo/{admissions,context,requests,evidence,queues,risk}.ts` | Staff-simulation policy and later call-scoped business wrappers. |
-| `apps/api/src/demo/routes.ts` | Future authenticated staff simulation routes mounted by `apps/api/src/server.ts`. |
+| `apps/api/src/demo/routes.ts` | Future authenticated staff simulation routes mounted by `apps/api/src/app.ts`. |
 | `apps/api/src/voice/{sessions,tokens,handoff,admission}.ts` | Browser LiveKit session creation, staff admission, and ownership control. |
 | `apps/api/src/call-events/routes.ts` | Authenticated, idempotent event ingestion from the worker and LiveKit. |
 | `apps/voice-agent/` | Python 3.12 worker, prompt/policy, tool client, event spool, canonical-schema validation, and tests. |
@@ -302,7 +302,7 @@ previous context read as authority.
 - Create: `apps/api/src/demo/routes.ts`
 - Create: `apps/api/src/demo/context.test.ts`
 - Create: `apps/api/src/demo/requests.test.ts`
-- Modify: `apps/api/src/server.ts`
+- Modify: `apps/api/src/app.ts`
 - Modify: the authenticated console route/navigation and its call, ticket, and
   polling metric views
 - Modify: `packages/db/prisma/schema.prisma` and add an admission migration
@@ -409,7 +409,7 @@ an external channel or a received file that has not been verified.
 - Create: `apps/api/src/call-events/routes.ts`
 - Create: `apps/api/src/call-events/routes.test.ts`
 - Create: `apps/web/src/livekit/BrowserCall.tsx`
-- Modify: `apps/api/src/server.ts`
+- Modify: `apps/api/src/app.ts`
 - Modify: `apps/web/src/callClient.ts`
 
 **Consumes:** Demo contracts, worker context/request routes, and a configured

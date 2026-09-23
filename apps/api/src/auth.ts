@@ -61,6 +61,8 @@ let deliveryOverride: LoginCodeDelivery | null | undefined;
 /** Test-only injection point; production uses configured SMTP. */
 export const setLoginCodeDeliveryForTest = (delivery: LoginCodeDelivery | null | undefined) => { deliveryOverride = delivery; };
 const loginCodeDelivery = () => deliveryOverride === undefined ? createSmtpLoginCodeDelivery() : deliveryOverride;
+/** Development only: nothing is sent, because the code is returned in the response. */
+const shownNotSent: LoginCodeDelivery = { async send() {} };
 
 const MAX_FORWARDED_HEADER = 512;
 const MAX_FORWARDED_HOPS = 16;
@@ -245,9 +247,11 @@ async function activateLoginCode(userId: string, id: string): Promise<void> {
  * Looks the address up and, for an active user, admits and mails one code. A
  * send holds one of the two delivery slots, shared by every API process, until
  * it finishes, even if a newer request supersedes its code. The raw code lives
- * only in memory. Returns the code for development echo, otherwise null.
+ * only in memory. Returns the code for development echo, otherwise null. With
+ * `finish`, the delivery and activation are awaited instead of left to run on,
+ * so a code shown in development is usable the moment it is shown.
  */
-async function issueLoginCode(email: string, delivery: LoginCodeDelivery): Promise<string | null> {
+async function issueLoginCode(email: string, delivery: LoginCodeDelivery, finish = false): Promise<string | null> {
   const user = await prisma.user.findFirst({ where: { email, active: true } });
   if (!user) return null;
   const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
@@ -273,7 +277,7 @@ async function issueLoginCode(email: string, delivery: LoginCodeDelivery): Promi
     return true;
   });
   if (!admitted) return null;
-  void delivery.send({ recipient: email, code, expiresAt })
+  const delivered = delivery.send({ recipient: email, code, expiresAt })
     .then(() => activateLoginCode(user.id, id))
     .catch(async () => {
       console.warn("[auth] login code delivery failed");
@@ -283,6 +287,7 @@ async function issueLoginCode(email: string, delivery: LoginCodeDelivery): Promi
       // The database is unreachable as well: the lease expires and the next
       // request reclaims it. An uncertain send is never retried.
     });
+  if (finish) await delivered;
   return code;
 }
 
@@ -295,7 +300,12 @@ export async function requestLoginCode(
 ): Promise<LoginCodeRequestResult> {
   const email = rawEmail.trim().toLowerCase();
   const delivery = loginCodeDelivery();
-  const configured = Boolean(delivery && process.env.AUTH_CODE_HASH_KEY && process.env.AUTH_RATE_HASH_KEY);
+  const keyed = Boolean(process.env.AUTH_CODE_HASH_KEY && process.env.AUTH_RATE_HASH_KEY);
+  const configured = Boolean(delivery) && keyed;
+  // Development only: the code is returned in the response, so it is issued with
+  // nothing sent, whether or not a mail server is configured. Production never
+  // reaches this.
+  const shown = keyed && !isProduction() && process.env.NODE_ENV === "development" && process.env.AUTH_DEV_ECHO === "1";
   if (isProduction() && !configured) return { ok: false, unavailable: true };
   const retryAfter = await reserveRates([
     { scope: "request-email-minute", key: email, limit: 1, windowMs: 60_000 },
@@ -304,10 +314,10 @@ export async function requestLoginCode(
     { scope: "request-global-hour", key: "global", limit: 100, windowMs: 3_600_000, shared: true }
   ]);
   if (retryAfter) return { ok: false, limited: true, retryAfter };
-  if (!configured) return { ok: true };
-  if (process.env.NODE_ENV === "development" && process.env.AUTH_DEV_ECHO === "1") {
+  if (!configured && !shown) return { ok: true };
+  if (shown) {
     // Development only: wait for the code so it can be shown.
-    const code = await issueLoginCode(email, delivery!);
+    const code = await issueLoginCode(email, shownNotSent, true);
     return code ? { ok: true, devCode: code } : { ok: true };
   }
   void issueLoginCode(email, delivery!).catch(() => console.warn("[auth] login code request failed"));
@@ -366,13 +376,24 @@ export async function verifyLoginCode(
 }
 
 export async function revokeSession(token: string): Promise<void> {
+  await revokeSessions([token]);
+}
+
+/**
+ * Ends every session those tokens belong to, in one pass: tokens matching none
+ * cost one lookup, and the cookie header's own length bounds how many there can
+ * be, so no token a browser presents is dropped.
+ */
+export async function revokeSessions(tokens: readonly string[]): Promise<void> {
+  if (tokens.length === 0) return;
+  const hashes = tokens.map((token) => sha256(token));
   await prisma.$transaction(async (tx) => {
-    const session = await tx.session.findUnique({ where: { tokenHash: sha256(token) }, select: { id: true } });
-    if (!session) return;
-    // Browser voice media admitted under this login ends with it.
-    await revokeAdmissions(tx, { sessionId: session.id, reason: "LOGOUT" });
-    // A concurrent logout may have deleted it already.
-    await tx.session.deleteMany({ where: { id: session.id } });
+    const sessions = await tx.session.findMany({ where: { tokenHash: { in: hashes } }, select: { id: true }, orderBy: { id: "asc" } });
+    if (sessions.length === 0) return;
+    // Browser voice media admitted under these logins ends with them.
+    for (const session of sessions) await revokeAdmissions(tx, { sessionId: session.id, reason: "LOGOUT" });
+    // A concurrent logout may have deleted them already.
+    await tx.session.deleteMany({ where: { id: { in: sessions.map((session) => session.id) } } });
   });
 }
 
@@ -390,13 +411,43 @@ export function sessionCookie(token: string, maxAgeMs = SESSION_TTL_MS): string 
     .join("; ");
 }
 
+const SESSION_TOKEN = /^[a-f0-9]{64}$/i;
+
 export function tokenFromRequest(request: express.Request): string | null {
   const bearer = request.headers.authorization;
   const cookieToken = sessionCookieValue(request.headers.cookie);
   if (cookieToken === null) return null;
   if (bearer !== undefined && (!bearer.startsWith("Bearer ") || bearer.length > 512 || cookieToken)) return null;
   const token = bearer ? bearer.slice(7).trim() : cookieToken;
-  return token && /^[a-f0-9]{64}$/i.test(token) ? token : null;
+  return token && SESSION_TOKEN.test(token) ? token : null;
+}
+
+/**
+ * Every well-formed session token the request presents. A browser that sends the
+ * cookie twice cannot authenticate, because neither value can be trusted as its
+ * session, but it must still be able to sign out, so a logout ends them all: a
+ * token can only be presented by the browser holding it.
+ */
+export function sessionTokensFromRequest(request: express.Request): string[] {
+  const tokens = new Set<string>();
+  const bearer = request.headers.authorization;
+  if (bearer?.startsWith("Bearer ") && bearer.length <= 512 && SESSION_TOKEN.test(bearer.slice(7).trim())) {
+    tokens.add(bearer.slice(7).trim());
+  }
+  const header = request.headers.cookie;
+  if (header && header.length <= 8192) {
+    for (const part of header.split(";")) {
+      const index = part.indexOf("=");
+      if (index === -1 || part.slice(0, index).trim() !== SESSION_COOKIE) continue;
+      try {
+        const value = decodeURIComponent(part.slice(index + 1).trim());
+        if (SESSION_TOKEN.test(value)) tokens.add(value);
+      } catch {
+        // Not valid encoding, so not one of our tokens.
+      }
+    }
+  }
+  return [...tokens];
 }
 
 /** Attaches `request.user` when a valid session is present; never rejects. */

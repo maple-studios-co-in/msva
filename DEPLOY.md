@@ -56,6 +56,16 @@ Edit **`apps/api/.env`** and **`apps/telephony/.env`** and set your real
 `SARVAM_API_KEY` in both. Leave `AGENT_LLM=off` for now (see §7 for the AI brain
 trade-off). `apps/web/.env` is already correct for this domain.
 
+The console sign-in needs, in `apps/api/.env`: the `SMTP_*` values of a mail
+server that takes the codes (production requires a user and a password, and
+either STARTTLS on 587 or implicit TLS on 465), a random `AUTH_CODE_HASH_KEY`
+and `AUTH_RATE_HASH_KEY` (`openssl rand -hex 32` each), `BROWSER_ORIGINS` set to
+the exact origin the console is served from, and `TRUSTED_PROXY_ADDRESSES`
+covering Caddy (`127.0.0.1,::1` on this host). Without the mail server and both
+keys, production answers every sign-in with 503 and nobody can get in.
+`BROWSER_ORIGINS` goes in `apps/telephony/.env` too, or browser calls are
+refused. `CORS_ORIGIN` is no longer read.
+
 ## 4. Build
 
 ```bash
@@ -170,6 +180,12 @@ pm2 reload all
   in `BROWSER_ORIGINS` in `apps/api/.env` (and `apps/telephony/.env` for calls).
   List it as `scheme://host[:port]`, with no path; both services log any entry
   they ignore when they start.
+- **"Sign-in is temporarily unavailable" (503)** → the `SMTP_*` values or one of
+  `AUTH_CODE_HASH_KEY` / `AUTH_RATE_HASH_KEY` is missing in `apps/api/.env` (§3).
+  Existing sessions keep working while it is unavailable.
+- **The code never arrives** → check the mail server: `pm2 logs msva-api` shows
+  `[auth] login code delivery failed` for a refused send, without the code or the
+  address. A code is only usable once its send has succeeded.
 - **502 / nothing loads** → `pm2 status`; `curl localhost:4100/health`.
 - **Agent always uses fallback even with AGENT_LLM=on** → Ollama too slow /
   timing out; raise `OLLAMA_TIMEOUT_MS` or use a smaller model.
@@ -196,7 +212,9 @@ sudo -u postgres psql -c 'GRANT ALL ON SCHEMA public TO msva;' msva
 Then in the env files (see `deploy/*.env.example`):
 
 - `apps/api/.env`: `DATABASE_URL`, `INTERNAL_API_TOKEN`, `NODE_ENV=production`,
-  `BROWSER_ORIGINS` (the exact origin the console is served from)
+  `BROWSER_ORIGINS` (the exact origin the console is served from), the `SMTP_*`
+  values, `AUTH_CODE_HASH_KEY`, `AUTH_RATE_HASH_KEY` and
+  `TRUSTED_PROXY_ADDRESSES` (see §3)
 - `apps/telephony/.env`: `INTERNAL_API_TOKEN` (same value), `AGENT_BASE_URL=http://127.0.0.1:4100`,
   `BROWSER_ORIGINS` (same value)
 - `packages/db/.env`: `DATABASE_URL` (used by the Prisma CLI only)
@@ -221,9 +239,9 @@ cd packages/db && export $(grep -v '^#' .env | tr -d '"' | xargs)
 ADMIN_EMAIL=you@example.com ADMIN_NAME="Your Name" node --experimental-strip-types prisma/seed.ts
 ```
 
-The console lives at `https://msva.maplestudios.co.in/console.html`. Sign-in codes are
-printed to the API log until an email provider is configured:
-
-```bash
-pm2 logs msva-api --lines 50 --nostream | grep "login code"
-```
+The console lives at `https://msva.maplestudios.co.in/console.html`. A sign-in code
+is emailed through the configured mail server; it is never written to a log or
+returned in a response. Each code lasts 10 minutes, allows 5 attempts, and a
+newer request replaces it. If sign-in answers 503, the mail server or one of the
+two hash keys is missing (§3); the API logs `[auth] login code delivery failed`
+when a send is refused.

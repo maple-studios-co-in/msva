@@ -610,6 +610,66 @@ describe("abuse resistance", () => {
       process.env.NODE_ENV = "development";
     }
   });
+
+  it("issues a usable development code with no mail server configured", async () => {
+    const user = await db.user.create({ data: { email: "no-smtp@example.test", name: "Agent", role: "AGENT" } });
+    process.env.AUTH_DEV_ECHO = "1";
+    try {
+      const auth = await import("./auth.js");
+      auth.setLoginCodeDeliveryForTest(null);
+      const requested = await auth.requestLoginCode(user.email, network(80));
+      const code = "ok" in requested && requested.ok ? requested.devCode : undefined;
+      expect(code).toMatch(/^\d{6}$/);
+      // Nothing was sent, so the code must be usable as soon as it is shown.
+      expect((await db.loginCode.findFirstOrThrow({ where: { userId: user.id } })).deliveryState).toBe("DELIVERED");
+      await db.authRateBucket.deleteMany();
+      expect(await auth.verifyLoginCode(user.email, code!, network(80))).toMatchObject({ token: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    } finally {
+      delete process.env.AUTH_DEV_ECHO;
+    }
+  });
+
+  it("shows a development code without sending one, even with a mail server configured", async () => {
+    const user = await db.user.create({ data: { email: "echo-no-send@example.test", name: "Agent", role: "AGENT" } });
+    process.env.AUTH_DEV_ECHO = "1";
+    try {
+      const sent: string[] = [];
+      // A mail server that is slow, or failing, must not decide whether a shown code works.
+      const auth = await authWithFakeDelivery(async (input) => {
+        sent.push(input.code);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        throw new Error("SMTP unavailable");
+      });
+      const requested = await auth.requestLoginCode(user.email, network(82));
+      const code = "ok" in requested && requested.ok ? requested.devCode : undefined;
+      expect(code).toMatch(/^\d{6}$/);
+      expect(sent).toEqual([]);
+      expect((await db.loginCode.findFirstOrThrow({ where: { userId: user.id } })).deliveryState).toBe("DELIVERED");
+      await db.authRateBucket.deleteMany();
+      expect(await auth.verifyLoginCode(user.email, code!, network(82))).toMatchObject({ token: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    } finally {
+      delete process.env.AUTH_DEV_ECHO;
+    }
+  });
+
+  it("issues no code without a mail server outside development", async () => {
+    const user = await db.user.create({ data: { email: "no-echo@example.test", name: "Agent", role: "AGENT" } });
+    process.env.AUTH_DEV_ECHO = "1";
+    try {
+      for (const nodeEnv of ["production", "test"]) {
+        await db.authRateBucket.deleteMany();
+        process.env.NODE_ENV = nodeEnv;
+        const auth = await import("./auth.js");
+        auth.setLoginCodeDeliveryForTest(null);
+        const requested = await auth.requestLoginCode(user.email, network(81));
+        expect(requested).toEqual(nodeEnv === "production" ? { ok: false, unavailable: true } : { ok: true });
+        expect(await db.loginCode.count({ where: { userId: user.id } })).toBe(0);
+      }
+    } finally {
+      delete process.env.AUTH_DEV_ECHO;
+      process.env.NODE_ENV = "development";
+    }
+  });
 });
 
 describe("user administration", () => {

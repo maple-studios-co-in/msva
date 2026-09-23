@@ -2,6 +2,7 @@ import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto
 import { DemoRequestError, Prisma, PrismaClient, createBusinessRequest, prisma, type CallOutcome } from "@msva/db";
 import { CreateRequestInputSchema, WELL_FORMED_TEXT, type CreateRequestResult, type VoiceLease, type WorkerEvent } from "@msva/contracts";
 import { markPostCallAssessmentDirty } from "./assessmentJobs.js";
+import { canonicalOrigin } from "./browserOrigin.js";
 
 const LEASE_MS = 30_000;
 const REPLAY_MS = 24 * 60 * 60 * 1000;
@@ -542,6 +543,9 @@ export async function prepareBrowserAdmission(input: { callId: string; userId: s
     const now = new Date();
     const browser = await tx.session.findFirst({ where: { id: input.sessionId, userId: input.userId, expiresAt: { gt: now }, user: { active: true } }, include: { user: true } });
     if (!browser || session.authorizationVersion !== input.expectedAuthorizationVersion || !(LIVE_STATES as readonly string[]).includes(session.state)) throw new VoiceError(403, "ADMISSION_DENIED");
+    // A login ending in the same moment is not fenced out here. Every connection and
+    // renewal checks the login again, so an admission issued as its login ended is
+    // refused and revoked before any media is granted.
     if (!(await roleAllowed(tx, input.role, { userId: input.userId, sessionId: input.sessionId, userRole: browser.user.role }, session))) throw new VoiceError(403, "ADMISSION_DENIED");
     const caller = session.participants.find((participant) => participant.role === "CALLER");
     if (input.role === "CALLER" && !caller) throw new VoiceError(503, "SESSION_INCOMPLETE");
@@ -588,13 +592,15 @@ export async function authorizeSignalConnection(input: { tokenClaims: VerifiedBr
     if (!admission) throw new VoiceError(403, "ADMISSION_DENIED");
     const now = new Date();
     const session = admission.voiceSession;
-    const expectedOrigin = process.env.VOICE_BROWSER_ORIGIN;
+    // Canonical on both sides, as BROWSER_ORIGINS is, so the same spelling of the
+    // console's origin cannot be accepted there and refused here.
+    const expectedOrigin = canonicalOrigin(process.env.VOICE_BROWSER_ORIGIN ?? "");
     // The first join uses a join-only token; later connections may carry the
     // refreshed grants, but never more than the admission's role allows.
     const grantsAllowed = admission.state === "ISSUED"
       ? !input.tokenClaims.publish && !input.tokenClaims.subscribe
       : !input.tokenClaims.publish || admission.role !== "OPERATOR_LISTENER";
-    if (!expectedOrigin || input.origin !== expectedOrigin || (input.protocol !== "v0" && input.protocol !== "v1")
+    if (!expectedOrigin || canonicalOrigin(input.origin) !== expectedOrigin || (input.protocol !== "v0" && input.protocol !== "v1")
       || !input.tokenClaims.roomJoin || !grantsAllowed || session.roomName !== input.tokenClaims.room
       || admission.state === "REVOKING" || admission.state === "REVOKED" || admission.state === "EXPIRED"
       || (admission.state === "ISSUED" && admission.firstJoinExpiresAt <= now)) throw new VoiceError(403, "ADMISSION_DENIED");

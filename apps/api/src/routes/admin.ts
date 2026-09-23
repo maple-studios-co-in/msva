@@ -8,9 +8,9 @@ import {
   authenticate,
   requestLoginCode,
   requireRole,
-  revokeSession,
+  revokeSessions,
   sessionCookie,
-  tokenFromRequest,
+  sessionTokensFromRequest,
   trustedNetworkFromRequest,
   verifyLoginCode
 } from "../auth.js";
@@ -96,8 +96,9 @@ adminRouter.post("/auth/verify", requireBrowserOrigin, async (request, response,
 
 adminRouter.post("/auth/logout", requireBrowserOrigin, async (request, response, next) => {
   try {
-    const token = tokenFromRequest(request);
-    if (token) await revokeSession(token);
+    // Ends every session this request presents, so a browser sending the cookie
+    // twice, which cannot authenticate, can still sign out.
+    await revokeSessions(sessionTokensFromRequest(request));
     response.setHeader("Set-Cookie", sessionCookie("", 0));
     response.json({ ok: true });
   } catch (error) {

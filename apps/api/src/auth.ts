@@ -302,8 +302,9 @@ export async function requestLoginCode(
   const delivery = loginCodeDelivery();
   const keyed = Boolean(process.env.AUTH_CODE_HASH_KEY && process.env.AUTH_RATE_HASH_KEY);
   const configured = Boolean(delivery) && keyed;
-  // Development only: the code is returned in the response, so it can be issued
-  // with no mail server at all. Production never reaches this.
+  // Development only: the code is returned in the response, so it is issued with
+  // nothing sent, whether or not a mail server is configured. Production never
+  // reaches this.
   const shown = keyed && !isProduction() && process.env.NODE_ENV === "development" && process.env.AUTH_DEV_ECHO === "1";
   if (isProduction() && !configured) return { ok: false, unavailable: true };
   const retryAfter = await reserveRates([
@@ -316,7 +317,7 @@ export async function requestLoginCode(
   if (!configured && !shown) return { ok: true };
   if (shown) {
     // Development only: wait for the code so it can be shown.
-    const code = await issueLoginCode(email, delivery ?? shownNotSent, true);
+    const code = await issueLoginCode(email, shownNotSent, true);
     return code ? { ok: true, devCode: code } : { ok: true };
   }
   void issueLoginCode(email, delivery!).catch(() => console.warn("[auth] login code request failed"));
@@ -378,12 +379,16 @@ export async function revokeSession(token: string): Promise<void> {
   await revokeSessions([token]);
 }
 
-/** Ends every session those tokens belong to, in one pass: tokens matching none cost one lookup. */
+/**
+ * Ends every session those tokens belong to, in one pass: tokens matching none
+ * cost one lookup, and the cookie header's own length bounds how many there can
+ * be, so no token a browser presents is dropped.
+ */
 export async function revokeSessions(tokens: readonly string[]): Promise<void> {
   if (tokens.length === 0) return;
   const hashes = tokens.map((token) => sha256(token));
   await prisma.$transaction(async (tx) => {
-    const sessions = await tx.session.findMany({ where: { tokenHash: { in: hashes } }, select: { id: true } });
+    const sessions = await tx.session.findMany({ where: { tokenHash: { in: hashes } }, select: { id: true }, orderBy: { id: "asc" } });
     if (sessions.length === 0) return;
     // Browser voice media admitted under these logins ends with them.
     for (const session of sessions) await revokeAdmissions(tx, { sessionId: session.id, reason: "LOGOUT" });
@@ -407,9 +412,6 @@ export function sessionCookie(token: string, maxAgeMs = SESSION_TTL_MS): string 
 }
 
 const SESSION_TOKEN = /^[a-f0-9]{64}$/i;
-// A browser has one session cookie, or a few if a parent domain set one too. The
-// bound keeps a packed cookie header from making one logout do unbounded work.
-const MAX_SESSION_TOKENS = 8;
 
 export function tokenFromRequest(request: express.Request): string | null {
   const bearer = request.headers.authorization;
@@ -440,7 +442,6 @@ export function sessionTokensFromRequest(request: express.Request): string[] {
       try {
         const value = decodeURIComponent(part.slice(index + 1).trim());
         if (SESSION_TOKEN.test(value)) tokens.add(value);
-        if (tokens.size >= MAX_SESSION_TOKENS) break;
       } catch {
         // Not valid encoding, so not one of our tokens.
       }

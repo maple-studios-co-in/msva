@@ -543,6 +543,9 @@ export async function prepareBrowserAdmission(input: { callId: string; userId: s
     const now = new Date();
     const browser = await tx.session.findFirst({ where: { id: input.sessionId, userId: input.userId, expiresAt: { gt: now }, user: { active: true } }, include: { user: true } });
     if (!browser || session.authorizationVersion !== input.expectedAuthorizationVersion || !(LIVE_STATES as readonly string[]).includes(session.state)) throw new VoiceError(403, "ADMISSION_DENIED");
+    // A login ending in the same moment is not fenced out here. Every connection and
+    // renewal checks the login again, so an admission issued as its login ended is
+    // refused and revoked before any media is granted.
     if (!(await roleAllowed(tx, input.role, { userId: input.userId, sessionId: input.sessionId, userRole: browser.user.role }, session))) throw new VoiceError(403, "ADMISSION_DENIED");
     const caller = session.participants.find((participant) => participant.role === "CALLER");
     if (input.role === "CALLER" && !caller) throw new VoiceError(503, "SESSION_INCOMPLETE");

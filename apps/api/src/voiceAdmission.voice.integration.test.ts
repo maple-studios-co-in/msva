@@ -177,6 +177,15 @@ describe("signal admission", () => {
     }
   });
 
+  it("refuses an admission whose login ended after it was issued", async () => {
+    // An admission can be issued as its login ends; it must never admit media.
+    const call = await liveCall(); const who = await staff();
+    const admission = await listener(call, who);
+    await revokeSession(who.token);
+    await expect(connect(call, who, admission.participantIdentity)).rejects.toMatchObject({ code: "ADMISSION_DENIED" });
+    expect(await db.voiceAdmission.findUniqueOrThrow({ where: { id: admission.id } })).toMatchObject({ state: "REVOKING", revokeReason: "LOGOUT" });
+  });
+
   it("refuses another browser session without revoking the owner's admission", async () => {
     const call = await liveCall(); const who = await staff(); const other = await staff();
     const admission = await listener(call, who);

@@ -55,6 +55,7 @@ it("mounts the strict internal agent route before the legacy internal router", a
 it("sends voice worker calls to the voice service, ahead of the legacy internal router", async () => {
   // With its token set, the legacy router would refuse every voice call with 401.
   vi.stubEnv("INTERNAL_API_TOKEN", "service-token");
+  vi.stubEnv("VOICE_ENABLED", "false");
   const { createApp } = await import("./app.js");
   const testServer = await serve(createApp());
   const claim = () => fetch(`${testServer.url}/api/internal/voice/v1/leases/claim`, {

@@ -390,13 +390,43 @@ export function sessionCookie(token: string, maxAgeMs = SESSION_TTL_MS): string 
     .join("; ");
 }
 
+const SESSION_TOKEN = /^[a-f0-9]{64}$/i;
+
 export function tokenFromRequest(request: express.Request): string | null {
   const bearer = request.headers.authorization;
   const cookieToken = sessionCookieValue(request.headers.cookie);
   if (cookieToken === null) return null;
   if (bearer !== undefined && (!bearer.startsWith("Bearer ") || bearer.length > 512 || cookieToken)) return null;
   const token = bearer ? bearer.slice(7).trim() : cookieToken;
-  return token && /^[a-f0-9]{64}$/i.test(token) ? token : null;
+  return token && SESSION_TOKEN.test(token) ? token : null;
+}
+
+/**
+ * Every well-formed session token the request presents. A browser that sends the
+ * cookie twice cannot authenticate, because neither value can be trusted as its
+ * session, but it must still be able to sign out, so a logout ends them all: a
+ * token can only be presented by the browser holding it.
+ */
+export function sessionTokensFromRequest(request: express.Request): string[] {
+  const tokens = new Set<string>();
+  const bearer = request.headers.authorization;
+  if (bearer?.startsWith("Bearer ") && bearer.length <= 512 && SESSION_TOKEN.test(bearer.slice(7).trim())) {
+    tokens.add(bearer.slice(7).trim());
+  }
+  const header = request.headers.cookie;
+  if (header && header.length <= 8192) {
+    for (const part of header.split(";")) {
+      const index = part.indexOf("=");
+      if (index === -1 || part.slice(0, index).trim() !== SESSION_COOKIE) continue;
+      try {
+        const value = decodeURIComponent(part.slice(index + 1).trim());
+        if (SESSION_TOKEN.test(value)) tokens.add(value);
+      } catch {
+        // Not valid encoding, so not one of our tokens.
+      }
+    }
+  }
+  return [...tokens];
 }
 
 /** Attaches `request.user` when a valid session is present; never rejects. */

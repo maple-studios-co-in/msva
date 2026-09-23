@@ -65,6 +65,21 @@ async function demoApp() {
   return { post, close: () => new Promise<void>((resolve) => server.close(() => resolve())) };
 }
 
+it("signs out every session the browser presents, even when it sends the cookie twice", async () => {
+  const app = await demoApp();
+  try {
+    // Two cookies cannot authenticate, because neither can be trusted as the
+    // session, but signing out must still end them.
+    const [first, second] = [await sessionCookie("AGENT"), await sessionCookie("AGENT")];
+    expect(await db.session.count()).toBe(2);
+    const response = await app.post("/api/admin/auth/logout", {}, `${first}; ${second}`);
+    expect(response.status).toBe(200);
+    expect(await db.session.count()).toBe(0);
+  } finally {
+    await app.close();
+  }
+});
+
 it("lets a signed-in agent chat and preview voices, and no viewer", async () => {
   const app = await demoApp();
   try {

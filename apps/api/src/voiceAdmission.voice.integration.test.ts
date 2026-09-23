@@ -161,6 +161,22 @@ describe("signal admission", () => {
     await expect(connect(call, who, admission.participantIdentity, { publish: false, subscribe: true })).resolves.toMatchObject({ admissionId: admission.id });
   });
 
+  it("takes the configured browser origin in any spelling of the same origin", async () => {
+    const call = await liveCall(); const who = await staff();
+    const admission = await listener(call, who);
+    const configured = process.env.VOICE_BROWSER_ORIGIN;
+    try {
+      // The console's origins are read canonically, so this value cannot mean one
+      // thing there and another here.
+      process.env.VOICE_BROWSER_ORIGIN = "https://console.test:443/";
+      await expect(connect(call, who, admission.participantIdentity)).resolves.toMatchObject({ admissionId: admission.id });
+      process.env.VOICE_BROWSER_ORIGIN = "https://other.test";
+      await expect(connect(call, who, admission.participantIdentity)).rejects.toMatchObject({ code: "ADMISSION_DENIED" });
+    } finally {
+      process.env.VOICE_BROWSER_ORIGIN = configured;
+    }
+  });
+
   it("refuses another browser session without revoking the owner's admission", async () => {
     const call = await liveCall(); const who = await staff(); const other = await staff();
     const admission = await listener(call, who);

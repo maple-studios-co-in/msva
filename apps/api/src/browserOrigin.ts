@@ -27,7 +27,8 @@ export function parseBrowserOrigins(value: string | undefined): { origins: Set<s
   return { origins, ignored };
 }
 
-function canonicalOrigin(text: string): string | null {
+/** Exported so the voice signaling origin is read the same way as this list. */
+export function canonicalOrigin(text: string): string | null {
   if (text.includes("*")) return null;
   try {
     const url = new URL(text);

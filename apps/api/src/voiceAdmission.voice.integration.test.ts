@@ -165,13 +165,22 @@ describe("signal admission", () => {
     const call = await liveCall(); const who = await staff();
     const admission = await listener(call, who);
     const configured = process.env.VOICE_BROWSER_ORIGIN;
+    const join = (origin: string) => authorizeSignalConnection({
+      tokenClaims: { subject: admission.participantIdentity, room: call.roomName, roomJoin: true, publish: false, subscribe: false },
+      sessionTokenHash: sha256(who.token), origin, protocol: "v1", reconnect: false, participantSid: null
+    }, db);
     try {
-      // The console's origins are read canonically, so this value cannot mean one
-      // thing there and another here.
+      // The console's origins are read canonically, so neither side can be spelled
+      // in a way that means one thing there and another here.
       process.env.VOICE_BROWSER_ORIGIN = "https://console.test:443/";
-      await expect(connect(call, who, admission.participantIdentity)).resolves.toMatchObject({ admissionId: admission.id });
+      await expect(join("https://console.test")).resolves.toMatchObject({ admissionId: admission.id });
+      // That connection holds the admission until its lease lapses.
+      await db.voiceAdmission.update({ where: { id: admission.id }, data: { connectionLeaseExpiresAt: new Date(Date.now() - 1) } });
+      process.env.VOICE_BROWSER_ORIGIN = "https://console.test";
+      await expect(join("https://console.test:443")).resolves.toMatchObject({ admissionId: admission.id });
+      await db.voiceAdmission.update({ where: { id: admission.id }, data: { connectionLeaseExpiresAt: new Date(Date.now() - 1) } });
       process.env.VOICE_BROWSER_ORIGIN = "https://other.test";
-      await expect(connect(call, who, admission.participantIdentity)).rejects.toMatchObject({ code: "ADMISSION_DENIED" });
+      await expect(join("https://console.test")).rejects.toMatchObject({ code: "ADMISSION_DENIED" });
     } finally {
       process.env.VOICE_BROWSER_ORIGIN = configured;
     }
@@ -181,7 +190,8 @@ describe("signal admission", () => {
     // An admission can be issued as its login ends; it must never admit media.
     const call = await liveCall(); const who = await staff();
     const admission = await listener(call, who);
-    await revokeSession(who.token);
+    // The login ends without revoking, as it does when both commit at once.
+    await db.session.delete({ where: { id: who.browser.id } });
     await expect(connect(call, who, admission.participantIdentity)).rejects.toMatchObject({ code: "ADMISSION_DENIED" });
     expect(await db.voiceAdmission.findUniqueOrThrow({ where: { id: admission.id } })).toMatchObject({ state: "REVOKING", revokeReason: "LOGOUT" });
   });

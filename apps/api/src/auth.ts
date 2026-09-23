@@ -61,6 +61,8 @@ let deliveryOverride: LoginCodeDelivery | null | undefined;
 /** Test-only injection point; production uses configured SMTP. */
 export const setLoginCodeDeliveryForTest = (delivery: LoginCodeDelivery | null | undefined) => { deliveryOverride = delivery; };
 const loginCodeDelivery = () => deliveryOverride === undefined ? createSmtpLoginCodeDelivery() : deliveryOverride;
+/** Development only: nothing is sent, because the code is returned in the response. */
+const shownNotSent: LoginCodeDelivery = { async send() {} };
 
 const MAX_FORWARDED_HEADER = 512;
 const MAX_FORWARDED_HOPS = 16;
@@ -245,9 +247,11 @@ async function activateLoginCode(userId: string, id: string): Promise<void> {
  * Looks the address up and, for an active user, admits and mails one code. A
  * send holds one of the two delivery slots, shared by every API process, until
  * it finishes, even if a newer request supersedes its code. The raw code lives
- * only in memory. Returns the code for development echo, otherwise null.
+ * only in memory. Returns the code for development echo, otherwise null. With
+ * `finish`, the delivery and activation are awaited instead of left to run on,
+ * so a code shown in development is usable the moment it is shown.
  */
-async function issueLoginCode(email: string, delivery: LoginCodeDelivery): Promise<string | null> {
+async function issueLoginCode(email: string, delivery: LoginCodeDelivery, finish = false): Promise<string | null> {
   const user = await prisma.user.findFirst({ where: { email, active: true } });
   if (!user) return null;
   const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
@@ -273,7 +277,7 @@ async function issueLoginCode(email: string, delivery: LoginCodeDelivery): Promi
     return true;
   });
   if (!admitted) return null;
-  void delivery.send({ recipient: email, code, expiresAt })
+  const delivered = delivery.send({ recipient: email, code, expiresAt })
     .then(() => activateLoginCode(user.id, id))
     .catch(async () => {
       console.warn("[auth] login code delivery failed");
@@ -283,6 +287,7 @@ async function issueLoginCode(email: string, delivery: LoginCodeDelivery): Promi
       // The database is unreachable as well: the lease expires and the next
       // request reclaims it. An uncertain send is never retried.
     });
+  if (finish) await delivered;
   return code;
 }
 
@@ -295,7 +300,11 @@ export async function requestLoginCode(
 ): Promise<LoginCodeRequestResult> {
   const email = rawEmail.trim().toLowerCase();
   const delivery = loginCodeDelivery();
-  const configured = Boolean(delivery && process.env.AUTH_CODE_HASH_KEY && process.env.AUTH_RATE_HASH_KEY);
+  const keyed = Boolean(process.env.AUTH_CODE_HASH_KEY && process.env.AUTH_RATE_HASH_KEY);
+  const configured = Boolean(delivery) && keyed;
+  // Development only: the code is returned in the response, so it can be issued
+  // with no mail server at all. Production never reaches this.
+  const shown = keyed && !isProduction() && process.env.NODE_ENV === "development" && process.env.AUTH_DEV_ECHO === "1";
   if (isProduction() && !configured) return { ok: false, unavailable: true };
   const retryAfter = await reserveRates([
     { scope: "request-email-minute", key: email, limit: 1, windowMs: 60_000 },
@@ -304,10 +313,10 @@ export async function requestLoginCode(
     { scope: "request-global-hour", key: "global", limit: 100, windowMs: 3_600_000, shared: true }
   ]);
   if (retryAfter) return { ok: false, limited: true, retryAfter };
-  if (!configured) return { ok: true };
-  if (process.env.NODE_ENV === "development" && process.env.AUTH_DEV_ECHO === "1") {
+  if (!configured && !shown) return { ok: true };
+  if (shown) {
     // Development only: wait for the code so it can be shown.
-    const code = await issueLoginCode(email, delivery!);
+    const code = await issueLoginCode(email, delivery ?? shownNotSent, !delivery);
     return code ? { ok: true, devCode: code } : { ok: true };
   }
   void issueLoginCode(email, delivery!).catch(() => console.warn("[auth] login code request failed"));

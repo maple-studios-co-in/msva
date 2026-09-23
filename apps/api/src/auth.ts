@@ -375,13 +375,20 @@ export async function verifyLoginCode(
 }
 
 export async function revokeSession(token: string): Promise<void> {
+  await revokeSessions([token]);
+}
+
+/** Ends every session those tokens belong to, in one pass: tokens matching none cost one lookup. */
+export async function revokeSessions(tokens: readonly string[]): Promise<void> {
+  if (tokens.length === 0) return;
+  const hashes = tokens.map((token) => sha256(token));
   await prisma.$transaction(async (tx) => {
-    const session = await tx.session.findUnique({ where: { tokenHash: sha256(token) }, select: { id: true } });
-    if (!session) return;
-    // Browser voice media admitted under this login ends with it.
-    await revokeAdmissions(tx, { sessionId: session.id, reason: "LOGOUT" });
-    // A concurrent logout may have deleted it already.
-    await tx.session.deleteMany({ where: { id: session.id } });
+    const sessions = await tx.session.findMany({ where: { tokenHash: { in: hashes } }, select: { id: true } });
+    if (sessions.length === 0) return;
+    // Browser voice media admitted under these logins ends with them.
+    for (const session of sessions) await revokeAdmissions(tx, { sessionId: session.id, reason: "LOGOUT" });
+    // A concurrent logout may have deleted them already.
+    await tx.session.deleteMany({ where: { id: { in: sessions.map((session) => session.id) } } });
   });
 }
 
@@ -400,6 +407,9 @@ export function sessionCookie(token: string, maxAgeMs = SESSION_TTL_MS): string 
 }
 
 const SESSION_TOKEN = /^[a-f0-9]{64}$/i;
+// A browser has one session cookie, or a few if a parent domain set one too. The
+// bound keeps a packed cookie header from making one logout do unbounded work.
+const MAX_SESSION_TOKENS = 8;
 
 export function tokenFromRequest(request: express.Request): string | null {
   const bearer = request.headers.authorization;
@@ -430,6 +440,7 @@ export function sessionTokensFromRequest(request: express.Request): string[] {
       try {
         const value = decodeURIComponent(part.slice(index + 1).trim());
         if (SESSION_TOKEN.test(value)) tokens.add(value);
+        if (tokens.size >= MAX_SESSION_TOKENS) break;
       } catch {
         // Not valid encoding, so not one of our tokens.
       }

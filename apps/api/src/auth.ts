@@ -316,7 +316,7 @@ export async function requestLoginCode(
   if (!configured && !shown) return { ok: true };
   if (shown) {
     // Development only: wait for the code so it can be shown.
-    const code = await issueLoginCode(email, delivery ?? shownNotSent, !delivery);
+    const code = await issueLoginCode(email, delivery ?? shownNotSent, true);
     return code ? { ok: true, devCode: code } : { ok: true };
   }
   void issueLoginCode(email, delivery!).catch(() => console.warn("[auth] login code request failed"));

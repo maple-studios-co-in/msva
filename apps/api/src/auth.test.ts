@@ -56,7 +56,7 @@ it("rejects malformed, duplicate, and ambiguous session credentials safely", asy
   expect(tokenFromRequest(request({ cookie: "msva_session=a", authorization: "Bearer b" }))).toBeNull();
 });
 
-it("takes every session token presented, up to a bound", async () => {
+it("takes every session token presented, and only ours", async () => {
   const { sessionTokensFromRequest } = await import("./auth.js");
   const token = (n: number) => String(n).padStart(2, "0").repeat(32);
   const two = `msva_session=${token(1)}; other=x; msva_session=${token(2)}`;
@@ -64,9 +64,9 @@ it("takes every session token presented, up to a bound", async () => {
   expect(sessionTokensFromRequest(request({ cookie: `msva_session=${token(3)}; msva_session=nonsense` }))).toEqual([token(3)]);
   expect(sessionTokensFromRequest(request({ authorization: `Bearer ${token(4)}` }))).toEqual([token(4)]);
   expect(sessionTokensFromRequest(request({ cookie: "other=x" }))).toEqual([]);
-  // A packed cookie header cannot make one logout do unbounded work.
+  // However many a browser presents, they are all ended in one pass.
   const many = Array.from({ length: 40 }, (_, n) => `msva_session=${token(n)}`).join("; ");
-  expect(sessionTokensFromRequest(request({ cookie: many })).length).toBe(8);
+  expect(sessionTokensFromRequest(request({ cookie: many })).length).toBe(40);
 });
 
 it("ignores other cookies, even duplicated or malformed ones", async () => {
